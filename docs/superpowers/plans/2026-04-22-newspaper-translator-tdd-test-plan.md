@@ -37,7 +37,7 @@ Additional rules for this project:
 
 ## Test Layers
 
-The project should use four test layers.
+The project should use five test layers.
 
 ### 1. Domain And Unit Tests
 
@@ -92,6 +92,21 @@ Examples:
 - Article card shows summary and tags
 - Detail page switches between English and Chinese
 
+### 5. Container Runtime Tests
+
+Purpose:
+
+- Verify that the system behaves correctly in the environment where it will actually run
+- Catch configuration, volume, networking, and restart issues that do not appear in plain process-level tests
+
+Examples:
+
+- Docker image builds successfully
+- `docker compose up` starts `web`, `worker`, and `db` successfully
+- Required environment variables are injected into containers
+- Raw PDFs and derived artifacts survive container recreation through mounted storage
+- Worker restart resumes interrupted work without duplicating documents
+
 ## Fixture Strategy
 
 To make TDD practical here, fixtures should be treated as first-class assets.
@@ -111,6 +126,12 @@ We should also keep smaller synthetic fixtures for focused rule tests:
 - Minimal block lists for cross-column grouping
 - Minimal block lists for ad-vs-article classification rules
 - Minimal article objects for dashboard query tests
+
+For container-runtime tests, we should also keep:
+
+- A test `.env` fixture for container startup
+- A compose override or test compose file for isolated test runs
+- A mounted temporary storage root that can be inspected before and after container restart
 
 ## Scope Of The First TDD Slice
 
@@ -472,35 +493,141 @@ Behavior:
 
 - One end-to-end slice reaches visible UI state.
 
+## Phase 6 Test Queue: Container Runtime
+
+These tests make Docker a first-class execution target rather than an afterthought.
+
+They should start as soon as Phase 1 foundations exist, but most of them become meaningful only after the first end-to-end slice is working.
+
+### 31. Image Build
+
+Test:
+
+- `builds the worker and web images successfully from the repository`
+
+Behavior:
+
+- The declared container images build without missing files, broken dependency declarations, or invalid build steps.
+
+### 32. Compose Startup
+
+Test:
+
+- `starts web worker and db services successfully with docker compose`
+
+Behavior:
+
+- A containerized local environment can boot the core services together.
+
+### 33. Container Config Injection
+
+Test:
+
+- `fails container startup fast when required runtime environment variables are missing`
+
+Behavior:
+
+- Required Gmail, model, database, or storage settings should fail loudly during container startup instead of leaving a half-working service.
+
+### 34. Migration On Startup
+
+Test:
+
+- `applies database migrations successfully during containerized startup`
+
+Behavior:
+
+- The container startup path initializes schema correctly and predictably.
+
+### 35. Mounted Raw Storage Persistence
+
+Test:
+
+- `preserves imported raw pdf files across worker container recreation`
+
+Behavior:
+
+- Destroying and recreating the worker container must not lose mounted raw document files.
+
+### 36. Mounted Artifact Persistence
+
+Test:
+
+- `preserves page and article artifacts across container recreation`
+
+Behavior:
+
+- Derived parsing outputs stored on mounted volumes survive container replacement.
+
+### 37. Container Network Dependency
+
+Test:
+
+- `allows worker and web services to reach the database over the compose network`
+
+Behavior:
+
+- The runtime network wiring matches the application's actual deployment assumptions.
+
+### 38. Worker Restart Recovery In Container
+
+Test:
+
+- `requeues interrupted work after the worker container is restarted`
+
+Behavior:
+
+- A worker killed mid-processing should recover from persisted task state when it comes back.
+
+### 39. Duplicate Safety Across Recreate
+
+Test:
+
+- `does not duplicate imported documents after docker compose down and up`
+
+Behavior:
+
+- Restarting the full local stack should not cause the ingestion path to re-import the same document as new.
+
+### 40. Containerized Smoke Test
+
+Test:
+
+- `processes a sample document end to end inside docker and exposes it through the web service`
+
+Behavior:
+
+- The real containerized stack can import, parse, enrich, persist, and serve one sample article.
+
 ## Later Test Queue: Scanned PDFs And Ambiguity Resolution
 
 These tests should wait until the first digital slice is working.
 
-### 31. Scanned Page Classification
+### 41. Scanned Page Classification
 
 Test:
 
 - `classifies an image-heavy page with weak text extraction as scanned`
 
-### 32. OCR Block Normalization
+### 42. OCR Block Normalization
 
 Test:
 
 - `normalizes ocr output into the shared block model`
 
-### 33. Low Confidence Marking
+### 43. Low Confidence Marking
 
 Test:
 
 - `marks a scanned article as low confidence when ocr quality is below threshold`
 
-### 34. Ambiguity Resolution For Continuation
+### 44. Ambiguity Resolution For Continuation
 
 Test:
 
 - `uses ambiguity resolution to connect two uncertain continuation block groups`
 
-### 35. Ambiguity Resolution For Ad Detection
+### 45. Ambiguity Resolution For Ad Detection
 
 Test:
 
@@ -510,25 +637,25 @@ Test:
 
 These tests should follow after the core path exists.
 
-### 36. Restart Recovery
+### 46. Restart Recovery
 
 Test:
 
 - `requeues a stale running task after worker restart`
 
-### 37. Artifact Reuse
+### 47. Artifact Reuse
 
 Test:
 
 - `reuses completed page artifacts during a resumed document run`
 
-### 38. Duplicate Retry Safety
+### 48. Duplicate Retry Safety
 
 Test:
 
 - `does not duplicate articles when a document is resumed after partial completion`
 
-### 39. User-Visible Status Reporting
+### 49. User-Visible Status Reporting
 
 Test:
 
@@ -540,24 +667,28 @@ For the first coding sprint, the exact TDD sequence should be:
 
 1. `loads required application settings from environment`
 2. `fails fast when required Gmail credentials are missing`
-3. `builds a stable document key from message id attachment id and content hash`
-4. `transitions a task from pending to running to succeeded`
-5. `rejects transition from succeeded back to running`
-6. `selects only messages from configured senders with pdf attachments`
-7. `stores a fetched pdf attachment at the configured raw document path`
-8. `does not create a second document for the same attachment`
-9. `creates a pending document processing task after a successful import`
-10. `classifies a text-rich selectable page as digital`
-11. `normalizes extracted text fragments into ordered page blocks`
-12. `excludes repeating header and footer blocks from article reconstruction`
-13. `identifies a large leading text block as an article title candidate`
-14. `reconstructs one article from title lead and body blocks on the same page`
-15. `parses a representative digital newspaper pdf into article objects`
-16. `accepts between three and eight generated tags for an article`
-17. `stores a chinese summary generated for an article`
-18. `stores a full chinese translation generated for an article`
-19. `enriches a reconstructed article with tags summary and translation`
-20. `shows an imported and enriched article on the home page and detail page`
+3. `builds the worker and web images successfully from the repository`
+4. `starts web worker and db services successfully with docker compose`
+5. `fails container startup fast when required runtime environment variables are missing`
+6. `builds a stable document key from message id attachment id and content hash`
+7. `transitions a task from pending to running to succeeded`
+8. `rejects transition from succeeded back to running`
+9. `selects only messages from configured senders with pdf attachments`
+10. `stores a fetched pdf attachment at the configured raw document path`
+11. `does not create a second document for the same attachment`
+12. `creates a pending document processing task after a successful import`
+13. `classifies a text-rich selectable page as digital`
+14. `normalizes extracted text fragments into ordered page blocks`
+15. `excludes repeating header and footer blocks from article reconstruction`
+16. `identifies a large leading text block as an article title candidate`
+17. `reconstructs one article from title lead and body blocks on the same page`
+18. `parses a representative digital newspaper pdf into article objects`
+19. `accepts between three and eight generated tags for an article`
+20. `stores a chinese summary generated for an article`
+21. `stores a full chinese translation generated for an article`
+22. `enriches a reconstructed article with tags summary and translation`
+23. `processes a sample document end to end inside docker and exposes it through the web service`
+24. `shows an imported and enriched article on the home page and detail page`
 
 This is intentionally smaller than the full backlog. It is the minimum end-to-end path worth proving first.
 

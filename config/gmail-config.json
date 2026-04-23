@@ -1,0 +1,24 @@
+{
+  "oauth_client_secrets_path": "../secrets/google-oauth-client.json",
+  "oauth_token_path": "../secrets/gmail-token.json",
+  "allowed_senders": [
+    "13802809612@163.com"
+  ],
+  "query": "newer_than:7d",
+  "label_ids": [
+    "INBOX"
+  ],
+  "max_results": 25,
+  "include_spam_trash": false,
+  "enable_body_links": true,
+  "allowed_link_domains": ["dl.dengtazk.xin", "wx.mail.qq.com"],
+  "download_link_keywords": [
+    "download",
+    "pdf"
+  ],
+  "proxy_url": "http://127.0.0.1:7897",
+  "user_id": "me",
+  "scopes": [
+    "https://www.googleapis.com/auth/gmail.readonly"
+  ]
+}

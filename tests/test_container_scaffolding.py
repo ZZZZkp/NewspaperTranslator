@@ -18,6 +18,25 @@ class ContainerScaffoldingTests(unittest.TestCase):
         self.assertIn("worker:", compose_text)
         self.assertIn("db:", compose_text)
 
+    def test_compose_runs_real_web_and_worker_entrypoints(self) -> None:
+        compose_path = PROJECT_ROOT / "docker-compose.yml"
+        self.assertTrue(compose_path.exists(), "docker-compose.yml should exist at the project root")
+
+        compose_text = compose_path.read_text()
+
+        self.assertIn('command: ["python", "-m", "newspaper_translator.web"]', compose_text)
+        self.assertIn('command: ["python", "-m", "newspaper_translator.worker"]', compose_text)
+
+    def test_compose_declares_runtime_healthchecks_and_dependency_conditions(self) -> None:
+        compose_path = PROJECT_ROOT / "docker-compose.yml"
+        self.assertTrue(compose_path.exists(), "docker-compose.yml should exist at the project root")
+
+        compose_text = compose_path.read_text()
+
+        self.assertIn("healthcheck:", compose_text)
+        self.assertIn('test: ["CMD", "python", "-m", "newspaper_translator.manage", "check"', compose_text)
+        self.assertIn("condition: service_started", compose_text)
+
     def test_project_includes_an_env_example_for_container_runtime(self) -> None:
         env_example_path = PROJECT_ROOT / ".env.example"
         self.assertTrue(env_example_path.exists(), ".env.example should exist at the project root")
@@ -30,6 +49,43 @@ class ContainerScaffoldingTests(unittest.TestCase):
         self.assertIn("GMAIL_CLIENT_ID=", env_text)
         self.assertIn("GMAIL_CLIENT_SECRET=", env_text)
         self.assertIn("GMAIL_REFRESH_TOKEN=", env_text)
+
+    def test_project_includes_a_readme_with_local_startup_steps(self) -> None:
+        readme_path = PROJECT_ROOT / "README.md"
+        self.assertTrue(readme_path.exists(), "README.md should exist at the project root")
+
+        readme_text = readme_path.read_text()
+
+        self.assertIn("docker compose up --build", readme_text)
+        self.assertIn("python -m unittest discover -s tests -v", readme_text)
+        self.assertIn("python -m newspaper_translator.manage gmail-import", readme_text)
+
+    def test_project_includes_a_gmail_config_template(self) -> None:
+        config_template_path = PROJECT_ROOT / "config" / "gmail-config.json"
+        self.assertTrue(
+            config_template_path.exists(),
+            "config/gmail-config.json should exist as a local Gmail integration template",
+        )
+
+        config_text = config_template_path.read_text()
+
+        self.assertIn('"oauth_client_secrets_path"', config_text)
+        self.assertIn('"oauth_token_path"', config_text)
+        self.assertIn('"allowed_senders"', config_text)
+        self.assertIn('"query"', config_text)
+        self.assertIn('"enable_body_links"', config_text)
+        self.assertIn('"allowed_link_domains"', config_text)
+        self.assertIn('"download_link_keywords"', config_text)
+
+    def test_requirements_include_gmail_api_dependencies(self) -> None:
+        requirements_path = PROJECT_ROOT / "requirements.txt"
+        self.assertTrue(requirements_path.exists(), "requirements.txt should exist at the project root")
+
+        requirements_text = requirements_path.read_text()
+
+        self.assertIn("google-api-python-client", requirements_text)
+        self.assertIn("google-auth-oauthlib", requirements_text)
+        self.assertIn("google-auth-httplib2", requirements_text)
 
     def test_docker_compose_configuration_is_valid(self) -> None:
         compose_path = PROJECT_ROOT / "docker-compose.yml"

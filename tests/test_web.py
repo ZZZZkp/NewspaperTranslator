@@ -15,6 +15,7 @@ try:
     from newspaper_translator.import_audit import (
         create_import_run,
         finalize_import_run,
+        record_import_run_retry_summary,
         record_import_run_item,
     )
     from newspaper_translator.web import create_app
@@ -22,6 +23,7 @@ except ImportError:
     create_app = None
     create_import_run = None
     finalize_import_run = None
+    record_import_run_retry_summary = None
     record_import_run_item = None
     run_pending_migrations = None
 
@@ -97,6 +99,7 @@ class WebHealthEndpointTests(unittest.TestCase):
     def test_import_runs_endpoint_returns_recent_runs(self) -> None:
         self.assertIsNotNone(create_import_run)
         self.assertIsNotNone(finalize_import_run)
+        self.assertIsNotNone(record_import_run_retry_summary)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = pathlib.Path(temp_dir) / "app.db"
@@ -118,6 +121,14 @@ class WebHealthEndpointTests(unittest.TestCase):
                 created_document_count=1,
                 skipped_document_count=0,
             )
+            record_import_run_retry_summary(
+                database_url=database_url,
+                run_id=run.run_id,
+                retry_run_id="retry-run-1",
+                retried_message_count=2,
+                resolved_message_count=1,
+                failed_final_message_count=1,
+            )
 
             app = create_app(
                 {
@@ -138,6 +149,11 @@ class WebHealthEndpointTests(unittest.TestCase):
         self.assertEqual(len(payload["runs"]), 1)
         self.assertEqual(payload["runs"][0]["run_id"], run.run_id)
         self.assertEqual(payload["runs"][0]["status"], "succeeded")
+        self.assertTrue(payload["runs"][0]["retry_performed"])
+        self.assertEqual(payload["runs"][0]["retry_run_id"], "retry-run-1")
+        self.assertEqual(payload["runs"][0]["retried_message_count"], 2)
+        self.assertEqual(payload["runs"][0]["resolved_message_count"], 1)
+        self.assertEqual(payload["runs"][0]["failed_final_message_count"], 1)
 
     def test_import_run_items_and_import_items_endpoints_support_filters(self) -> None:
         self.assertIsNotNone(create_import_run)

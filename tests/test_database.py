@@ -136,13 +136,23 @@ class DatabaseMigrationTests(unittest.TestCase):
         self.assertIn("import_checkpoints", table_names)
         self.assertIn("checkpoint_before", import_runs_columns)
         self.assertIn("checkpoint_after", import_runs_columns)
+        self.assertIn("retry_performed", import_runs_columns)
+        self.assertIn("retry_run_id", import_runs_columns)
+        self.assertIn("retried_message_count", import_runs_columns)
+        self.assertIn("resolved_message_count", import_runs_columns)
+        self.assertIn("failed_final_message_count", import_runs_columns)
         self.assertIn("message_internal_date", import_run_items_columns)
         self.assertIn("retry_state", failed_messages_columns)
         self.assertIn("retry_attempt_count", failed_messages_columns)
         self.assertIn("checkpoint_value", import_checkpoints_columns)
         self.assertEqual(
             recorded_versions,
-            ["0001_initial", "0002_import_audit", "0003_checkpointing_retry"],
+            [
+                "0001_initial",
+                "0002_import_audit",
+                "0003_checkpointing_retry",
+                "0004_import_run_retry_summary",
+            ],
         )
 
 

@@ -25,6 +25,7 @@ try:
         mark_failed_message_pending,
         mark_failed_message_resolved,
         record_import_run_item,
+        record_import_run_retry_summary,
         set_import_checkpoint,
     )
 except ImportError:
@@ -40,6 +41,7 @@ except ImportError:
     mark_failed_message_pending = None
     mark_failed_message_resolved = None
     record_import_run_item = None
+    record_import_run_retry_summary = None
     set_import_checkpoint = None
     run_pending_migrations = None
 
@@ -405,6 +407,53 @@ class ImportAuditRepositoryTests(unittest.TestCase):
         self.assertTrue(first_claim)
         self.assertEqual(retryable_after_first_claim, [])
         self.assertFalse(second_claim)
+
+    def test_records_retry_summary_on_parent_import_run(self) -> None:
+        self.assertIsNotNone(record_import_run_retry_summary)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            parent_run = create_import_run(
+                database_url=database_url,
+                source_name="gmail",
+                query="newer_than:7d",
+                allowed_senders=["briefing@example.com"],
+                max_results=25,
+                checkpoint_before="1713820800000",
+            )
+            finalize_import_run(
+                database_url=database_url,
+                run_id=parent_run.run_id,
+                fetched_message_count=2,
+                imported_attachment_count=1,
+                created_document_count=1,
+                skipped_document_count=0,
+                checkpoint_after="1713907200000",
+            )
+
+            record_import_run_retry_summary(
+                database_url=database_url,
+                run_id=parent_run.run_id,
+                retry_run_id="retry-run-1",
+                retried_message_count=2,
+                resolved_message_count=1,
+                failed_final_message_count=1,
+            )
+            stored_run = get_import_run(
+                database_url=database_url,
+                run_id=parent_run.run_id,
+            )
+
+        self.assertTrue(stored_run.retry_performed)
+        self.assertEqual(stored_run.retry_run_id, "retry-run-1")
+        self.assertEqual(stored_run.retried_message_count, 2)
+        self.assertEqual(stored_run.resolved_message_count, 1)
+        self.assertEqual(stored_run.failed_final_message_count, 1)
+        self.assertEqual(stored_run.checkpoint_before, "1713820800000")
+        self.assertEqual(stored_run.checkpoint_after, "1713907200000")
 
 
 if __name__ == "__main__":

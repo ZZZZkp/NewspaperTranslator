@@ -22,6 +22,11 @@ class ImportRun:
     skipped_item_count: int
     checkpoint_before: str | None
     checkpoint_after: str | None
+    retry_performed: bool
+    retry_run_id: str | None
+    retried_message_count: int
+    resolved_message_count: int
+    failed_final_message_count: int
     started_at: str
     finished_at: str | None
 
@@ -273,6 +278,11 @@ def get_import_run(*, database_url: str, run_id: str) -> ImportRun:
                 skipped_item_count,
                 checkpoint_before,
                 checkpoint_after,
+                retry_performed,
+                retry_run_id,
+                retried_message_count,
+                resolved_message_count,
+                failed_final_message_count,
                 started_at,
                 finished_at
             FROM import_runs
@@ -301,8 +311,13 @@ def get_import_run(*, database_url: str, run_id: str) -> ImportRun:
         skipped_item_count=row[11],
         checkpoint_before=row[12],
         checkpoint_after=row[13],
-        started_at=row[14],
-        finished_at=row[15],
+        retry_performed=bool(row[14]),
+        retry_run_id=row[15],
+        retried_message_count=row[16],
+        resolved_message_count=row[17],
+        failed_final_message_count=row[18],
+        started_at=row[19],
+        finished_at=row[20],
     )
 
 
@@ -326,6 +341,11 @@ def list_import_runs(*, database_url: str, limit: int) -> list[ImportRun]:
                 skipped_item_count,
                 checkpoint_before,
                 checkpoint_after,
+                retry_performed,
+                retry_run_id,
+                retried_message_count,
+                resolved_message_count,
+                failed_final_message_count,
                 started_at,
                 finished_at
             FROM import_runs
@@ -353,8 +373,13 @@ def list_import_runs(*, database_url: str, limit: int) -> list[ImportRun]:
             skipped_item_count=row[11],
             checkpoint_before=row[12],
             checkpoint_after=row[13],
-            started_at=row[14],
-            finished_at=row[15],
+            retry_performed=bool(row[14]),
+            retry_run_id=row[15],
+            retried_message_count=row[16],
+            resolved_message_count=row[17],
+            failed_final_message_count=row[18],
+            started_at=row[19],
+            finished_at=row[20],
         )
         for row in rows
     ]
@@ -700,6 +725,42 @@ def _update_failed_message_state(
             WHERE message_id = ?
             """,
             (retry_state, run_id, message_id),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def record_import_run_retry_summary(
+    *,
+    database_url: str,
+    run_id: str,
+    retry_run_id: str | None,
+    retried_message_count: int,
+    resolved_message_count: int,
+    failed_final_message_count: int,
+) -> None:
+    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+    try:
+        connection.execute(
+            """
+            UPDATE import_runs
+            SET
+                retry_performed = ?,
+                retry_run_id = ?,
+                retried_message_count = ?,
+                resolved_message_count = ?,
+                failed_final_message_count = ?
+            WHERE run_id = ?
+            """,
+            (
+                1 if retry_run_id is not None or retried_message_count > 0 else 0,
+                retry_run_id,
+                retried_message_count,
+                resolved_message_count,
+                failed_final_message_count,
+                run_id,
+            ),
         )
         connection.commit()
     finally:

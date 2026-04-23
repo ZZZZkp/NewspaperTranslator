@@ -1,13 +1,17 @@
 # Newspaper Translator
 
-This repository now has a complete runnable Phase 1 foundation plus a working Phase 2 Gmail ingestion slice.
+This repository now has a complete runnable Phase 1 foundation plus a working Phase 2 Gmail ingestion slice with durable import audit, incremental checkpointing, and failed-message retry support.
 
 ## Current status
 
-As of 2026-04-22, the project has:
+As of 2026-04-23, the project has:
 
 - completed the Phase 1 local runtime baseline
 - completed the first useful Phase 2 import path from Gmail into raw PDF storage
+- added persisted import-run history and item-level audit records
+- added read-only CLI and web query surfaces for import runs and run items
+- added time-window incremental checkpointing for normal Gmail imports
+- added automatic and manual retry flows for unresolved failed Gmail messages
 - validated Gmail Desktop OAuth locally
 - validated Gmail API access through a local proxy or VPN
 - validated direct PDF links such as `https://dl.dengtazk.xin/...pdf`
@@ -79,6 +83,25 @@ PYTHONPATH=src ./.venv/bin/python -m newspaper_translator.manage gmail-import \
 
 The first run will open the local OAuth flow in your browser and then write a reusable token file.
 
+Inspect import audit state:
+
+```bash
+PYTHONPATH=src ./.venv/bin/python -m newspaper_translator.manage gmail-import-runs \
+  --database-url sqlite:////tmp/newspaper-translator.db
+PYTHONPATH=src ./.venv/bin/python -m newspaper_translator.manage gmail-import-items \
+  --database-url sqlite:////tmp/newspaper-translator.db \
+  --status failed
+```
+
+Manually retry unresolved failed Gmail messages:
+
+```bash
+PYTHONPATH=src ./.venv/bin/python -m newspaper_translator.manage gmail-retry-failures \
+  --gmail-config /Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/config/gmail-config.json \
+  --database-url sqlite:////tmp/newspaper-translator.db \
+  --storage-root /tmp/newspaper-translator-data
+```
+
 For link-based newspaper emails:
 
 - Set `enable_body_links` to `true`
@@ -117,11 +140,16 @@ Implemented today:
 - body-link import for direct PDF links in message bodies
 - body-link import for QQ Mail landing pages that require `POST f=json` before downloading the PDF
 - network-error tolerance for unrelated or broken body links so one bad URL does not fail the full import run
+- persisted import-run and import-item audit records
+- read-only import audit endpoints through `manage` and `web`
+- time-window incremental checkpointing for Gmail imports
+- automatic failed-message retry after normal imports
+- manual failed-message retry through `gmail-retry-failures`
+- retry/checkpoint summary fields on `import-runs`
 - real PDF inspection tests against sample newspapers
 
 Not implemented yet:
 
-- persisted import-run history and failure audit trail
 - article reconstruction from newspaper pages
 - OCR
 - enrichment and dashboard features

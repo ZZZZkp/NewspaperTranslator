@@ -16,12 +16,14 @@ try:
     from newspaper_translator.import_audit import (
         create_import_run,
         finalize_import_run,
+        record_import_run_retry_summary,
         record_import_run_item,
     )
     from newspaper_translator.manage import run_cli
 except ImportError:
     create_import_run = None
     finalize_import_run = None
+    record_import_run_retry_summary = None
     record_import_run_item = None
     run_pending_migrations = None
     run_cli = None
@@ -185,6 +187,7 @@ class ManagementCommandTests(unittest.TestCase):
         self.assertIsNotNone(run_pending_migrations)
         self.assertIsNotNone(create_import_run)
         self.assertIsNotNone(finalize_import_run)
+        self.assertIsNotNone(record_import_run_retry_summary)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = pathlib.Path(temp_dir) / "app.db"
@@ -206,6 +209,14 @@ class ManagementCommandTests(unittest.TestCase):
                 created_document_count=1,
                 skipped_document_count=0,
             )
+            record_import_run_retry_summary(
+                database_url=database_url,
+                run_id=run.run_id,
+                retry_run_id="retry-run-1",
+                retried_message_count=2,
+                resolved_message_count=1,
+                failed_final_message_count=1,
+            )
 
             exit_code, output = run_cli(
                 [
@@ -219,6 +230,11 @@ class ManagementCommandTests(unittest.TestCase):
         self.assertIn(run.run_id, output)
         self.assertIn('"status": "succeeded"', output)
         self.assertIn('"fetched_message_count": 2', output)
+        self.assertIn('"retry_performed": true', output)
+        self.assertIn('"retry_run_id": "retry-run-1"', output)
+        self.assertIn('"retried_message_count": 2', output)
+        self.assertIn('"resolved_message_count": 1', output)
+        self.assertIn('"failed_final_message_count": 1', output)
 
     def test_gmail_import_run_items_command_lists_filtered_items(self) -> None:
         self.assertIsNotNone(run_pending_migrations)

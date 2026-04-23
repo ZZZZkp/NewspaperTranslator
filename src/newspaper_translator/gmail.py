@@ -20,6 +20,7 @@ from newspaper_translator.import_audit import (
     mark_failed_message_pending,
     mark_failed_message_resolved,
     record_import_run_item,
+    record_import_run_retry_summary,
     set_import_checkpoint,
 )
 from newspaper_translator.ingestion import (
@@ -54,6 +55,11 @@ class GmailIntegrationConfig:
 class GmailImportSummary:
     run_id: str
     status: str
+    retry_performed: bool
+    retry_run_id: str | None
+    retried_message_count: int
+    resolved_message_count: int
+    failed_final_message_count: int
     fetched_message_count: int
     imported_attachment_count: int
     created_document_count: int
@@ -167,18 +173,31 @@ def import_from_gmail(
                 checkpoint_type="message_internal_date",
                 checkpoint_value=checkpoint_after,
             )
-        retry_failed_gmail_messages(
+        retry_summary = retry_failed_gmail_messages(
             config_path=config_path,
             storage_root=storage_root,
             database_url=database_url,
             service=gmail_service,
             downloader=link_downloader,
         )
+        record_import_run_retry_summary(
+            database_url=database_url,
+            run_id=import_run.run_id,
+            retry_run_id=retry_summary.run_id,
+            retried_message_count=retry_summary.retried_message_count,
+            resolved_message_count=retry_summary.resolved_message_count,
+            failed_final_message_count=retry_summary.failed_final_message_count,
+        )
         return GmailImportSummary(
             run_id=import_run.run_id,
             status="partial"
             if _has_failed_items(database_url=database_url, run_id=import_run.run_id)
             else "succeeded",
+            retry_performed=retry_summary.retried_message_count > 0,
+            retry_run_id=retry_summary.run_id,
+            retried_message_count=retry_summary.retried_message_count,
+            resolved_message_count=retry_summary.resolved_message_count,
+            failed_final_message_count=retry_summary.failed_final_message_count,
             fetched_message_count=len(messages),
             imported_attachment_count=imported_attachment_count,
             created_document_count=created_document_count,

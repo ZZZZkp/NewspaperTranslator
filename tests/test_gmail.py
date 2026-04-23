@@ -706,6 +706,10 @@ class GmailIntegrationTests(unittest.TestCase):
                 database_url=database_url,
                 source_name="gmail",
             )
+            stored_parent_run = get_import_run(
+                database_url=database_url,
+                run_id=summary.run_id,
+            )
 
             connection = sqlite3.connect(database_path)
             try:
@@ -726,6 +730,16 @@ class GmailIntegrationTests(unittest.TestCase):
         self.assertEqual(document_count, 1)
         self.assertEqual(retryable_messages, [])
         self.assertEqual(failed_message_row, ("resolved", 1))
+        self.assertTrue(summary.retry_performed)
+        self.assertIsNotNone(summary.retry_run_id)
+        self.assertEqual(summary.retried_message_count, 1)
+        self.assertEqual(summary.resolved_message_count, 1)
+        self.assertEqual(summary.failed_final_message_count, 0)
+        self.assertTrue(stored_parent_run.retry_performed)
+        self.assertIsNotNone(stored_parent_run.retry_run_id)
+        self.assertEqual(stored_parent_run.retried_message_count, 1)
+        self.assertEqual(stored_parent_run.resolved_message_count, 1)
+        self.assertEqual(stored_parent_run.failed_final_message_count, 0)
 
 
 class _FakeGmailService:

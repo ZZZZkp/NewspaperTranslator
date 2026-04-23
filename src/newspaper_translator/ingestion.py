@@ -25,6 +25,7 @@ class GmailMessage:
     message_id: str
     sender: str
     attachments: list[GmailAttachment]
+    internal_date: str | None = None
 
 
 @dataclass(frozen=True)

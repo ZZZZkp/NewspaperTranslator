@@ -4,8 +4,13 @@ import json
 import os
 import sys
 
+from newspaper_translator.import_audit import (
+    list_import_items,
+    list_import_run_items,
+    list_import_runs,
+)
 from newspaper_translator.database import run_pending_migrations
-from newspaper_translator.gmail import import_from_gmail
+from newspaper_translator.gmail import import_from_gmail, retry_failed_gmail_messages
 from newspaper_translator.runtime import build_runtime_report
 
 
@@ -29,6 +34,27 @@ def run_cli(argv: list[str]) -> tuple[int, str]:
     gmail_import_parser.add_argument("--gmail-config", required=True)
     gmail_import_parser.add_argument("--database-url")
     gmail_import_parser.add_argument("--storage-root")
+
+    gmail_retry_parser = subparsers.add_parser("gmail-retry-failures")
+    gmail_retry_parser.add_argument("--gmail-config", required=True)
+    gmail_retry_parser.add_argument("--database-url")
+    gmail_retry_parser.add_argument("--storage-root")
+
+    gmail_import_runs_parser = subparsers.add_parser("gmail-import-runs")
+    gmail_import_runs_parser.add_argument("--database-url")
+    gmail_import_runs_parser.add_argument("--limit", type=int, default=20)
+
+    gmail_import_run_items_parser = subparsers.add_parser("gmail-import-run-items")
+    gmail_import_run_items_parser.add_argument("--database-url")
+    gmail_import_run_items_parser.add_argument("--run-id", required=True)
+    gmail_import_run_items_parser.add_argument("--status")
+    gmail_import_run_items_parser.add_argument("--item-type")
+
+    gmail_import_items_parser = subparsers.add_parser("gmail-import-items")
+    gmail_import_items_parser.add_argument("--database-url")
+    gmail_import_items_parser.add_argument("--limit", type=int, default=50)
+    gmail_import_items_parser.add_argument("--status")
+    gmail_import_items_parser.add_argument("--item-type")
 
     args = parser.parse_args(argv)
 
@@ -67,6 +93,39 @@ def run_cli(argv: list[str]) -> tuple[int, str]:
         )
         return 0, json.dumps(_to_jsonable(summary), sort_keys=True)
 
+    if args.command == "gmail-retry-failures":
+        summary = retry_failed_gmail_messages(
+            config_path=args.gmail_config,
+            storage_root=_resolve_setting(args.storage_root, "STORAGE_ROOT"),
+            database_url=_resolve_setting(args.database_url, "DATABASE_URL"),
+        )
+        return 0, json.dumps(_to_jsonable(summary), sort_keys=True)
+
+    if args.command == "gmail-import-runs":
+        runs = list_import_runs(
+            database_url=_resolve_setting(args.database_url, "DATABASE_URL"),
+            limit=args.limit,
+        )
+        return 0, json.dumps(_to_jsonable(runs), sort_keys=True)
+
+    if args.command == "gmail-import-run-items":
+        items = list_import_run_items(
+            database_url=_resolve_setting(args.database_url, "DATABASE_URL"),
+            run_id=args.run_id,
+            status=args.status,
+            item_type=args.item_type,
+        )
+        return 0, json.dumps(_to_jsonable(items), sort_keys=True)
+
+    if args.command == "gmail-import-items":
+        items = list_import_items(
+            database_url=_resolve_setting(args.database_url, "DATABASE_URL"),
+            limit=args.limit,
+            status=args.status,
+            item_type=args.item_type,
+        )
+        return 0, json.dumps(_to_jsonable(items), sort_keys=True)
+
     return 1, "Unknown command"
 
 
@@ -83,6 +142,10 @@ def _resolve_setting(value: str | None, env_key: str) -> str:
 
 
 def _to_jsonable(value):
+    if isinstance(value, list):
+        return [_to_jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _to_jsonable(item) for key, item in value.items()}
     if is_dataclass(value):
         return asdict(value)
     if hasattr(value, "__dict__"):

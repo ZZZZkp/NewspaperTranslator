@@ -15,6 +15,14 @@ if str(SRC_ROOT) not in sys.path:
 
 try:
     from newspaper_translator.database import run_pending_migrations
+    from newspaper_translator.import_audit import (
+        get_import_checkpoint,
+        get_import_run,
+        list_failed_messages_for_retry,
+        list_import_run_items,
+        list_import_runs,
+        set_import_checkpoint,
+    )
     from newspaper_translator.gmail import (
         build_gmail_service,
         import_from_gmail,
@@ -22,7 +30,13 @@ try:
     )
 except ImportError:
     build_gmail_service = None
+    get_import_checkpoint = None
+    get_import_run = None
+    list_failed_messages_for_retry = None
+    list_import_run_items = None
+    list_import_runs = None
     run_pending_migrations = None
+    set_import_checkpoint = None
     import_from_gmail = None
     load_gmail_integration_config = None
 
@@ -303,6 +317,14 @@ class GmailIntegrationTests(unittest.TestCase):
             import_from_gmail,
             "import_from_gmail should be importable from newspaper_translator.gmail",
         )
+        self.assertIsNotNone(
+            get_import_run,
+            "get_import_run should be importable from newspaper_translator.import_audit",
+        )
+        self.assertIsNotNone(
+            list_import_run_items,
+            "list_import_run_items should be importable from newspaper_translator.import_audit",
+        )
 
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = pathlib.Path(temp_dir)
@@ -336,6 +358,15 @@ class GmailIntegrationTests(unittest.TestCase):
                 service=_FakeGmailMixedLinkService(),
                 downloader=_FakeFlakyLinkDownloader(),
             )
+            stored_run = get_import_run(
+                database_url=database_url,
+                run_id=summary.run_id,
+            )
+            failed_items = list_import_run_items(
+                database_url=database_url,
+                run_id=summary.run_id,
+                status="failed",
+            )
 
             connection = sqlite3.connect(database_path)
             try:
@@ -349,6 +380,11 @@ class GmailIntegrationTests(unittest.TestCase):
         self.assertEqual(summary.imported_attachment_count, 1)
         self.assertEqual(summary.created_document_count, 1)
         self.assertEqual(summary.skipped_document_count, 0)
+        self.assertEqual(summary.status, "partial")
+        self.assertEqual(stored_run.status, "partial")
+        self.assertEqual(stored_run.failed_item_count, 1)
+        self.assertEqual([item.item_type for item in failed_items], ["body_link"])
+        self.assertEqual([item.detail_code for item in failed_items], ["link_fetch_failed"])
         self.assertEqual(document_count, 1)
 
     def test_imports_direct_download_links_that_do_not_end_with_pdf(self) -> None:
@@ -535,10 +571,242 @@ class GmailIntegrationTests(unittest.TestCase):
         self.assertEqual(stored_row[0], "download.pdf")
         self.assertTrue(stored_row[1].endswith(".pdf"))
 
+    def test_marks_import_run_failed_when_gmail_fetch_aborts(self) -> None:
+        self.assertIsNotNone(list_import_runs)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = pathlib.Path(temp_dir)
+            config_path = temp_path / "gmail-config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "oauth_client_secrets_path": "./secrets/google-client.json",
+                        "oauth_token_path": "./secrets/gmail-token.json",
+                        "allowed_senders": ["briefing@example.com"],
+                        "query": "newer_than:7d",
+                        "label_ids": ["INBOX"],
+                        "max_results": 10,
+                        "include_spam_trash": False,
+                    }
+                )
+            )
+
+            storage_root = temp_path / "storage"
+            database_path = temp_path / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            with self.assertRaises(RuntimeError):
+                import_from_gmail(
+                    config_path=config_path,
+                    storage_root=storage_root,
+                    database_url=database_url,
+                    service=_FailingGmailService(),
+                )
+
+            runs = list_import_runs(database_url=database_url, limit=10)
+
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0].status, "failed")
+        self.assertEqual(runs[0].fetched_message_count, 0)
+
+    def test_uses_checkpoint_to_narrow_query_and_advance_processed_message_time(self) -> None:
+        self.assertIsNotNone(set_import_checkpoint)
+        self.assertIsNotNone(get_import_checkpoint)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = pathlib.Path(temp_dir)
+            config_path = temp_path / "gmail-config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "oauth_client_secrets_path": "./secrets/google-client.json",
+                        "oauth_token_path": "./secrets/gmail-token.json",
+                        "allowed_senders": ["briefing@example.com"],
+                        "query": "label:news newer_than:30d",
+                        "label_ids": ["INBOX"],
+                        "max_results": 10,
+                        "include_spam_trash": False,
+                    }
+                )
+            )
+
+            storage_root = temp_path / "storage"
+            database_path = temp_path / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            set_import_checkpoint(
+                database_url=database_url,
+                source_name="gmail",
+                checkpoint_type="message_internal_date",
+                checkpoint_value="1713820800000",
+            )
+
+            service = _CheckpointAwareGmailService()
+            summary = import_from_gmail(
+                config_path=config_path,
+                storage_root=storage_root,
+                database_url=database_url,
+                service=service,
+            )
+            updated_checkpoint = get_import_checkpoint(
+                database_url=database_url,
+                source_name="gmail",
+                checkpoint_type="message_internal_date",
+            )
+            stored_run = get_import_run(
+                database_url=database_url,
+                run_id=summary.run_id,
+            )
+
+        self.assertIn("label:news newer_than:30d", service.list_queries[0])
+        self.assertIn("after:1713820800", service.list_queries[0])
+        self.assertEqual(updated_checkpoint, "1713907200000")
+        self.assertEqual(stored_run.checkpoint_before, "1713820800000")
+        self.assertEqual(stored_run.checkpoint_after, "1713907200000")
+
+    def test_automatically_retries_pending_failed_messages_once(self) -> None:
+        self.assertIsNotNone(list_failed_messages_for_retry)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = pathlib.Path(temp_dir)
+            config_path = temp_path / "gmail-config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "oauth_client_secrets_path": "./secrets/google-client.json",
+                        "oauth_token_path": "./secrets/gmail-token.json",
+                        "allowed_senders": ["briefing@example.com"],
+                        "query": "newer_than:7d",
+                        "label_ids": ["INBOX"],
+                        "max_results": 10,
+                        "include_spam_trash": False,
+                        "enable_body_links": True,
+                        "allowed_link_domains": ["example.com"],
+                        "download_link_keywords": ["download", "pdf"],
+                    }
+                )
+            )
+
+            storage_root = temp_path / "storage"
+            database_path = temp_path / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            service = _RetryingSingleMessageService()
+            downloader = _FlakyThenHealthyDownloader()
+            summary = import_from_gmail(
+                config_path=config_path,
+                storage_root=storage_root,
+                database_url=database_url,
+                service=service,
+                downloader=downloader,
+            )
+            retryable_messages = list_failed_messages_for_retry(
+                database_url=database_url,
+                source_name="gmail",
+            )
+
+            connection = sqlite3.connect(database_path)
+            try:
+                document_count = connection.execute(
+                    "SELECT COUNT(*) FROM documents"
+                ).fetchone()[0]
+                failed_message_row = connection.execute(
+                    """
+                    SELECT retry_state, retry_attempt_count
+                    FROM failed_messages
+                    WHERE message_id = 'message-retry-1'
+                    """
+                ).fetchone()
+            finally:
+                connection.close()
+
+        self.assertEqual(summary.status, "partial")
+        self.assertEqual(document_count, 1)
+        self.assertEqual(retryable_messages, [])
+        self.assertEqual(failed_message_row, ("resolved", 1))
+
 
 class _FakeGmailService:
     def users(self):
         return _FakeUsersResource()
+
+
+class _FailingGmailService:
+    def users(self):
+        return _FailingUsersResource()
+
+
+class _FailingUsersResource:
+    def messages(self):
+        return _FailingMessagesResource()
+
+
+class _FailingMessagesResource:
+    def list(self, **kwargs):
+        raise RuntimeError("gmail list failed")
+
+
+class _CheckpointAwareGmailService:
+    def __init__(self) -> None:
+        self.list_queries: list[str] = []
+
+    def users(self):
+        return _CheckpointAwareUsersResource(self)
+
+
+class _CheckpointAwareUsersResource:
+    def __init__(self, service: "_CheckpointAwareGmailService") -> None:
+        self._service = service
+
+    def messages(self):
+        return _CheckpointAwareMessagesResource(self._service)
+
+
+class _CheckpointAwareMessagesResource:
+    def __init__(self, service: "_CheckpointAwareGmailService") -> None:
+        self._service = service
+
+    def list(self, **kwargs):
+        self._service.list_queries.append(kwargs["q"])
+        return _FakeRequest(
+            {
+                "messages": [
+                    {"id": "message-checkpoint-1", "threadId": "thread-checkpoint-1"},
+                ],
+                "resultSizeEstimate": 1,
+            }
+        )
+
+    def get(self, *, userId: str, id: str, format: str):
+        return _FakeRequest(
+            {
+                "id": "message-checkpoint-1",
+                "internalDate": "1713907200000",
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": "Briefing <briefing@example.com>"}
+                    ],
+                    "parts": [
+                        {
+                            "partId": "1",
+                            "mimeType": "application/pdf",
+                            "filename": "daily-paper.pdf",
+                            "body": {"attachmentId": "attachment-checkpoint-1"},
+                        }
+                    ],
+                },
+            }
+        )
+
+    def attachments(self):
+        return _CheckpointAwareAttachmentsResource()
+
+
+class _CheckpointAwareAttachmentsResource:
+    def get(self, *, userId: str, messageId: str, id: str):
+        return _FakeRequest({"data": "JVBERi0xLjcgaW5jcmVtZW50YWw="})
 
 
 class _FakeUsersResource:
@@ -976,6 +1244,70 @@ class _FakeQqMailLandingPageDownloader:
 
     def fetch_html(self, url: str) -> str:
         raise AssertionError(f"Should not fetch HTML for QQ landing page URL: {url}")
+
+
+class _RetryingSingleMessageService:
+    def users(self):
+        return _RetryingSingleMessageUsersResource()
+
+
+class _RetryingSingleMessageUsersResource:
+    def messages(self):
+        return _RetryingSingleMessageMessagesResource()
+
+
+class _RetryingSingleMessageMessagesResource:
+    def list(self, **kwargs):
+        return _FakeRequest(
+            {
+                "messages": [
+                    {"id": "message-retry-1", "threadId": "thread-retry-1"},
+                ],
+                "resultSizeEstimate": 1,
+            }
+        )
+
+    def get(self, *, userId: str, id: str, format: str):
+        return _FakeRequest(
+            {
+                "id": "message-retry-1",
+                "internalDate": "1714000000000",
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": "Briefing <briefing@example.com>"}
+                    ],
+                    "parts": [
+                        {
+                            "mimeType": "text/plain",
+                            "filename": "",
+                            "body": {
+                                "data": "aHR0cHM6Ly9leGFtcGxlLmNvbS9yZXRyeS1wYXBlci5wZGY="
+                            },
+                        }
+                    ],
+                },
+            }
+        )
+
+    def attachments(self):
+        return _FakeAttachmentsResource()
+
+
+class _FlakyThenHealthyDownloader:
+    def __init__(self) -> None:
+        self._download_attempts: dict[str, int] = {}
+
+    def download_binary(self, url: str) -> bytes:
+        attempts = self._download_attempts.get(url, 0)
+        self._download_attempts[url] = attempts + 1
+        if attempts == 0:
+            raise requests.exceptions.SSLError("temporary upstream failure")
+        if url == "https://example.com/retry-paper.pdf":
+            return b"%PDF-1.7 retry-success"
+        raise AssertionError(f"Unexpected binary download URL: {url}")
+
+    def fetch_html(self, url: str) -> str:
+        raise AssertionError(f"Should not fetch HTML for direct PDF URL: {url}")
 
 
 if __name__ == "__main__":

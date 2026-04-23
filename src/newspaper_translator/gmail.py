@@ -8,7 +8,26 @@ from pathlib import Path
 import re
 from urllib.parse import quote, urljoin, urlparse
 
-from newspaper_translator.ingestion import GmailAttachment, GmailMessage, import_selected_messages
+from newspaper_translator.import_audit import (
+    claim_failed_message_for_retry,
+    create_import_run,
+    fail_import_run,
+    finalize_import_run,
+    get_import_checkpoint,
+    list_failed_messages_for_retry,
+    list_import_run_items,
+    mark_failed_message_failed_final,
+    mark_failed_message_pending,
+    mark_failed_message_resolved,
+    record_import_run_item,
+    set_import_checkpoint,
+)
+from newspaper_translator.ingestion import (
+    GmailAttachment,
+    GmailMessage,
+    import_selected_messages,
+    select_target_messages,
+)
 
 
 GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
@@ -33,10 +52,20 @@ class GmailIntegrationConfig:
 
 @dataclass(frozen=True)
 class GmailImportSummary:
+    run_id: str
+    status: str
     fetched_message_count: int
     imported_attachment_count: int
     created_document_count: int
     skipped_document_count: int
+
+
+@dataclass(frozen=True)
+class GmailRetrySummary:
+    run_id: str | None
+    retried_message_count: int
+    resolved_message_count: int
+    failed_final_message_count: int
 
 
 def load_gmail_integration_config(path: Path) -> GmailIntegrationConfig:
@@ -75,28 +104,233 @@ def import_from_gmail(
     downloader=None,
 ) -> GmailImportSummary:
     config = load_gmail_integration_config(config_path)
+    checkpoint_before = get_import_checkpoint(
+        database_url=database_url,
+        source_name="gmail",
+        checkpoint_type="message_internal_date",
+    )
+    import_run = create_import_run(
+        database_url=database_url,
+        source_name="gmail",
+        query=config.query,
+        allowed_senders=config.allowed_senders,
+        max_results=config.max_results,
+        checkpoint_before=checkpoint_before,
+    )
     gmail_service = service or build_gmail_service(config)
     link_downloader = downloader or HttpLinkDownloader()
-    messages = fetch_gmail_messages(
-        config=config,
-        service=gmail_service,
-        downloader=link_downloader,
-    )
-    imported_documents = import_selected_messages(
-        messages=messages,
-        allowed_senders=set(config.allowed_senders),
-        storage_root=storage_root,
+    try:
+        messages = fetch_gmail_messages(
+            config=config,
+            service=gmail_service,
+            downloader=link_downloader,
+            query_override=_build_incremental_query(
+                base_query=config.query,
+                checkpoint_value=checkpoint_before,
+            ),
+            body_link_audit_callback=lambda **kwargs: _record_body_link_audit_item(
+                database_url=database_url,
+                run_id=import_run.run_id,
+                **kwargs,
+            ),
+        )
+        selected_messages, imported_documents = _process_messages_into_audit_and_documents(
+            database_url=database_url,
+            run_id=import_run.run_id,
+            messages=messages,
+            allowed_senders=set(config.allowed_senders),
+            storage_root=storage_root,
+            database_url_for_import=database_url,
+        )
+        _update_failed_message_tracking(
+            database_url=database_url,
+            run_id=import_run.run_id,
+            messages=messages,
+        )
+
+        created_document_count = sum(1 for document in imported_documents if document.was_created)
+        imported_attachment_count = len(imported_documents)
+        checkpoint_after = _max_message_internal_date(selected_messages)
+        finalize_import_run(
+            database_url=database_url,
+            run_id=import_run.run_id,
+            fetched_message_count=len(messages),
+            imported_attachment_count=imported_attachment_count,
+            created_document_count=created_document_count,
+            skipped_document_count=imported_attachment_count - created_document_count,
+            checkpoint_after=checkpoint_after,
+        )
+        if checkpoint_after is not None:
+            set_import_checkpoint(
+                database_url=database_url,
+                source_name="gmail",
+                checkpoint_type="message_internal_date",
+                checkpoint_value=checkpoint_after,
+            )
+        retry_failed_gmail_messages(
+            config_path=config_path,
+            storage_root=storage_root,
+            database_url=database_url,
+            service=gmail_service,
+            downloader=link_downloader,
+        )
+        return GmailImportSummary(
+            run_id=import_run.run_id,
+            status="partial"
+            if _has_failed_items(database_url=database_url, run_id=import_run.run_id)
+            else "succeeded",
+            fetched_message_count=len(messages),
+            imported_attachment_count=imported_attachment_count,
+            created_document_count=created_document_count,
+            skipped_document_count=imported_attachment_count - created_document_count,
+        )
+    except Exception:
+        fail_import_run(
+            database_url=database_url,
+            run_id=import_run.run_id,
+        )
+        raise
+
+
+def retry_failed_gmail_messages(
+    *,
+    config_path: Path,
+    storage_root: Path,
+    database_url: str,
+    service=None,
+    downloader=None,
+) -> GmailRetrySummary:
+    config = load_gmail_integration_config(config_path)
+    pending_messages = list_failed_messages_for_retry(
         database_url=database_url,
+        source_name="gmail",
+    )
+    if not pending_messages:
+        return GmailRetrySummary(
+            run_id=None,
+            retried_message_count=0,
+            resolved_message_count=0,
+            failed_final_message_count=0,
+        )
+
+    gmail_service = service or build_gmail_service(config)
+    link_downloader = downloader or HttpLinkDownloader()
+    retry_run = create_import_run(
+        database_url=database_url,
+        source_name="gmail",
+        query="retry-failures",
+        allowed_senders=config.allowed_senders,
+        max_results=len(pending_messages),
+        checkpoint_before=get_import_checkpoint(
+            database_url=database_url,
+            source_name="gmail",
+            checkpoint_type="message_internal_date",
+        ),
     )
 
-    created_document_count = sum(1 for document in imported_documents if document.was_created)
-    imported_attachment_count = len(imported_documents)
-    return GmailImportSummary(
-        fetched_message_count=len(messages),
-        imported_attachment_count=imported_attachment_count,
-        created_document_count=created_document_count,
-        skipped_document_count=imported_attachment_count - created_document_count,
-    )
+    fetched_message_count = 0
+    imported_attachment_count = 0
+    created_document_count = 0
+    skipped_document_count = 0
+    resolved_message_count = 0
+    failed_final_message_count = 0
+
+    try:
+        for failed_message in pending_messages:
+            if not claim_failed_message_for_retry(
+                database_url=database_url,
+                message_id=failed_message.message_id,
+                run_id=retry_run.run_id,
+            ):
+                continue
+            try:
+                message = _fetch_gmail_message(
+                    config=config,
+                    service=gmail_service,
+                    downloader=link_downloader,
+                    message_id=failed_message.message_id,
+                    body_link_audit_callback=lambda **kwargs: _record_body_link_audit_item(
+                        database_url=database_url,
+                        run_id=retry_run.run_id,
+                        **kwargs,
+                    ),
+                )
+                fetched_message_count += 1
+                selected_messages, imported_documents = _process_messages_into_audit_and_documents(
+                    database_url=database_url,
+                    run_id=retry_run.run_id,
+                    messages=[message],
+                    allowed_senders=set(config.allowed_senders),
+                    storage_root=storage_root,
+                    database_url_for_import=database_url,
+                )
+                imported_attachment_count += len(imported_documents)
+                created_document_count += sum(
+                    1 for document in imported_documents if document.was_created
+                )
+                skipped_document_count += len(imported_documents) - sum(
+                    1 for document in imported_documents if document.was_created
+                )
+                if _message_has_failed_items(
+                    database_url=database_url,
+                    run_id=retry_run.run_id,
+                    message_id=message.message_id,
+                ):
+                    mark_failed_message_failed_final(
+                        database_url=database_url,
+                        message_id=message.message_id,
+                        run_id=retry_run.run_id,
+                    )
+                    failed_final_message_count += 1
+                else:
+                    mark_failed_message_resolved(
+                        database_url=database_url,
+                        message_id=message.message_id,
+                        run_id=retry_run.run_id,
+                    )
+                    resolved_message_count += 1
+            except Exception as exc:
+                record_import_run_item(
+                    database_url=database_url,
+                    run_id=retry_run.run_id,
+                    item_type="message",
+                    item_key=f"message:{failed_message.message_id}",
+                    message_id=failed_message.message_id,
+                    attachment_id=None,
+                    link_url=None,
+                    status="failed",
+                    detail_code="retry_message_fetch_failed",
+                    detail_message=str(exc),
+                    document_key=None,
+                    message_internal_date=failed_message.message_internal_date,
+                )
+                mark_failed_message_failed_final(
+                    database_url=database_url,
+                    message_id=failed_message.message_id,
+                    run_id=retry_run.run_id,
+                )
+                failed_final_message_count += 1
+
+        finalize_import_run(
+            database_url=database_url,
+            run_id=retry_run.run_id,
+            fetched_message_count=fetched_message_count,
+            imported_attachment_count=imported_attachment_count,
+            created_document_count=created_document_count,
+            skipped_document_count=skipped_document_count,
+        )
+        return GmailRetrySummary(
+            run_id=retry_run.run_id,
+            retried_message_count=resolved_message_count + failed_final_message_count,
+            resolved_message_count=resolved_message_count,
+            failed_final_message_count=failed_final_message_count,
+        )
+    except Exception:
+        fail_import_run(
+            database_url=database_url,
+            run_id=retry_run.run_id,
+        )
+        raise
 
 
 def build_gmail_service(config: GmailIntegrationConfig):
@@ -141,10 +375,12 @@ def fetch_gmail_messages(
     config: GmailIntegrationConfig,
     service,
     downloader,
+    query_override: str | None = None,
+    body_link_audit_callback=None,
 ) -> list[GmailMessage]:
     list_kwargs = {
         "userId": config.user_id,
-        "q": config.query,
+        "q": query_override or config.query,
         "maxResults": config.max_results,
         "includeSpamTrash": config.include_spam_trash,
     }
@@ -154,36 +390,58 @@ def fetch_gmail_messages(
     list_response = service.users().messages().list(**list_kwargs).execute()
     messages: list[GmailMessage] = []
     for message_ref in list_response.get("messages", []):
-        full_message = service.users().messages().get(
-            userId=config.user_id,
-            id=message_ref["id"],
-            format="full",
-        ).execute()
-        payload = full_message.get("payload", {})
-        sender = _extract_sender(payload.get("headers", []))
-        attachments = _extract_pdf_attachments(
-            service=service,
-            user_id=config.user_id,
-            message_id=message_ref["id"],
-            payload=payload,
-        )
-        if config.enable_body_links:
-            attachments.extend(
-                _extract_pdf_links_from_message_body(
-                    payload=payload,
-                    downloader=downloader,
-                    allowed_domains=set(config.allowed_link_domains),
-                    download_link_keywords=config.download_link_keywords,
-                )
-            )
         messages.append(
-            GmailMessage(
+            _fetch_gmail_message(
+                config=config,
+                service=service,
+                downloader=downloader,
                 message_id=message_ref["id"],
-                sender=sender,
-                attachments=attachments,
+                body_link_audit_callback=body_link_audit_callback,
             )
         )
     return messages
+
+
+def _fetch_gmail_message(
+    *,
+    config: GmailIntegrationConfig,
+    service,
+    downloader,
+    message_id: str,
+    body_link_audit_callback=None,
+) -> GmailMessage:
+    full_message = service.users().messages().get(
+        userId=config.user_id,
+        id=message_id,
+        format="full",
+    ).execute()
+    payload = full_message.get("payload", {})
+    internal_date = str(full_message.get("internalDate", "") or "")
+    sender = _extract_sender(payload.get("headers", []))
+    attachments = _extract_pdf_attachments(
+        service=service,
+        user_id=config.user_id,
+        message_id=message_id,
+        payload=payload,
+    )
+    if config.enable_body_links:
+        attachments.extend(
+            _extract_pdf_links_from_message_body(
+                payload=payload,
+                downloader=downloader,
+                allowed_domains=set(config.allowed_link_domains),
+                download_link_keywords=config.download_link_keywords,
+                message_id=message_id,
+                message_internal_date=internal_date,
+                body_link_audit_callback=body_link_audit_callback,
+            )
+        )
+    return GmailMessage(
+        message_id=message_id,
+        sender=sender,
+        attachments=attachments,
+        internal_date=internal_date,
+    )
 
 
 def _extract_sender(headers: list[dict[str, str]]) -> str:
@@ -238,6 +496,9 @@ def _extract_pdf_links_from_message_body(
     downloader,
     allowed_domains: set[str],
     download_link_keywords: list[str],
+    message_id: str,
+    message_internal_date: str,
+    body_link_audit_callback=None,
 ) -> list[GmailAttachment]:
     import requests
 
@@ -252,6 +513,15 @@ def _extract_pdf_links_from_message_body(
             seen_urls.add(url)
 
             if allowed_domains and not _is_allowed_domain(url, allowed_domains):
+                _emit_body_link_audit(
+                    body_link_audit_callback,
+                    message_id=message_id,
+                    message_internal_date=message_internal_date,
+                    link_url=url,
+                    status="skipped",
+                    detail_code="link_domain_not_allowed",
+                    detail_message="Link domain is not in allowed_link_domains.",
+                )
                 continue
 
             try:
@@ -260,12 +530,301 @@ def _extract_pdf_links_from_message_body(
                     downloader=downloader,
                     download_link_keywords=download_link_keywords,
                 )
-            except requests.RequestException:
+            except requests.RequestException as exc:
+                _emit_body_link_audit(
+                    body_link_audit_callback,
+                    message_id=message_id,
+                    message_internal_date=message_internal_date,
+                    link_url=url,
+                    status="failed",
+                    detail_code="link_fetch_failed",
+                    detail_message=str(exc),
+                )
                 continue
             if attachment is not None:
                 attachments.append(attachment)
+            else:
+                _emit_body_link_audit(
+                    body_link_audit_callback,
+                    message_id=message_id,
+                    message_internal_date=message_internal_date,
+                    link_url=url,
+                    status="skipped",
+                    detail_code="link_not_importable",
+                    detail_message="No PDF download target was found for the link.",
+                )
 
     return attachments
+
+
+def _process_messages_into_audit_and_documents(
+    *,
+    database_url: str,
+    run_id: str,
+    messages: list[GmailMessage],
+    allowed_senders: set[str],
+    storage_root: Path,
+    database_url_for_import: str,
+) -> tuple[list[GmailMessage], list]:
+    _record_message_and_skipped_source_items(
+        database_url=database_url,
+        run_id=run_id,
+        messages=messages,
+        allowed_senders=allowed_senders,
+    )
+    imported_documents = import_selected_messages(
+        messages=messages,
+        allowed_senders=allowed_senders,
+        storage_root=storage_root,
+        database_url=database_url_for_import,
+    )
+    selected_messages = select_target_messages(
+        messages=messages,
+        allowed_senders=allowed_senders,
+    )
+    _record_imported_document_items(
+        database_url=database_url,
+        run_id=run_id,
+        messages=selected_messages,
+        imported_documents=imported_documents,
+    )
+    return selected_messages, imported_documents
+
+
+def _record_message_and_skipped_source_items(
+    *,
+    database_url: str,
+    run_id: str,
+    messages: list[GmailMessage],
+    allowed_senders: set[str],
+) -> None:
+    for message in messages:
+        is_allowed_sender = message.sender in allowed_senders
+        record_import_run_item(
+            database_url=database_url,
+            run_id=run_id,
+            item_type="message",
+            item_key=f"message:{message.message_id}",
+            message_id=message.message_id,
+            attachment_id=None,
+            link_url=None,
+            status="succeeded" if is_allowed_sender else "skipped",
+            detail_code="message_selected" if is_allowed_sender else "sender_not_allowed",
+            detail_message=(
+                "Message sender matched allowed_senders."
+                if is_allowed_sender
+                else "Message sender did not match allowed_senders."
+            ),
+            document_key=None,
+            message_internal_date=message.internal_date,
+        )
+        if is_allowed_sender:
+            continue
+        for attachment in message.attachments:
+            item_type = "body_link" if attachment.attachment_id.startswith("link:") else "attachment"
+            record_import_run_item(
+                database_url=database_url,
+                run_id=run_id,
+                item_type=item_type,
+                item_key=_build_import_item_key(
+                    message_id=message.message_id,
+                    attachment=attachment,
+                ),
+                message_id=message.message_id,
+                attachment_id=attachment.attachment_id,
+                link_url=_link_url_from_attachment(attachment),
+                status="skipped",
+                detail_code="sender_not_allowed",
+                detail_message="Item skipped because sender is not allowed.",
+                document_key=None,
+                message_internal_date=message.internal_date,
+            )
+
+
+def _record_imported_document_items(
+    *,
+    database_url: str,
+    run_id: str,
+    messages: list[GmailMessage],
+    imported_documents,
+) -> None:
+    imported_document_iter = iter(imported_documents)
+    for message in messages:
+        for attachment in message.attachments:
+            imported_document = next(imported_document_iter)
+            was_created = imported_document.was_created
+            record_import_run_item(
+                database_url=database_url,
+                run_id=run_id,
+                item_type="body_link" if attachment.attachment_id.startswith("link:") else "attachment",
+                item_key=_build_import_item_key(
+                    message_id=message.message_id,
+                    attachment=attachment,
+                ),
+                message_id=message.message_id,
+                attachment_id=attachment.attachment_id,
+                link_url=_link_url_from_attachment(attachment),
+                status="succeeded" if was_created else "skipped",
+                detail_code="document_created" if was_created else "duplicate_document",
+                detail_message=(
+                    "Document was created from imported item."
+                    if was_created
+                    else "Item matched an existing imported document."
+                ),
+                document_key=imported_document.document_key,
+                message_internal_date=message.internal_date,
+            )
+
+
+def _record_body_link_audit_item(
+    *,
+    database_url: str,
+    run_id: str,
+    message_id: str,
+    message_internal_date: str,
+    link_url: str,
+    status: str,
+    detail_code: str,
+    detail_message: str,
+) -> None:
+    record_import_run_item(
+        database_url=database_url,
+        run_id=run_id,
+        item_type="body_link",
+        item_key=f"message:{message_id}:body_link:{link_url}",
+        message_id=message_id,
+        attachment_id=f"link:{link_url}",
+        link_url=link_url,
+        status=status,
+        detail_code=detail_code,
+        detail_message=detail_message,
+        document_key=None,
+        message_internal_date=message_internal_date,
+    )
+
+
+def _emit_body_link_audit(
+    body_link_audit_callback,
+    *,
+    message_id: str,
+    message_internal_date: str,
+    link_url: str,
+    status: str,
+    detail_code: str,
+    detail_message: str,
+) -> None:
+    if body_link_audit_callback is None:
+        return
+    body_link_audit_callback(
+        message_id=message_id,
+        message_internal_date=message_internal_date,
+        link_url=link_url,
+        status=status,
+        detail_code=detail_code,
+        detail_message=detail_message,
+    )
+
+
+def _build_import_item_key(*, message_id: str, attachment: GmailAttachment) -> str:
+    if attachment.attachment_id.startswith("link:"):
+        return f"message:{message_id}:body_link:{attachment.attachment_id.removeprefix('link:')}"
+    return f"message:{message_id}:attachment:{attachment.attachment_id}"
+
+
+def _link_url_from_attachment(attachment: GmailAttachment) -> str | None:
+    if attachment.attachment_id.startswith("link:"):
+        return attachment.attachment_id.removeprefix("link:")
+    return None
+
+
+def _build_incremental_query(*, base_query: str, checkpoint_value: str | None) -> str:
+    if not checkpoint_value:
+        return base_query
+
+    seconds = int(int(checkpoint_value) / 1000)
+    checkpoint_clause = f"after:{seconds}"
+    if not base_query.strip():
+        return checkpoint_clause
+    return f"{base_query} {checkpoint_clause}"
+
+
+def _max_message_internal_date(messages: list[GmailMessage]) -> str | None:
+    internal_dates = [
+        message.internal_date
+        for message in messages
+        if message.internal_date
+    ]
+    if not internal_dates:
+        return None
+    return max(internal_dates)
+
+
+def _update_failed_message_tracking(
+    *,
+    database_url: str,
+    run_id: str,
+    messages: list[GmailMessage],
+) -> None:
+    messages_by_id = {message.message_id: message for message in messages}
+    failed_items = list_import_run_items(
+        database_url=database_url,
+        run_id=run_id,
+        status="failed",
+    )
+    failed_message_ids = {
+        item.message_id
+        for item in failed_items
+        if item.message_id
+    }
+
+    for message_id in failed_message_ids:
+        message = messages_by_id.get(message_id)
+        if message is None or not message.internal_date:
+            continue
+        mark_failed_message_pending(
+            database_url=database_url,
+            message_id=message_id,
+            source_name="gmail",
+            message_internal_date=message.internal_date,
+            run_id=run_id,
+        )
+
+    for message in messages:
+        if message.message_id in failed_message_ids:
+            continue
+        mark_failed_message_resolved(
+            database_url=database_url,
+            message_id=message.message_id,
+            run_id=run_id,
+        )
+
+
+def _message_has_failed_items(
+    *,
+    database_url: str,
+    run_id: str,
+    message_id: str,
+) -> bool:
+    return bool(
+        list_import_run_items(
+            database_url=database_url,
+            run_id=run_id,
+            status="failed",
+        )
+        and [
+            item
+            for item in list_import_run_items(
+                database_url=database_url,
+                run_id=run_id,
+                status="failed",
+            )
+            if item.message_id == message_id
+        ]
+    )
+
+
+def _has_failed_items(*, database_url: str, run_id: str) -> bool:
+    return bool(list_import_run_items(database_url=database_url, run_id=run_id, status="failed"))
 
 
 def _extract_message_bodies(payload: dict[str, object]) -> list[tuple[str, str]]:

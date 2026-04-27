@@ -1,6 +1,6 @@
 # Newspaper Translator
 
-This repository now has a complete runnable Phase 1 foundation, a working Phase 2 Gmail ingestion slice with durable import audit, incremental checkpointing, and failed-message retry support, plus the first usable Phase 3 MinerU parsing path.
+This repository now has a complete runnable Phase 1 foundation, a working Phase 2 Gmail ingestion slice with durable import audit, incremental checkpointing, and failed-message retry support, plus a usable Phase 3 MinerU parsing path with explicit cross-page continuation matching.
 
 ## Current status
 
@@ -15,6 +15,8 @@ As of 2026-04-27, the project has:
 - added MinerU-backed Phase 3 PDF parsing through the batch upload API
 - added Markdown-to-article reconstruction for MinerU `full.md` outputs
 - added a direct Markdown parsing CLI entry for local `full.md` debugging
+- added explicit continuation-marker extraction for split newspaper articles
+- added optional Gemini-backed matching and merge for explicit cross-page continuations
 - validated Gmail Desktop OAuth locally
 - validated Gmail API access through a local proxy or VPN
 - validated direct PDF links such as `https://dl.dengtazk.xin/...pdf`
@@ -39,13 +41,15 @@ The current parsing flow is:
 3. poll the batch result until the file reaches `done`
 4. download the returned `full_zip_url`
 5. extract `full.md` from the zip payload
-6. build article-oriented parsing outputs from the MinerU Markdown result
+6. extract article fragments from the MinerU Markdown result
+7. if `GEMINI_TOKEN` is present, send only explicit continuation-bearing fragments to Gemini for matching
+8. merge matched fragment pairs into final article-oriented outputs
 
 Why this route:
 
 - the official MinerU precision parsing API explicitly supports complex layouts, scanned inputs, tables, formulas, and multi-column pages
 - the single-file API does not support direct file upload, so our local PDF workflow should use the documented batch upload flow
-- the batch result returns `full.md`, which is a stronger Phase 3 starting point than line-based text extracted locally with `pypdf`
+- the batch result returns `full.md`, which is a stronger Phase 3 parsing boundary than maintaining a separate local text-extraction path
 
 Reference:
 
@@ -62,7 +66,13 @@ Planned MinerU configuration:
 - `MINERU_POLL_INTERVAL_SECONDS`
 - `MINERU_POLL_TIMEOUT_SECONDS`
 
-The existing local `pypdf` parsing helpers remain in the repository as a fallback and as a test baseline. The primary Phase 3 parse path is now MinerU-backed Markdown parsing.
+Optional continuation-matching configuration:
+
+- `GEMINI_TOKEN`
+- `GEMINI_MODEL`, default `gemini-2.5-flash`
+- `GEMINI_TIMEOUT_SECONDS`, default `120`
+
+The repository now treats MinerU-backed Markdown parsing as the only supported Phase 3 article reconstruction path.
 
 Run the current Phase 3 MinerU PDF parsing entry locally:
 
@@ -89,11 +99,17 @@ Current Phase 3 parser behavior:
 - reconstructs article-like structures from MinerU Markdown headings and body text
 - merges subtitle and `BY ...` heading patterns back into the same article
 - drops obvious teaser and digest blocks that are not full articles
+- detects explicit continuation markers such as `Please turn to page A7` and `Continued from PageOne`
+- auto-enables Gemini continuation matching when `GEMINI_TOKEN` is present
+- sends only continuation-bearing fragments to Gemini, then deterministically merges matched pairs and strips local marker text
+- returns merged article results through CLI JSON output while leaving unmatched fragments as standalone articles
 
 Current Phase 3 parser limits:
 
 - advertisement and statement filtering is intentionally deferred to later LLM-based post-processing
-- cross-page cleanup is still heuristic
+- only fragments with explicit continuation markers currently participate in LLM matching
+- the parser does not yet infer cross-page relationships for fragments without explicit markers
+- merged continuation matches are not yet persisted as separate fragment or match artifact files
 - page numbers in Markdown-derived article JSON are parser-order indexes, not original newspaper page numbers
 
 ## Local Python workflow
@@ -216,10 +232,12 @@ Implemented today:
 - automatic failed-message retry after normal imports
 - manual failed-message retry through `gmail-retry-failures`
 - retry/checkpoint summary fields on `import-runs`
-- real PDF inspection tests against sample newspapers
+- MinerU Markdown article-reconstruction tests
+- Gemini-backed continuation matching for explicit cross-page article fragments
 
 Not implemented yet:
 
 - LLM-based advertisement and statement filtering after Markdown parsing
-- deeper cross-page article cleanup and continuation stitching
+- non-explicit cross-page continuation inference
+- separate persisted artifacts for parsed fragments, continuation matches, and merged article outputs
 - enrichment and dashboard features

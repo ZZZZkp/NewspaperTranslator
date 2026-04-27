@@ -9,10 +9,11 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 try:
-    from newspaper_translator.config import AppSettings, ConfigurationError, MineruSettings
+    from newspaper_translator.config import AppSettings, ConfigurationError, GeminiSettings, MineruSettings
 except ImportError:
     AppSettings = None
     ConfigurationError = None
+    GeminiSettings = None
     MineruSettings = None
 
 
@@ -89,6 +90,34 @@ class AppSettingsTests(unittest.TestCase):
             MineruSettings.from_env(env)
 
         self.assertIn("MINERU_API_TOKEN", str(context.exception))
+
+    def test_loads_gemini_settings_from_environment(self) -> None:
+        self.assertIsNotNone(GeminiSettings, "GeminiSettings should be importable from newspaper_translator.config")
+
+        env = {
+            "GEMINI_TOKEN": "gemini-token",
+            "GEMINI_MODEL": "gemini-2.5-flash",
+            "GEMINI_TIMEOUT_SECONDS": "45",
+        }
+
+        settings = GeminiSettings.from_env(env)
+
+        self.assertEqual(settings.api_token, "gemini-token")
+        self.assertEqual(settings.model, "gemini-2.5-flash")
+        self.assertEqual(settings.timeout_seconds, 45)
+
+    def test_fails_fast_when_required_gemini_token_is_missing(self) -> None:
+        self.assertIsNotNone(GeminiSettings, "GeminiSettings should be importable from newspaper_translator.config")
+        self.assertIsNotNone(ConfigurationError, "ConfigurationError should be importable from newspaper_translator.config")
+
+        env = {
+            "GEMINI_TOKEN": "",
+        }
+
+        with self.assertRaises(ConfigurationError) as context:
+            GeminiSettings.from_env(env)
+
+        self.assertIn("GEMINI_TOKEN", str(context.exception))
 
 
 if __name__ == "__main__":

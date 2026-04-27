@@ -5,7 +5,8 @@ import os
 from pathlib import Path
 import sys
 
-from newspaper_translator.config import MineruSettings
+from newspaper_translator.config import GeminiSettings, MineruSettings
+from newspaper_translator.gemini import GeminiContinuationMatcher
 from newspaper_translator.import_audit import (
     list_import_items,
     list_import_run_items,
@@ -130,16 +131,22 @@ def run_cli(argv: list[str]) -> tuple[int, str]:
     if args.command == "phase3-parse-pdf":
         mineru_settings = MineruSettings.from_env(os.environ)
         mineru_client = MineruClient(settings=mineru_settings)
+        continuation_matcher = _build_continuation_matcher_from_env(os.environ)
         articles = parse_pdf_articles(
             Path(args.pdf_path),
             output_root=Path(args.output_root),
             mineru_client=mineru_client,
+            continuation_matcher=continuation_matcher,
         )
         return 0, json.dumps(_to_jsonable(articles), sort_keys=True)
 
     if args.command == "phase3-parse-md":
         markdown_text = Path(args.markdown_path).read_text(encoding="utf-8")
-        articles = extract_articles_from_mineru_markdown(markdown_text)
+        continuation_matcher = _build_continuation_matcher_from_env(os.environ)
+        articles = extract_articles_from_mineru_markdown(
+            markdown_text,
+            continuation_matcher=continuation_matcher,
+        )
         return 0, json.dumps(_to_jsonable(articles), sort_keys=True)
 
     return 1, "Unknown command"
@@ -155,6 +162,13 @@ def _resolve_setting(value: str | None, env_key: str) -> str:
     if value:
         return value
     return os.environ.get(env_key, "")
+
+
+def _build_continuation_matcher_from_env(env) -> GeminiContinuationMatcher | None:
+    if not env.get("GEMINI_TOKEN", "").strip():
+        return None
+    settings = GeminiSettings.from_env(env)
+    return GeminiContinuationMatcher(settings=settings)
 
 
 def _to_jsonable(value):

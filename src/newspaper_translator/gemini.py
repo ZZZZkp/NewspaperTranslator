@@ -1,0 +1,148 @@
+import json
+import ssl
+from typing import Protocol
+from urllib import request
+
+import certifi
+
+from newspaper_translator.config import GeminiSettings
+from newspaper_translator.pdf import ArticleFragment
+
+
+class GeminiError(RuntimeError):
+    """Raised when the Gemini API returns an invalid response."""
+
+
+class _TransportResponse(Protocol):
+    status_code: int
+    body: bytes
+
+
+class _Transport(Protocol):
+    def request(
+        self,
+        *,
+        method: str,
+        url: str,
+        headers: dict[str, str] | None = None,
+        body: bytes | None = None,
+        timeout: int | None = None,
+    ) -> _TransportResponse: ...
+
+
+class GeminiContinuationMatcher:
+    def __init__(
+        self,
+        *,
+        settings: GeminiSettings,
+        transport: _Transport | None = None,
+    ) -> None:
+        self._settings = settings
+        self._transport = transport or _UrllibTransport()
+
+    def __call__(self, fragments: list[ArticleFragment]) -> list[tuple[int, int]]:
+        if not fragments:
+            return []
+
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {
+                            "text": self._build_prompt(fragments),
+                        }
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0,
+                "responseMimeType": "application/json",
+            },
+        }
+        response = self._transport.request(
+            method="POST",
+            url=f"https://generativelanguage.googleapis.com/v1beta/models/{self._settings.model}:generateContent",
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": self._settings.api_token,
+            },
+            body=json.dumps(payload).encode("utf-8"),
+            timeout=self._settings.timeout_seconds,
+        )
+        if response.status_code < 200 or response.status_code >= 300:
+            raise GeminiError(f"Gemini request failed with status {response.status_code}")
+
+        response_payload = json.loads(response.body.decode("utf-8"))
+        try:
+            text = response_payload["candidates"][0]["content"]["parts"][0]["text"]
+            match_payload = json.loads(text)
+            matches = match_payload["matches"]
+        except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+            raise GeminiError("Gemini response did not contain a valid matches payload") from exc
+
+        if not isinstance(matches, list):
+            raise GeminiError("Gemini matches payload must be a list")
+
+        parsed_matches: list[tuple[int, int]] = []
+        for match in matches:
+            if not isinstance(match, dict):
+                raise GeminiError("Gemini match entry must be an object")
+            front_source_order = match.get("front_source_order")
+            back_source_order = match.get("back_source_order")
+            if not isinstance(front_source_order, int) or not isinstance(back_source_order, int):
+                raise GeminiError("Gemini match entry must include integer source orders")
+            parsed_matches.append((front_source_order, back_source_order))
+
+        return parsed_matches
+
+    def _build_prompt(self, fragments: list[ArticleFragment]) -> str:
+        fragment_payload = []
+        for fragment in fragments:
+            body_excerpt = " ".join(fragment.body_text.split())
+            fragment_payload.append(
+                {
+                    "source_order": fragment.source_order,
+                    "title": fragment.title,
+                    "continued_to_page": fragment.continued_to_page,
+                    "continued_from_page": fragment.continued_from_page,
+                    "body_excerpt": body_excerpt[:700],
+                }
+            )
+
+        return (
+            "You are matching split newspaper article fragments. "
+            "Some fragments are front halves with continued_to_page, and some are back halves with continued_from_page. "
+            "Return ONLY strict JSON with shape "
+            '{"matches":[{"front_source_order":number,"back_source_order":number}]}. '
+            "Do not include explanations. Only match when they are clearly the same article.\n\n"
+            "Fragments:\n"
+            + json.dumps(fragment_payload, ensure_ascii=False, indent=2)
+        )
+
+
+class _UrllibTransport:
+    def request(
+        self,
+        *,
+        method: str,
+        url: str,
+        headers: dict[str, str] | None = None,
+        body: bytes | None = None,
+        timeout: int | None = None,
+    ) -> _TransportResponse:
+        http_request = request.Request(
+            url,
+            data=body,
+            headers=headers or {},
+            method=method,
+        )
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        with request.urlopen(http_request, timeout=timeout, context=ssl_context) as response:
+            return type(
+                "UrllibTransportResponse",
+                (),
+                {
+                    "status_code": response.getcode(),
+                    "body": response.read(),
+                },
+            )()

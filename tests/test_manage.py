@@ -172,6 +172,105 @@ class ManagementCommandTests(unittest.TestCase):
         self.assertIn('"body_text": "Exxon, Chevron and others turn to Africa and South America for next prospects', output)
         self.assertIn('BY COLLIN EATON', output)
 
+    def test_phase_3_parse_pdf_command_builds_gemini_matcher_when_token_is_present(self) -> None:
+        self.assertIsNotNone(
+            run_cli,
+            "run_cli should be importable from newspaper_translator.manage",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = pathlib.Path(temp_dir) / "sample.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4 sample")
+            output_root = pathlib.Path(temp_dir) / "phase3-output"
+
+            with patch.dict(
+                "os.environ",
+                {
+                    "MINERU_API_TOKEN": "mineru-token",
+                    "GEMINI_TOKEN": "gemini-token",
+                },
+                clear=False,
+            ):
+                with patch("newspaper_translator.manage.MineruClient") as mineru_client_class:
+                    mineru_client_class.return_value = SimpleNamespace(name="mineru-client")
+                    with patch("newspaper_translator.manage.GeminiContinuationMatcher") as matcher_class:
+                        matcher_class.return_value = SimpleNamespace(name="gemini-matcher")
+                        with patch("newspaper_translator.manage.parse_pdf_articles") as parse_pdf_articles:
+                            parse_pdf_articles.return_value = [
+                                SimpleNamespace(
+                                    page_number=1,
+                                    x=0.0,
+                                    y_top=1.0,
+                                    title="talks to acquire Kelonia",
+                                    body_text="Therapeutics for more than $2 billion.",
+                                )
+                            ]
+
+                            exit_code, output = run_cli(
+                                [
+                                    "phase3-parse-pdf",
+                                    "--pdf-path",
+                                    str(pdf_path),
+                                    "--output-root",
+                                    str(output_root),
+                                ]
+                            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn('"title": "talks to acquire Kelonia"', output)
+        self.assertEqual(matcher_class.call_count, 1)
+        self.assertEqual(parse_pdf_articles.call_args.kwargs["continuation_matcher"].name, "gemini-matcher")
+
+    def test_phase_3_parse_md_command_builds_gemini_matcher_when_token_is_present(self) -> None:
+        self.assertIsNotNone(
+            run_cli,
+            "run_cli should be importable from newspaper_translator.manage",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            markdown_path = pathlib.Path(temp_dir) / "full.md"
+            markdown_path.write_text(
+                "# Big Oil Explores Farther Afield To Dodge Middle East Turmoil\n\n"
+                "Exxon, Chevron and others turn to Africa and South America for next prospects\n\n"
+                "Please turn to page A7\n\n"
+                "# Big Oil Explores Farther Out\n\n"
+                "Continued from PageOne Friday after President Trump and Iranian officials said the Strait of Hormuz had reopened.\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                "os.environ",
+                {
+                    "GEMINI_TOKEN": "gemini-token",
+                },
+                clear=False,
+            ):
+                with patch("newspaper_translator.manage.GeminiContinuationMatcher") as matcher_class:
+                    matcher_class.return_value = SimpleNamespace(name="gemini-matcher")
+                    with patch("newspaper_translator.manage.extract_articles_from_mineru_markdown") as extract_articles:
+                        extract_articles.return_value = [
+                            SimpleNamespace(
+                                page_number=1,
+                                x=0.0,
+                                y_top=1.0,
+                                title="Big Oil Explores Farther Afield To Dodge Middle East Turmoil",
+                                body_text="Exxon, Chevron and others turn to Africa and South America for next prospects",
+                            )
+                        ]
+
+                        exit_code, output = run_cli(
+                            [
+                                "phase3-parse-md",
+                                "--markdown-path",
+                                str(markdown_path),
+                            ]
+                        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn('"title": "Big Oil Explores Farther Afield To Dodge Middle East Turmoil"', output)
+        self.assertEqual(matcher_class.call_count, 1)
+        self.assertEqual(extract_articles.call_args.kwargs["continuation_matcher"].name, "gemini-matcher")
+
     def test_check_command_can_read_runtime_settings_from_environment(self) -> None:
         self.assertIsNotNone(
             run_cli,

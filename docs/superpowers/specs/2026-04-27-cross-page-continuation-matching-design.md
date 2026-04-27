@@ -6,6 +6,13 @@ Date: 2026-04-27
 
 This document defines the next Phase 3 parsing slice for cross-page newspaper article reconstruction.
 
+Implementation note as of 2026-04-27:
+
+- explicit continuation marker extraction is implemented in the Markdown parser
+- Gemini matching is implemented behind `GEMINI_TOKEN`
+- the current runtime sends only continuation-bearing fragments to Gemini and merges returned pairs deterministically
+- merged results are currently returned through CLI JSON output rather than separate persisted match artifact files
+
 The current repository already reconstructs article-like objects from MinerU `full.md` output, but it does not yet merge front-page fragments such as:
 
 - `Please turn to page A7`

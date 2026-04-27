@@ -22,11 +22,15 @@ As of 2026-04-27, the following slices are implemented:
 - a PDF-facing CLI entry: `phase3-parse-pdf`
 - a Markdown-facing CLI entry: `phase3-parse-md`
 - initial Markdown-to-article reconstruction with tests for subtitle, byline, and teaser filtering
+- explicit continuation-marker extraction on parsed article fragments
+- optional Gemini-backed matching for fragments with `continued_to_page` or `continued_from_page`
+- deterministic merge of matched cross-page fragment pairs with local marker cleanup
 
 The main remaining parsing gaps are now:
 
 - LLM-based advertisement and statement filtering after Markdown reconstruction
-- stronger cross-page cleanup and continuation stitching
+- non-explicit cross-page continuation inference
+- persisted debug artifacts for fragments, continuation matches, and merged articles
 - downstream enrichment and presentation work
 
 The Phase 3 primary path is now:
@@ -35,7 +39,9 @@ The Phase 3 primary path is now:
 2. wait for a completed extract result
 3. download the returned result zip
 4. extract `full.md`
-5. convert MinerU Markdown output into article-oriented parsing objects
+5. convert MinerU Markdown output into article fragments with explicit continuation metadata when present
+6. if `GEMINI_TOKEN` is configured, ask Gemini to match only continuation-bearing fragments
+7. merge matched fragments into final article-oriented outputs
 
 ## Why The Plan Changed
 
@@ -132,6 +138,8 @@ Persist inspectable parsing artifacts for one imported PDF:
 - extracted `full.md`
 - parsed article JSON or text summaries
 
+Status on 2026-04-27: partially completed. `full.md` is persisted through the MinerU output tree, and final parsed article JSON is returned by the CLI, but fragment-level and continuation-match artifact files are not yet written separately.
+
 ## TDD Queue
 
 Every slice should follow the same loop:
@@ -159,10 +167,11 @@ We should consider the MinerU migration meaningfully underway when the repositor
 - wait for completion and download the result zip
 - extract `full.md`
 - produce at least one usable article-oriented output from that Markdown
+- merge at least one explicit cross-page continuation pair when matching markers are present
 
 ## What We Are Not Doing Yet
 
-- cross-page continuation from MinerU output
+- non-explicit cross-page continuation inference from MinerU output
 - LLM-based advertisement and statement filtering
 - dashboard-facing rendering
 - enrichment, translation, and tagging

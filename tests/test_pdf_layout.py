@@ -9,139 +9,38 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-SAMPLE_ROOT = PROJECT_ROOT.parent
-WSJ_SAMPLE = SAMPLE_ROOT / "华尔街日报-4-20.pdf"
-GUARDIAN_SAMPLE = SAMPLE_ROOT / "卫报-4-21.pdf"
-
 try:
     from newspaper_translator.pdf import (
-        build_positioned_text_blocks,
+        extract_article_fragments_from_mineru_markdown,
         extract_articles_from_mineru_markdown,
         parse_pdf_articles,
-        extract_page_articles,
-        extract_article_candidate_blocks,
-        extract_positioned_text_fragments,
     )
 except ImportError:
-    build_positioned_text_blocks = None
+    extract_article_fragments_from_mineru_markdown = None
     extract_articles_from_mineru_markdown = None
     parse_pdf_articles = None
-    extract_page_articles = None
-    extract_article_candidate_blocks = None
-    extract_positioned_text_fragments = None
 
 
 class PdfLayoutTests(unittest.TestCase):
-    def test_extracts_positioned_text_fragments_from_digital_sample_page(self) -> None:
-        self.assertTrue(WSJ_SAMPLE.exists(), f"Missing sample PDF: {WSJ_SAMPLE}")
+    def test_extracts_continued_to_page_from_mineru_markdown(self) -> None:
         self.assertIsNotNone(
-            extract_positioned_text_fragments,
-            "extract_positioned_text_fragments should be importable from newspaper_translator.pdf",
+            extract_article_fragments_from_mineru_markdown,
+            "extract_article_fragments_from_mineru_markdown should be importable from newspaper_translator.pdf",
         )
 
-        fragments = extract_positioned_text_fragments(WSJ_SAMPLE, page_number=1)
-
-        self.assertGreater(len(fragments), 100)
-        self.assertEqual(fragments[0].page_number, 1)
-
-        matching_fragments = [fragment for fragment in fragments if fragment.text == "talks to acquire Kelonia"]
-        self.assertEqual(len(matching_fragments), 1)
-
-        title_fragment = matching_fragments[0]
-        self.assertGreater(title_fragment.x, 90.0)
-        self.assertLess(title_fragment.x, 120.0)
-        self.assertGreater(title_fragment.y, 980.0)
-        self.assertLess(title_fragment.y, 1010.0)
-
-    def test_groups_positioned_fragments_into_a_two_line_headline_block(self) -> None:
-        self.assertTrue(GUARDIAN_SAMPLE.exists(), f"Missing sample PDF: {GUARDIAN_SAMPLE}")
-        self.assertIsNotNone(
-            build_positioned_text_blocks,
-            "build_positioned_text_blocks should be importable from newspaper_translator.pdf",
+        markdown_text = (
+            "# Big Oil Explores Farther Afield To Dodge Middle East Turmoil\n\n"
+            "Exxon, Chevron and others turn to Africa and South America for next prospects\n\n"
+            "U.S. oil futures were trading near $90 a barrel Sunday.\n\n"
+            "Please turn to page A7\n"
         )
 
-        blocks = build_positioned_text_blocks(GUARDIAN_SAMPLE, page_number=1)
+        fragments = extract_article_fragments_from_mineru_markdown(markdown_text)
 
-        matching_blocks = [block for block in blocks if "Margarita time?Gin gives way to" in block.text]
-        self.assertEqual(len(matching_blocks), 1)
-
-        headline_block = matching_blocks[0]
-        self.assertEqual(headline_block.line_count, 2)
-        self.assertIn("tequila as top summer tipple", headline_block.text)
-        self.assertGreater(headline_block.x, 320.0)
-        self.assertLess(headline_block.x, 360.0)
-        self.assertGreater(headline_block.y_top, 930.0)
-        self.assertLess(headline_block.y_top, 970.0)
-
-    def test_extracts_article_candidate_blocks_without_section_noise(self) -> None:
-        self.assertTrue(WSJ_SAMPLE.exists(), f"Missing sample PDF: {WSJ_SAMPLE}")
-        self.assertIsNotNone(
-            extract_article_candidate_blocks,
-            "extract_article_candidate_blocks should be importable from newspaper_translator.pdf",
-        )
-
-        candidates = extract_article_candidate_blocks(WSJ_SAMPLE, page_number=1)
-
-        matching_candidates = [
-            candidate for candidate in candidates if candidate.title == "talks to acquire Kelonia"
-        ]
-        self.assertEqual(len(matching_candidates), 1)
-
-        kelonia_candidate = matching_candidates[0]
-        self.assertIn("Therapeutics for more than", kelonia_candidate.body_text)
-        self.assertNotIn("What’s", kelonia_candidate.body_text)
-        self.assertNotIn("Business & Finance", kelonia_candidate.body_text)
-
-    def test_extracts_same_page_article_by_merging_continuation_blocks(self) -> None:
-        self.assertTrue(WSJ_SAMPLE.exists(), f"Missing sample PDF: {WSJ_SAMPLE}")
-        self.assertIsNotNone(
-            extract_page_articles,
-            "extract_page_articles should be importable from newspaper_translator.pdf",
-        )
-
-        articles = extract_page_articles(WSJ_SAMPLE, page_number=1)
-
-        matching_articles = [article for article in articles if article.title == "talks to acquire Kelonia"]
-        self.assertEqual(len(matching_articles), 1)
-
-        kelonia_article = matching_articles[0]
-        self.assertIn("Therapeutics for more than", kelonia_article.body_text)
-        self.assertIn("sideration if Kelonia reaches", kelonia_article.body_text)
-        self.assertIn("certain milestones.", kelonia_article.body_text)
-        self.assertNotIn("TheTrumpOrganization", kelonia_article.body_text)
-        self.assertEqual(kelonia_article.page_number, 1)
-
-    def test_does_not_treat_bylines_as_article_titles(self) -> None:
-        self.assertTrue(GUARDIAN_SAMPLE.exists(), f"Missing sample PDF: {GUARDIAN_SAMPLE}")
-        self.assertIsNotNone(
-            extract_page_articles,
-            "extract_page_articles should be importable from newspaper_translator.pdf",
-        )
-
-        articles = extract_page_articles(GUARDIAN_SAMPLE, page_number=1)
-        article_titles = {article.title for article in articles}
-
-        self.assertIn("Sacked oﬃ  cial to set out", article_titles)
-        self.assertNotIn("Pippa Crerar", article_titles)
-        self.assertNotIn("Dan Sabbagh", article_titles)
-
-    def test_merges_byline_and_body_blocks_into_same_page_article(self) -> None:
-        self.assertTrue(GUARDIAN_SAMPLE.exists(), f"Missing sample PDF: {GUARDIAN_SAMPLE}")
-        self.assertIsNotNone(
-            extract_page_articles,
-            "extract_page_articles should be importable from newspaper_translator.pdf",
-        )
-
-        articles = extract_page_articles(GUARDIAN_SAMPLE, page_number=1)
-
-        matching_articles = [article for article in articles if article.title == "Sacked oﬃ  cial to set out"]
-        self.assertEqual(len(matching_articles), 1)
-
-        guardian_article = matching_articles[0]
-        self.assertIn("Pippa Crerar", guardian_article.body_text)
-        self.assertIn("Jessica Elgot", guardian_article.body_text)
-        self.assertIn("Keir Starmer has accused Olly Rob-", guardian_article.body_text)
-        self.assertNotIn("Vance to lead US envoys", guardian_article.body_text)
+        self.assertEqual(len(fragments), 1)
+        self.assertEqual(fragments[0].title, "Big Oil Explores Farther Afield To Dodge Middle East Turmoil")
+        self.assertEqual(fragments[0].continued_to_page, "A7")
+        self.assertEqual(fragments[0].continued_from_page, "")
 
     def test_extracts_articles_from_mineru_markdown(self) -> None:
         self.assertIsNotNone(
@@ -166,6 +65,24 @@ class PdfLayoutTests(unittest.TestCase):
         self.assertIn("Pippa Crerar", articles[0].body_text)
         self.assertIn("Keir Starmer has accused Olly Robbins", articles[0].body_text)
         self.assertEqual(articles[1].title, "Vance to lead US envoys")
+
+    def test_extracts_continued_from_page_from_mineru_markdown(self) -> None:
+        self.assertIsNotNone(
+            extract_article_fragments_from_mineru_markdown,
+            "extract_article_fragments_from_mineru_markdown should be importable from newspaper_translator.pdf",
+        )
+
+        markdown_text = (
+            "# Big Oil Explores Farther Out\n\n"
+            "Continued from PageOne Friday after President Trump and Iranian officials said the Strait of Hormuz had reopened.\n\n"
+            "The oil companies want to maximize their production.\n"
+        )
+
+        fragments = extract_article_fragments_from_mineru_markdown(markdown_text)
+
+        self.assertEqual(len(fragments), 1)
+        self.assertEqual(fragments[0].continued_to_page, "")
+        self.assertEqual(fragments[0].continued_from_page, "PageOne")
 
     def test_merges_mineru_subtitle_and_byline_heading_into_same_article(self) -> None:
         self.assertIsNotNone(
@@ -195,6 +112,106 @@ class PdfLayoutTests(unittest.TestCase):
         self.assertIn("Exxon Mobil, Chevron and other energy companies", articles[0].body_text)
         self.assertNotEqual(articles[1].title, "BY COLLIN EATON")
         self.assertEqual(articles[1].title, "Trump Grapples With Fears on War")
+
+    def test_merges_matched_cross_page_fragments(self) -> None:
+        self.assertIsNotNone(
+            extract_articles_from_mineru_markdown,
+            "extract_articles_from_mineru_markdown should be importable from newspaper_translator.pdf",
+        )
+
+        markdown_text = (
+            "# Big Oil Explores Farther Afield To Dodge Middle East Turmoil\n\n"
+            "Exxon, Chevron and others turn to Africa and South America for next prospects\n\n"
+            "U.S. oil futures were trading near $90 a barrel Sunday.\n\n"
+            "Please turn to page A7\n\n"
+            "# Big Oil Explores Farther Out\n\n"
+            "Continued from PageOne Friday after President Trump and Iranian officials said the Strait of Hormuz had reopened.\n\n"
+            "The oil companies want to maximize their production.\n"
+        )
+
+        matcher = _FakeContinuationMatcher(matches=[(1, 2)])
+
+        articles = extract_articles_from_mineru_markdown(markdown_text, continuation_matcher=matcher)
+
+        self.assertEqual(len(articles), 1)
+        self.assertEqual(articles[0].title, "Big Oil Explores Farther Afield To Dodge Middle East Turmoil")
+        self.assertIn("U.S. oil futures were trading near $90 a barrel Sunday.", articles[0].body_text)
+        self.assertIn("The oil companies want to maximize their production.", articles[0].body_text)
+
+    def test_removes_continuation_markers_after_merge(self) -> None:
+        self.assertIsNotNone(
+            extract_articles_from_mineru_markdown,
+            "extract_articles_from_mineru_markdown should be importable from newspaper_translator.pdf",
+        )
+
+        markdown_text = (
+            "# Big Oil Explores Farther Afield To Dodge Middle East Turmoil\n\n"
+            "U.S. oil futures were trading near $90 a barrel Sunday.\n\n"
+            "PleaseturntopageA7\n\n"
+            "# Big Oil Explores Farther Out\n\n"
+            "Continued from PageOne Friday after President Trump and Iranian officials said the Strait of Hormuz had reopened.\n\n"
+            "The oil companies want to maximize their production.\n"
+        )
+
+        matcher = _FakeContinuationMatcher(matches=[(1, 2)])
+
+        articles = extract_articles_from_mineru_markdown(markdown_text, continuation_matcher=matcher)
+
+        self.assertEqual(len(articles), 1)
+        self.assertNotIn("PleaseturntopageA7", articles[0].body_text)
+        self.assertNotIn("Continued from PageOne", articles[0].body_text)
+
+    def test_passes_only_continuation_fragments_to_matcher(self) -> None:
+        self.assertIsNotNone(
+            extract_articles_from_mineru_markdown,
+            "extract_articles_from_mineru_markdown should be importable from newspaper_translator.pdf",
+        )
+
+        markdown_text = (
+            "# Big Oil Explores Farther Afield To Dodge Middle East Turmoil\n\n"
+            "U.S. oil futures were trading near $90 a barrel Sunday.\n\n"
+            "Please turn to page A7\n\n"
+            "# New York Parade Honors Tehran Regime’s Victims\n\n"
+            "Supporters carried the traditional flag of Iran as they marched along Madison Avenue.\n\n"
+            "# Big Oil Explores Farther Out\n\n"
+            "Continued from PageOne Friday after President Trump and Iranian officials said the Strait of Hormuz had reopened.\n\n"
+            "The oil companies want to maximize their production.\n"
+        )
+
+        matcher = _FakeContinuationMatcher(matches=[(1, 3)])
+
+        extract_articles_from_mineru_markdown(markdown_text, continuation_matcher=matcher)
+
+        self.assertEqual(len(matcher.calls), 1)
+        self.assertEqual(len(matcher.calls[0]), 2)
+        self.assertEqual([fragment.title for fragment in matcher.calls[0]], [
+            "Big Oil Explores Farther Afield To Dodge Middle East Turmoil",
+            "Big Oil Explores Farther Out",
+        ])
+
+    def test_keeps_unmerged_fragments_when_continuation_matcher_fails(self) -> None:
+        self.assertIsNotNone(
+            extract_articles_from_mineru_markdown,
+            "extract_articles_from_mineru_markdown should be importable from newspaper_translator.pdf",
+        )
+
+        markdown_text = (
+            "# Big Oil Explores Farther Afield To Dodge Middle East Turmoil\n\n"
+            "U.S. oil futures were trading near $90 a barrel Sunday.\n\n"
+            "Please turn to page A7\n\n"
+            "# Big Oil Explores Farther Out\n\n"
+            "Continued from PageOne Friday after President Trump and Iranian officials said the Strait of Hormuz had reopened.\n\n"
+            "The oil companies want to maximize their production.\n"
+        )
+
+        articles = extract_articles_from_mineru_markdown(
+            markdown_text,
+            continuation_matcher=_FailingContinuationMatcher(),
+        )
+
+        self.assertEqual(len(articles), 2)
+        self.assertEqual(articles[0].title, "Big Oil Explores Farther Afield To Dodge Middle East Turmoil")
+        self.assertEqual(articles[1].title, "Big Oil Explores Farther Out")
 
     def test_ignores_mineru_teaser_blocks_with_leader_dots(self) -> None:
         self.assertIsNotNone(
@@ -252,7 +269,6 @@ class PdfLayoutTests(unittest.TestCase):
         self.assertNotIn("Blue Origin's first commercial launch", articles[0].body_text)
 
     def test_phase_3_entry_uses_mineru_client_output(self) -> None:
-        self.assertTrue(WSJ_SAMPLE.exists(), f"Missing sample PDF: {WSJ_SAMPLE}")
         self.assertIsNotNone(
             parse_pdf_articles,
             "parse_pdf_articles should be importable from newspaper_translator.pdf",
@@ -263,8 +279,10 @@ class PdfLayoutTests(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = pathlib.Path(temp_dir) / "sample.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4 sample")
             articles = parse_pdf_articles(
-                WSJ_SAMPLE,
+                pdf_path,
                 output_root=pathlib.Path(temp_dir),
                 mineru_client=fake_client,
             )
@@ -272,7 +290,38 @@ class PdfLayoutTests(unittest.TestCase):
         self.assertEqual(len(articles), 1)
         self.assertEqual(articles[0].title, "talks to acquire Kelonia")
         self.assertIn("Therapeutics for more than", articles[0].body_text)
-        self.assertEqual(fake_client.calls[0]["pdf_path"], WSJ_SAMPLE)
+        self.assertEqual(fake_client.calls[0]["pdf_path"], pdf_path)
+
+    def test_phase_3_entry_accepts_continuation_matcher(self) -> None:
+        self.assertIsNotNone(
+            parse_pdf_articles,
+            "parse_pdf_articles should be importable from newspaper_translator.pdf",
+        )
+
+        fake_client = _FakeMineruClient(
+            markdown_text=(
+                "# Big Oil Explores Farther Afield To Dodge Middle East Turmoil\n\n"
+                "U.S. oil futures were trading near $90 a barrel Sunday.\n\n"
+                "Please turn to page A7\n\n"
+                "# Big Oil Explores Farther Out\n\n"
+                "Continued from PageOne Friday after President Trump and Iranian officials said the Strait of Hormuz had reopened.\n\n"
+                "The oil companies want to maximize their production.\n"
+            )
+        )
+        matcher = _FakeContinuationMatcher(matches=[(1, 2)])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = pathlib.Path(temp_dir) / "sample.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4 sample")
+            articles = parse_pdf_articles(
+                pdf_path,
+                output_root=pathlib.Path(temp_dir),
+                mineru_client=fake_client,
+                continuation_matcher=matcher,
+            )
+
+        self.assertEqual(len(articles), 1)
+        self.assertIn("The oil companies want to maximize their production.", articles[0].body_text)
 
 
 class _FakeMineruClient:
@@ -289,6 +338,21 @@ class _FakeMineruClient:
                 "markdown_text": self._markdown_text,
             },
         )()
+
+
+class _FakeContinuationMatcher:
+    def __init__(self, *, matches: list[tuple[int, int]]) -> None:
+        self._matches = matches
+        self.calls: list[list[object]] = []
+
+    def __call__(self, fragments):
+        self.calls.append(list(fragments))
+        return list(self._matches)
+
+
+class _FailingContinuationMatcher:
+    def __call__(self, fragments):
+        raise RuntimeError("matcher unavailable")
 
 
 if __name__ == "__main__":

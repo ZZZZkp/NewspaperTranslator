@@ -58,6 +58,25 @@ class MineruSettings:
         )
 
 
+@dataclass(frozen=True)
+class GeminiSettings:
+    api_token: str
+    model: str
+    timeout_seconds: int
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str]) -> "GeminiSettings":
+        return cls(
+            api_token=_require_setting(env, "GEMINI_TOKEN"),
+            model=env.get("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash",
+            timeout_seconds=_read_int_setting(
+                env,
+                "GEMINI_TIMEOUT_SECONDS",
+                default=120,
+            ),
+        )
+
+
 def _require_setting(env: Mapping[str, str], key: str) -> str:
     value = env.get(key, "").strip()
     if not value:

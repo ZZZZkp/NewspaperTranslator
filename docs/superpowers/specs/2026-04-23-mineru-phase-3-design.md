@@ -15,6 +15,8 @@ Implementation note as of 2026-04-27:
 - the MinerU client, configuration, and PDF batch parsing path are implemented
 - `full.md` extraction is implemented and used as the Phase 3 parsing boundary
 - a direct Markdown parsing entrypoint is also implemented for local debugging
+- explicit continuation markers are extracted into article fragments during Markdown parsing
+- optional Gemini matching is implemented for fragments that carry continuation markers
 - the current article reconstruction is intentionally heuristic and does not yet perform LLM-based advertisement or statement filtering
 
 The main decision is:
@@ -102,15 +104,17 @@ That logic should stay separate from the network client.
 
 Status on 2026-04-27:
 
-This boundary currently lives in `pdf.py` through `extract_articles_from_mineru_markdown()` and is exposed by the `phase3-parse-md` CLI command. It can already reconstruct basic title/body article structures, merge byline headings, and skip obvious teaser-style digest blocks.
+This boundary currently lives in `pdf.py` through `extract_articles_from_mineru_markdown()` and is exposed by the `phase3-parse-md` CLI command. It can already reconstruct basic title/body article structures, merge byline headings, skip obvious teaser-style digest blocks, and preserve explicit continuation metadata on parsed fragments before optional LLM matching.
 
 ## Data And Runtime Flow
 
 1. Gmail import persists the raw PDF locally.
 2. Phase 3 parser hands the local PDF path to the MinerU adapter.
 3. The MinerU adapter uploads the file, polls the batch result, downloads the result zip, and extracts `full.md`.
-4. A Markdown parser converts `full.md` into page and article structures.
-5. Downstream enrichment will later consume those article structures.
+4. A Markdown parser converts `full.md` into article fragments and captures explicit continuation markers when present.
+5. If `GEMINI_TOKEN` is configured, only continuation-bearing fragments are sent to Gemini for match selection.
+6. Matched fragment pairs are merged into final article structures, while unmatched fragments remain standalone articles.
+7. Downstream enrichment will later consume those article structures.
 
 ## Configuration
 
@@ -124,6 +128,12 @@ Planned environment variables:
 - `MINERU_ENABLE_FORMULA`
 - `MINERU_POLL_INTERVAL_SECONDS`
 - `MINERU_POLL_TIMEOUT_SECONDS`
+
+Optional continuation-matching variables:
+
+- `GEMINI_TOKEN`
+- `GEMINI_MODEL`
+- `GEMINI_TIMEOUT_SECONDS`
 
 Recommended defaults:
 
@@ -181,5 +191,6 @@ This keeps the repository moving toward the chosen production parsing boundary i
 The current implementation leaves these responsibilities for later phases:
 
 - LLM-based filtering of advertisements, corrections, statements, and other non-article content
-- better cross-page continuation cleanup
+- non-explicit cross-page continuation inference
+- separate persisted fragment and continuation-match artifact files
 - richer article metadata beyond title and body

@@ -8,9 +8,7 @@ services:
       APP_ENV: ${APP_ENV:-development}
       DATABASE_URL: ${DATABASE_URL:-sqlite:////data/newspaper-translator.db}
       STORAGE_ROOT: ${STORAGE_ROOT:-/data}
-      GMAIL_CLIENT_ID: ${GMAIL_CLIENT_ID:-local-client-id}
-      GMAIL_CLIENT_SECRET: ${GMAIL_CLIENT_SECRET:-local-client-secret}
-      GMAIL_REFRESH_TOKEN: ${GMAIL_REFRESH_TOKEN:-local-refresh-token}
+      GMAIL_CONFIG_PATH: ${GMAIL_CONFIG_PATH:-/app/config/gmail-config.json}
     ports:
       - "8000:8000"
     volumes:
@@ -33,9 +31,7 @@ services:
       APP_ENV: ${APP_ENV:-development}
       DATABASE_URL: ${DATABASE_URL:-sqlite:////data/newspaper-translator.db}
       STORAGE_ROOT: ${STORAGE_ROOT:-/data}
-      GMAIL_CLIENT_ID: ${GMAIL_CLIENT_ID:-local-client-id}
-      GMAIL_CLIENT_SECRET: ${GMAIL_CLIENT_SECRET:-local-client-secret}
-      GMAIL_REFRESH_TOKEN: ${GMAIL_REFRESH_TOKEN:-local-refresh-token}
+      GMAIL_CONFIG_PATH: ${GMAIL_CONFIG_PATH:-/app/config/gmail-config.json}
     volumes:
       - app-data:/data
     healthcheck:

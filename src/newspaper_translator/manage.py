@@ -2,8 +2,10 @@ import argparse
 from dataclasses import asdict, is_dataclass
 import json
 import os
+from pathlib import Path
 import sys
 
+from newspaper_translator.config import MineruSettings
 from newspaper_translator.import_audit import (
     list_import_items,
     list_import_run_items,
@@ -11,6 +13,8 @@ from newspaper_translator.import_audit import (
 )
 from newspaper_translator.database import run_pending_migrations
 from newspaper_translator.gmail import import_from_gmail, retry_failed_gmail_messages
+from newspaper_translator.mineru import MineruClient
+from newspaper_translator.pdf import extract_articles_from_mineru_markdown, parse_pdf_articles
 from newspaper_translator.runtime import build_runtime_report
 
 
@@ -26,9 +30,7 @@ def run_cli(argv: list[str]) -> tuple[int, str]:
     check_parser.add_argument("--app-env")
     check_parser.add_argument("--database-url")
     check_parser.add_argument("--storage-root")
-    check_parser.add_argument("--gmail-client-id")
-    check_parser.add_argument("--gmail-client-secret")
-    check_parser.add_argument("--gmail-refresh-token")
+    check_parser.add_argument("--gmail-config-path")
 
     gmail_import_parser = subparsers.add_parser("gmail-import")
     gmail_import_parser.add_argument("--gmail-config", required=True)
@@ -56,6 +58,13 @@ def run_cli(argv: list[str]) -> tuple[int, str]:
     gmail_import_items_parser.add_argument("--status")
     gmail_import_items_parser.add_argument("--item-type")
 
+    phase3_parse_pdf_parser = subparsers.add_parser("phase3-parse-pdf")
+    phase3_parse_pdf_parser.add_argument("--pdf-path", required=True)
+    phase3_parse_pdf_parser.add_argument("--output-root", required=True)
+
+    phase3_parse_md_parser = subparsers.add_parser("phase3-parse-md")
+    phase3_parse_md_parser.add_argument("--markdown-path", required=True)
+
     args = parser.parse_args(argv)
 
     if args.command == "migrate":
@@ -69,15 +78,7 @@ def run_cli(argv: list[str]) -> tuple[int, str]:
             "APP_ENV": _resolve_setting(args.app_env, "APP_ENV"),
             "DATABASE_URL": _resolve_setting(args.database_url, "DATABASE_URL"),
             "STORAGE_ROOT": _resolve_setting(args.storage_root, "STORAGE_ROOT"),
-            "GMAIL_CLIENT_ID": _resolve_setting(args.gmail_client_id, "GMAIL_CLIENT_ID"),
-            "GMAIL_CLIENT_SECRET": _resolve_setting(
-                args.gmail_client_secret,
-                "GMAIL_CLIENT_SECRET",
-            ),
-            "GMAIL_REFRESH_TOKEN": _resolve_setting(
-                args.gmail_refresh_token,
-                "GMAIL_REFRESH_TOKEN",
-            ),
+            "GMAIL_CONFIG_PATH": _resolve_setting(args.gmail_config_path, "GMAIL_CONFIG_PATH"),
         }
         report = build_runtime_report(
             env=resolved_env,
@@ -125,6 +126,21 @@ def run_cli(argv: list[str]) -> tuple[int, str]:
             item_type=args.item_type,
         )
         return 0, json.dumps(_to_jsonable(items), sort_keys=True)
+
+    if args.command == "phase3-parse-pdf":
+        mineru_settings = MineruSettings.from_env(os.environ)
+        mineru_client = MineruClient(settings=mineru_settings)
+        articles = parse_pdf_articles(
+            Path(args.pdf_path),
+            output_root=Path(args.output_root),
+            mineru_client=mineru_client,
+        )
+        return 0, json.dumps(_to_jsonable(articles), sort_keys=True)
+
+    if args.command == "phase3-parse-md":
+        markdown_text = Path(args.markdown_path).read_text(encoding="utf-8")
+        articles = extract_articles_from_mineru_markdown(markdown_text)
+        return 0, json.dumps(_to_jsonable(articles), sort_keys=True)
 
     return 1, "Unknown command"
 

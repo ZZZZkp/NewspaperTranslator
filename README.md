@@ -1,10 +1,10 @@
 # Newspaper Translator
 
-This repository now has a complete runnable Phase 1 foundation plus a working Phase 2 Gmail ingestion slice with durable import audit, incremental checkpointing, and failed-message retry support.
+This repository now has a complete runnable Phase 1 foundation, a working Phase 2 Gmail ingestion slice with durable import audit, incremental checkpointing, and failed-message retry support, plus the first usable Phase 3 MinerU parsing path.
 
 ## Current status
 
-As of 2026-04-23, the project has:
+As of 2026-04-27, the project has:
 
 - completed the Phase 1 local runtime baseline
 - completed the first useful Phase 2 import path from Gmail into raw PDF storage
@@ -12,10 +12,14 @@ As of 2026-04-23, the project has:
 - added read-only CLI and web query surfaces for import runs and run items
 - added time-window incremental checkpointing for normal Gmail imports
 - added automatic and manual retry flows for unresolved failed Gmail messages
+- added MinerU-backed Phase 3 PDF parsing through the batch upload API
+- added Markdown-to-article reconstruction for MinerU `full.md` outputs
+- added a direct Markdown parsing CLI entry for local `full.md` debugging
 - validated Gmail Desktop OAuth locally
 - validated Gmail API access through a local proxy or VPN
 - validated direct PDF links such as `https://dl.dengtazk.xin/...pdf`
 - validated QQ Mail landing pages such as `https://wx.mail.qq.com/ftn/download?...`, resolved through a JSON handoff
+- validated real MinerU parsing end-to-end against a local Wall Street Journal sample PDF
 
 Latest live Gmail import result on 2026-04-22:
 
@@ -23,6 +27,74 @@ Latest live Gmail import result on 2026-04-22:
 - `imported_attachment_count=4`
 - `created_document_count=4`
 - `skipped_document_count=0`
+
+## Phase 3 parsing status
+
+Phase 3 now uses the MinerU precision parsing API as its primary extraction path rather than a purely local PDF text-extraction path.
+
+The current parsing flow is:
+
+1. import raw newspaper PDFs from Gmail into local storage
+2. submit the stored PDF files to MinerU through the precision parsing batch upload API
+3. poll the batch result until the file reaches `done`
+4. download the returned `full_zip_url`
+5. extract `full.md` from the zip payload
+6. build article-oriented parsing outputs from the MinerU Markdown result
+
+Why this route:
+
+- the official MinerU precision parsing API explicitly supports complex layouts, scanned inputs, tables, formulas, and multi-column pages
+- the single-file API does not support direct file upload, so our local PDF workflow should use the documented batch upload flow
+- the batch result returns `full.md`, which is a stronger Phase 3 starting point than line-based text extracted locally with `pypdf`
+
+Reference:
+
+- [MinerU API docs](https://mineru.net/apiManage/docs)
+
+Planned MinerU configuration:
+
+- `MINERU_API_TOKEN`
+- `MINERU_MODEL_VERSION`, default `vlm`
+- `MINERU_LANGUAGE`, default `ch`
+- `MINERU_ENABLE_OCR`, default `false`
+- `MINERU_ENABLE_TABLE`, default `true`
+- `MINERU_ENABLE_FORMULA`, default `true`
+- `MINERU_POLL_INTERVAL_SECONDS`
+- `MINERU_POLL_TIMEOUT_SECONDS`
+
+The existing local `pypdf` parsing helpers remain in the repository as a fallback and as a test baseline. The primary Phase 3 parse path is now MinerU-backed Markdown parsing.
+
+Run the current Phase 3 MinerU PDF parsing entry locally:
+
+```bash
+PYTHONPATH=src \
+MINERU_API_TOKEN=your-mineru-token \
+MINERU_MODEL_VERSION=vlm \
+MINERU_LANGUAGE=ch \
+./.venv/bin/python -m newspaper_translator.manage phase3-parse-pdf \
+  --pdf-path ./sample-newspaper.pdf \
+  --output-root ./tmp/phase3-output
+```
+
+If you already have a MinerU `full.md` file and want to reconstruct article structures directly:
+
+```bash
+PYTHONPATH=src \
+./.venv/bin/python -m newspaper_translator.manage phase3-parse-md \
+  --markdown-path ./tmp/phase3-output/sample-newspaper/full.md
+```
+
+Current Phase 3 parser behavior:
+
+- reconstructs article-like structures from MinerU Markdown headings and body text
+- merges subtitle and `BY ...` heading patterns back into the same article
+- drops obvious teaser and digest blocks that are not full articles
+
+Current Phase 3 parser limits:
+
+- advertisement and statement filtering is intentionally deferred to later LLM-based post-processing
+- cross-page cleanup is still heuristic
+- page numbers in Markdown-derived article JSON are parser-order indexes, not original newspaper page numbers
 
 ## Local Python workflow
 
@@ -41,9 +113,7 @@ PYTHONPATH=src \
 APP_ENV=development \
 DATABASE_URL=sqlite:////tmp/newspaper-translator.db \
 STORAGE_ROOT=/tmp/newspaper-translator-data \
-GMAIL_CLIENT_ID=local-client-id \
-GMAIL_CLIENT_SECRET=local-client-secret \
-GMAIL_REFRESH_TOKEN=local-refresh-token \
+GMAIL_CONFIG_PATH=./config/gmail-config.json \
 ./.venv/bin/python -m newspaper_translator.web
 ```
 
@@ -55,16 +125,14 @@ PYTHONPATH=src ./.venv/bin/python -m newspaper_translator.manage check --service
   --app-env development \
   --database-url sqlite:////tmp/newspaper-translator.db \
   --storage-root /tmp/newspaper-translator-data \
-  --gmail-client-id local-client-id \
-  --gmail-client-secret local-client-secret \
-  --gmail-refresh-token local-refresh-token
+  --gmail-config-path ./config/gmail-config.json
 ```
 
 Run a one-shot Gmail import:
 
 1. Create a Google Cloud project, enable the Gmail API, and create a Desktop app OAuth client.
 2. Put the downloaded OAuth client JSON at `secrets/google-oauth-client.json`.
-3. Fill in [config/gmail-config.json](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/config/gmail-config.json:1).
+3. Fill in `config/gmail-config.json`.
 4. Apply the database schema:
 
 ```bash
@@ -76,12 +144,14 @@ PYTHONPATH=src ./.venv/bin/python -m newspaper_translator.manage migrate \
 
 ```bash
 PYTHONPATH=src ./.venv/bin/python -m newspaper_translator.manage gmail-import \
-  --gmail-config /Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/config/gmail-config.json \
+  --gmail-config ./config/gmail-config.json \
   --database-url sqlite:////tmp/newspaper-translator.db \
   --storage-root /tmp/newspaper-translator-data
 ```
 
 The first run will open the local OAuth flow in your browser and then write a reusable token file.
+
+`GMAIL_CONFIG_PATH` is the unified runtime setting for Gmail integration. The OAuth client and token details should live behind that JSON config file rather than being duplicated in environment variables.
 
 Inspect import audit state:
 
@@ -97,7 +167,7 @@ Manually retry unresolved failed Gmail messages:
 
 ```bash
 PYTHONPATH=src ./.venv/bin/python -m newspaper_translator.manage gmail-retry-failures \
-  --gmail-config /Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/config/gmail-config.json \
+  --gmail-config ./config/gmail-config.json \
   --database-url sqlite:////tmp/newspaper-translator.db \
   --storage-root /tmp/newspaper-translator-data
 ```
@@ -150,6 +220,6 @@ Implemented today:
 
 Not implemented yet:
 
-- article reconstruction from newspaper pages
-- OCR
+- LLM-based advertisement and statement filtering after Markdown parsing
+- deeper cross-page article cleanup and continuation stitching
 - enrichment and dashboard features

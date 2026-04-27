@@ -98,6 +98,80 @@ class ManagementCommandTests(unittest.TestCase):
         self.assertIn('"run_id": "retry-run-1"', output)
         self.assertIn('"retried_message_count": 2', output)
 
+    def test_phase_3_parse_pdf_command_uses_mineru_entry_and_reports_articles(self) -> None:
+        self.assertIsNotNone(
+            run_cli,
+            "run_cli should be importable from newspaper_translator.manage",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = pathlib.Path(temp_dir) / "sample.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4 sample")
+            output_root = pathlib.Path(temp_dir) / "phase3-output"
+
+            with patch.dict(
+                "os.environ",
+                {
+                    "MINERU_API_TOKEN": "mineru-token",
+                },
+                clear=False,
+            ):
+                with patch("newspaper_translator.manage.MineruClient") as mineru_client_class:
+                    mineru_client_class.return_value = SimpleNamespace(name="mineru-client")
+                    with patch("newspaper_translator.manage.parse_pdf_articles") as parse_pdf_articles:
+                        parse_pdf_articles.return_value = [
+                            SimpleNamespace(
+                                page_number=1,
+                                x=0.0,
+                                y_top=1.0,
+                                title="talks to acquire Kelonia",
+                                body_text="Therapeutics for more than $2 billion.",
+                            )
+                        ]
+
+                        exit_code, output = run_cli(
+                            [
+                                "phase3-parse-pdf",
+                                "--pdf-path",
+                                str(pdf_path),
+                                "--output-root",
+                                str(output_root),
+                            ]
+                        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn('"title": "talks to acquire Kelonia"', output)
+        self.assertIn('"body_text": "Therapeutics for more than $2 billion."', output)
+
+    def test_phase_3_parse_md_command_reads_markdown_file_and_reports_articles(self) -> None:
+        self.assertIsNotNone(
+            run_cli,
+            "run_cli should be importable from newspaper_translator.manage",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            markdown_path = pathlib.Path(temp_dir) / "full.md"
+            markdown_path.write_text(
+                "# Big Oil Explores Farther Afield To Dodge Middle East Turmoil\n\n"
+                "Exxon, Chevron and others turn to Africa and South America for next prospects\n\n"
+                "# BY COLLIN EATON\n\n"
+                "Exxon Mobil, Chevron and other energy companies are speeding up their searches.\n",
+                encoding="utf-8",
+            )
+
+            exit_code, output = run_cli(
+                [
+                    "phase3-parse-md",
+                    "--markdown-path",
+                    str(markdown_path),
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn('"title": "Big Oil Explores Farther Afield To Dodge Middle East Turmoil"', output)
+        self.assertIn('"body_text": "Exxon, Chevron and others turn to Africa and South America for next prospects', output)
+        self.assertIn('BY COLLIN EATON', output)
+
     def test_check_command_can_read_runtime_settings_from_environment(self) -> None:
         self.assertIsNotNone(
             run_cli,
@@ -114,9 +188,7 @@ class ManagementCommandTests(unittest.TestCase):
                     "APP_ENV": "test",
                     "DATABASE_URL": database_url,
                     "STORAGE_ROOT": temp_dir,
-                    "GMAIL_CLIENT_ID": "client-id",
-                    "GMAIL_CLIENT_SECRET": "client-secret",
-                    "GMAIL_REFRESH_TOKEN": "refresh-token",
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
                 },
                 clear=False,
             ):
@@ -147,12 +219,8 @@ class ManagementCommandTests(unittest.TestCase):
                     database_url,
                     "--storage-root",
                     temp_dir,
-                    "--gmail-client-id",
-                    "client-id",
-                    "--gmail-client-secret",
-                    "client-secret",
-                    "--gmail-refresh-token",
-                    "refresh-token",
+                    "--gmail-config-path",
+                    "/tmp/gmail-config.json",
                 ]
             )
 

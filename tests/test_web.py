@@ -44,9 +44,7 @@ class WebHealthEndpointTests(unittest.TestCase):
                     "APP_ENV": "test",
                     "DATABASE_URL": database_url,
                     "STORAGE_ROOT": temp_dir,
-                    "GMAIL_CLIENT_ID": "client-id",
-                    "GMAIL_CLIENT_SECRET": "client-secret",
-                    "GMAIL_REFRESH_TOKEN": "refresh-token",
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
                 }
             )
 
@@ -79,9 +77,7 @@ class WebHealthEndpointTests(unittest.TestCase):
                     "APP_ENV": "test",
                     "DATABASE_URL": database_url,
                     "STORAGE_ROOT": temp_dir,
-                    "GMAIL_CLIENT_ID": "client-id",
-                    "GMAIL_CLIENT_SECRET": "client-secret",
-                    "GMAIL_REFRESH_TOKEN": "refresh-token",
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
                 }
             )
 
@@ -135,9 +131,7 @@ class WebHealthEndpointTests(unittest.TestCase):
                     "APP_ENV": "test",
                     "DATABASE_URL": database_url,
                     "STORAGE_ROOT": temp_dir,
-                    "GMAIL_CLIENT_ID": "client-id",
-                    "GMAIL_CLIENT_SECRET": "client-secret",
-                    "GMAIL_REFRESH_TOKEN": "refresh-token",
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
                 }
             )
 
@@ -212,9 +206,7 @@ class WebHealthEndpointTests(unittest.TestCase):
                     "APP_ENV": "test",
                     "DATABASE_URL": database_url,
                     "STORAGE_ROOT": temp_dir,
-                    "GMAIL_CLIENT_ID": "client-id",
-                    "GMAIL_CLIENT_SECRET": "client-secret",
-                    "GMAIL_REFRESH_TOKEN": "refresh-token",
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
                 }
             )
 

@@ -46,9 +46,7 @@ class ContainerScaffoldingTests(unittest.TestCase):
         self.assertIn("APP_ENV=", env_text)
         self.assertIn("DATABASE_URL=", env_text)
         self.assertIn("STORAGE_ROOT=", env_text)
-        self.assertIn("GMAIL_CLIENT_ID=", env_text)
-        self.assertIn("GMAIL_CLIENT_SECRET=", env_text)
-        self.assertIn("GMAIL_REFRESH_TOKEN=", env_text)
+        self.assertIn("GMAIL_CONFIG_PATH=", env_text)
 
     def test_project_includes_a_readme_with_local_startup_steps(self) -> None:
         readme_path = PROJECT_ROOT / "README.md"

@@ -1,10 +1,10 @@
 # Newspaper Translator
 
-This repository now has a complete runnable Phase 1 foundation, a working Phase 2 Gmail ingestion slice with durable import audit, incremental checkpointing, and failed-message retry support, plus a usable Phase 3 MinerU parsing path with explicit cross-page continuation matching.
+This repository now has a complete runnable Phase 1 foundation, a working Phase 2 Gmail ingestion slice with durable import audit, incremental checkpointing, and failed-message retry support, plus a usable Phase 3 MinerU parsing path with explicit cross-page continuation matching and durable article persistence foundations.
 
 ## Current status
 
-As of 2026-04-27, the project has:
+As of 2026-04-28, the project has:
 
 - completed the Phase 1 local runtime baseline
 - completed the first useful Phase 2 import path from Gmail into raw PDF storage
@@ -17,6 +17,11 @@ As of 2026-04-27, the project has:
 - added a direct Markdown parsing CLI entry for local `full.md` debugging
 - added explicit continuation-marker extraction for split newspaper articles
 - added optional Gemini-backed matching and merge for explicit cross-page continuations
+- added parse-run history persistence for repeated Phase 3 document parsing attempts
+- added durable fragment, continuation-match, final-article, and article-lineage storage
+- added publication-date persistence and fallback date resolution from parsed Markdown
+- added enrichment-run, enrichment-output, and article-tag history storage foundations
+- added current-version query rules for latest successful parsed articles and latest usable enrichment results
 - validated Gmail Desktop OAuth locally
 - validated Gmail API access through a local proxy or VPN
 - validated direct PDF links such as `https://dl.dengtazk.xin/...pdf`
@@ -94,6 +99,52 @@ PYTHONPATH=src \
   --markdown-path ./tmp/phase3-output/sample-newspaper/full.md
 ```
 
+Persist one imported document into the new Phase 3 article tables:
+
+```bash
+PYTHONPATH=src \
+DATABASE_URL=sqlite:////tmp/newspaper-translator.db \
+MINERU_API_TOKEN=your-mineru-token \
+MINERU_MODEL_VERSION=vlm \
+MINERU_LANGUAGE=ch \
+./.venv/bin/python -m newspaper_translator.manage phase3-persist-document \
+  --document-key message-id:attachment-id:content-hash \
+  --output-root ./tmp/phase3-output
+```
+
+Inspect the latest visible article set and parse history for one imported document:
+
+```bash
+PYTHONPATH=src \
+./.venv/bin/python -m newspaper_translator.manage phase3-latest-articles \
+  --database-url sqlite:////tmp/newspaper-translator.db \
+  --document-key message-id:attachment-id:content-hash
+
+PYTHONPATH=src \
+./.venv/bin/python -m newspaper_translator.manage phase3-parse-runs \
+  --database-url sqlite:////tmp/newspaper-translator.db \
+  --document-key message-id:attachment-id:content-hash
+```
+
+Inspect debug artifacts for one parse run:
+
+```bash
+PYTHONPATH=src \
+./.venv/bin/python -m newspaper_translator.manage phase3-parse-run-fragments \
+  --database-url sqlite:////tmp/newspaper-translator.db \
+  --parse-run-id your-parse-run-id
+
+PYTHONPATH=src \
+./.venv/bin/python -m newspaper_translator.manage phase3-parse-run-matches \
+  --database-url sqlite:////tmp/newspaper-translator.db \
+  --parse-run-id your-parse-run-id
+
+PYTHONPATH=src \
+./.venv/bin/python -m newspaper_translator.manage phase3-parse-run-articles \
+  --database-url sqlite:////tmp/newspaper-translator.db \
+  --parse-run-id your-parse-run-id
+```
+
 Current Phase 3 parser behavior:
 
 - reconstructs article-like structures from MinerU Markdown headings and body text
@@ -102,6 +153,7 @@ Current Phase 3 parser behavior:
 - detects explicit continuation markers such as `Please turn to page A7` and `Continued from PageOne`
 - auto-enables Gemini continuation matching when `GEMINI_TOKEN` is present
 - sends only continuation-bearing fragments to Gemini, then deterministically merges matched pairs and strips local marker text
+- records fragment-level, match-level, and final-article lineage data for persisted parse runs
 - returns merged article results through CLI JSON output while leaving unmatched fragments as standalone articles
 
 Current Phase 3 parser limits:
@@ -109,8 +161,27 @@ Current Phase 3 parser limits:
 - advertisement and statement filtering is intentionally deferred to later LLM-based post-processing
 - only fragments with explicit continuation markers currently participate in LLM matching
 - the parser does not yet infer cross-page relationships for fragments without explicit markers
-- merged continuation matches are not yet persisted as separate fragment or match artifact files
 - page numbers in Markdown-derived article JSON are parser-order indexes, not original newspaper page numbers
+
+## Article Persistence Status
+
+Phase 3 now has a durable article persistence layer on top of the existing MinerU parsing flow.
+
+The current persistence model stores:
+
+- one `parse_run` per parse attempt for one imported raw document
+- raw `article_fragments` for each parse run
+- `continuation_matches` with accepted, ignored, or invalid decisions
+- immutable `final_articles` plus `final_article_fragments` lineage records
+- one `article_enrichment_run` per enrichment attempt
+- `article_enrichment_outputs` and ordered `article_tags` for usable enrichment results
+
+Current version rules:
+
+- the visible article set for a document comes from the latest successful `parse_run`
+- a later failed parse run does not hide an older successful article set
+- the visible enrichment layer for an article comes from the latest `partial` or `succeeded` enrichment run
+- a later failed enrichment run does not hide an older usable enrichment result
 
 ## Local Python workflow
 
@@ -234,10 +305,15 @@ Implemented today:
 - retry/checkpoint summary fields on `import-runs`
 - MinerU Markdown article-reconstruction tests
 - Gemini-backed continuation matching for explicit cross-page article fragments
+- parse-run persistence for Phase 3 document processing
+- fragment, continuation-match, final-article, and lineage persistence tables
+- publication-date extraction from filenames with Markdown fallback
+- read-only CLI query surfaces for latest document articles and parse-run debug artifacts
+- enrichment-run history, enrichment outputs, and ordered tag persistence foundations
 
 Not implemented yet:
 
 - LLM-based advertisement and statement filtering after Markdown parsing
 - non-explicit cross-page continuation inference
-- separate persisted artifacts for parsed fragments, continuation matches, and merged article outputs
-- enrichment and dashboard features
+- actual AI enrichment job execution for translation, summary, and tagging
+- dashboard and richer browsing surfaces on top of the persisted article data

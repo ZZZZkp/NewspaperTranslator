@@ -12,11 +12,16 @@ if str(SRC_ROOT) not in sys.path:
 
 try:
     from newspaper_translator.database import run_pending_migrations
-    from newspaper_translator.worker import build_startup_report, build_startup_log_line
+    from newspaper_translator.worker import (
+        build_startup_report,
+        build_startup_log_line,
+        should_run_catch_up_tick,
+    )
 except ImportError:
     build_startup_log_line = None
     build_startup_report = None
     run_pending_migrations = None
+    should_run_catch_up_tick = None
 
 
 class WorkerStartupTests(unittest.TestCase):
@@ -58,6 +63,39 @@ class WorkerStartupTests(unittest.TestCase):
         self.assertEqual(payload["event"], "worker.startup")
         self.assertEqual(payload["service"], "worker")
         self.assertEqual(payload["details"]["status"], "ok")
+
+    def test_runs_catch_up_tick_when_no_previous_scheduler_run_exists(self) -> None:
+        self.assertIsNotNone(should_run_catch_up_tick)
+
+        should_run = should_run_catch_up_tick(
+            last_scheduler_run_started_at=None,
+            now="2026-04-28T12:00:00",
+            interval_seconds=7200,
+        )
+
+        self.assertEqual(should_run, True)
+
+    def test_runs_catch_up_tick_when_previous_scheduler_run_is_overdue(self) -> None:
+        self.assertIsNotNone(should_run_catch_up_tick)
+
+        should_run = should_run_catch_up_tick(
+            last_scheduler_run_started_at="2026-04-28T08:59:59",
+            now="2026-04-28T12:00:00",
+            interval_seconds=7200,
+        )
+
+        self.assertEqual(should_run, True)
+
+    def test_skips_catch_up_tick_when_previous_scheduler_run_is_still_fresh(self) -> None:
+        self.assertIsNotNone(should_run_catch_up_tick)
+
+        should_run = should_run_catch_up_tick(
+            last_scheduler_run_started_at="2026-04-28T10:30:00",
+            now="2026-04-28T12:00:00",
+            interval_seconds=7200,
+        )
+
+        self.assertEqual(should_run, False)
 
 
 if __name__ == "__main__":

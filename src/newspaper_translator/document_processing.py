@@ -1,7 +1,11 @@
 from dataclasses import dataclass
+from pathlib import Path
 import sqlite3
 import uuid
 
+from newspaper_translator.article_enrichment import enrich_article
+from newspaper_translator.article_pipeline import persist_document_articles
+from newspaper_translator.article_store import list_latest_document_articles
 from newspaper_translator.database import sqlite_path_from_database_url
 
 
@@ -348,3 +352,387 @@ def list_eligible_document_processing_runs(
         )
         for row in rows
     ]
+
+
+def fail_document_processing_run(
+    *,
+    database_url: str,
+    document_key: str,
+    failed_step: str,
+    error_message: str,
+    automatic_failure_limit: int = 2,
+) -> DocumentProcessingRun:
+    stored_run = get_document_processing_run(
+        database_url=database_url,
+        document_key=document_key,
+    )
+    new_failure_count = stored_run.automatic_failure_count + 1
+    new_status = (
+        "failed_terminal"
+        if new_failure_count >= automatic_failure_limit
+        else "failed_retryable"
+    )
+
+    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+    try:
+        connection.execute(
+            """
+            UPDATE document_processing_runs
+            SET
+                status = ?,
+                current_step = ?,
+                automatic_failure_count = ?,
+                last_failure_step = ?,
+                last_error_message = ?,
+                last_attempt_finished_at = CURRENT_TIMESTAMP,
+                locked_by = NULL,
+                lock_expires_at = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE document_key = ?
+            """,
+            (
+                new_status,
+                failed_step,
+                new_failure_count,
+                failed_step,
+                error_message,
+                document_key,
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    return get_document_processing_run(
+        database_url=database_url,
+        document_key=document_key,
+    )
+
+
+def request_manual_document_retry(
+    *,
+    database_url: str,
+    document_key: str,
+) -> DocumentProcessingRun:
+    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+    try:
+        connection.execute(
+            """
+            UPDATE document_processing_runs
+            SET
+                status = 'manual_retry_requested',
+                locked_by = NULL,
+                lock_expires_at = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE document_key = ?
+            """,
+            (document_key,),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    return get_document_processing_run(
+        database_url=database_url,
+        document_key=document_key,
+    )
+
+
+def succeed_document_processing_run(
+    *,
+    database_url: str,
+    document_key: str,
+) -> DocumentProcessingRun:
+    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+    try:
+        connection.execute(
+            """
+            UPDATE document_processing_runs
+            SET
+                status = 'succeeded',
+                current_step = 'completed',
+                last_attempt_finished_at = CURRENT_TIMESTAMP,
+                locked_by = NULL,
+                lock_expires_at = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE document_key = ?
+            """,
+            (document_key,),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    return get_document_processing_run(
+        database_url=database_url,
+        document_key=document_key,
+    )
+
+
+def process_document(
+    *,
+    database_url: str,
+    document_key: str,
+    locked_by: str,
+    parse_persist_document=None,
+    output_root: Path | str | None = None,
+    mineru_client=None,
+    continuation_matcher=None,
+    parser_name: str = "",
+    parser_version: str = "",
+    continuation_matcher_name: str = "",
+    continuation_matcher_version: str = "",
+    enrich_document=None,
+    translator=None,
+    summarizer_tagger=None,
+    provider_name: str = "",
+    model_name: str = "",
+    prompt_version: str = "",
+    step_retry_limit: int = 2,
+    lock_timeout_seconds: int = 600,
+    scheduler_run_id: str | None = None,
+) -> DocumentProcessingRun:
+    create_document_processing_run(
+        database_url=database_url,
+        document_key=document_key,
+    )
+    claimed_run = claim_document_processing_run(
+        database_url=database_url,
+        document_key=document_key,
+        locked_by=locked_by,
+        lock_timeout_seconds=lock_timeout_seconds,
+        scheduler_run_id=scheduler_run_id,
+    )
+    if claimed_run is None:
+        return get_document_processing_run(
+            database_url=database_url,
+            document_key=document_key,
+        )
+
+    if parse_persist_document is None:
+        parse_persist_document = _build_parse_persist_callback(
+            database_url=database_url,
+            output_root=output_root,
+            mineru_client=mineru_client,
+            continuation_matcher=continuation_matcher,
+            parser_name=parser_name,
+            parser_version=parser_version,
+            continuation_matcher_name=continuation_matcher_name,
+            continuation_matcher_version=continuation_matcher_version,
+        )
+
+    parse_error = _run_step_with_retry(
+        callback=parse_persist_document,
+        document_key=document_key,
+        step_retry_limit=step_retry_limit,
+    )
+    if parse_error is not None:
+        return fail_document_processing_run(
+            database_url=database_url,
+            document_key=document_key,
+            failed_step="parse_persist",
+            error_message=str(parse_error),
+        )
+
+    _update_document_processing_current_step(
+        database_url=database_url,
+        document_key=document_key,
+        current_step="enrich",
+    )
+    if enrich_document is None:
+        enrich_document = _build_document_enrichment_callback(
+            database_url=database_url,
+            translator=translator,
+            summarizer_tagger=summarizer_tagger,
+            provider_name=provider_name,
+            model_name=model_name,
+            prompt_version=prompt_version,
+        )
+    enrich_error = _run_step_with_retry(
+        callback=enrich_document,
+        document_key=document_key,
+        step_retry_limit=step_retry_limit,
+    )
+    if enrich_error is not None:
+        return fail_document_processing_run(
+            database_url=database_url,
+            document_key=document_key,
+            failed_step="enrich",
+            error_message=str(enrich_error),
+        )
+
+    return succeed_document_processing_run(
+        database_url=database_url,
+        document_key=document_key,
+    )
+
+
+def _run_step_with_retry(*, callback, document_key: str, step_retry_limit: int):
+    last_error = None
+    for _ in range(step_retry_limit + 1):
+        try:
+            callback(document_key=document_key)
+            return None
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+    return last_error
+
+
+def _update_document_processing_current_step(
+    *,
+    database_url: str,
+    document_key: str,
+    current_step: str,
+) -> None:
+    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+    try:
+        connection.execute(
+            """
+            UPDATE document_processing_runs
+            SET
+                current_step = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE document_key = ?
+            """,
+            (
+                current_step,
+                document_key,
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def enrich_document_articles(
+    *,
+    database_url: str,
+    document_key: str,
+    translator,
+    summarizer_tagger,
+    provider_name: str,
+    model_name: str,
+    prompt_version: str,
+):
+    articles = list_latest_document_articles(
+        database_url=database_url,
+        document_key=document_key,
+    )
+    if not articles:
+        raise LookupError(f"No latest document articles found for: {document_key}")
+
+    runs = []
+    for article in articles:
+        run = enrich_article(
+            database_url=database_url,
+            article_id=article.article_id,
+            translator=translator,
+            summarizer_tagger=summarizer_tagger,
+            provider_name=provider_name,
+            model_name=model_name,
+            prompt_version=prompt_version,
+        )
+        runs.append(run)
+        if run.status != "succeeded":
+            raise RuntimeError(
+                f"Article enrichment did not succeed for {article.article_id}: {run.status}"
+            )
+    return runs
+
+
+def _build_document_enrichment_callback(
+    *,
+    database_url: str,
+    translator,
+    summarizer_tagger,
+    provider_name: str,
+    model_name: str,
+    prompt_version: str,
+):
+    def _callback(*, document_key: str) -> None:
+        enrich_document_articles(
+            database_url=database_url,
+            document_key=document_key,
+            translator=translator,
+            summarizer_tagger=summarizer_tagger,
+            provider_name=provider_name,
+            model_name=model_name,
+            prompt_version=prompt_version,
+        )
+
+    return _callback
+
+
+def _build_parse_persist_callback(
+    *,
+    database_url: str,
+    output_root: Path | str | None,
+    mineru_client,
+    continuation_matcher,
+    parser_name: str,
+    parser_version: str,
+    continuation_matcher_name: str,
+    continuation_matcher_version: str,
+):
+    if output_root is None:
+        raise ValueError("output_root is required when parse_persist_document is not provided")
+    if mineru_client is None:
+        raise ValueError("mineru_client is required when parse_persist_document is not provided")
+
+    def _callback(*, document_key: str) -> None:
+        persist_document_articles(
+            database_url=database_url,
+            document_key=document_key,
+            output_root=Path(output_root),
+            mineru_client=mineru_client,
+            continuation_matcher=continuation_matcher,
+            parser_name=parser_name,
+            parser_version=parser_version,
+            continuation_matcher_name=continuation_matcher_name,
+            continuation_matcher_version=continuation_matcher_version,
+        )
+
+    return _callback
+
+
+def recover_stale_document_runs(
+    *,
+    database_url: str,
+    running_timeout_seconds: int,
+    automatic_failure_limit: int = 2,
+) -> list[DocumentProcessingRun]:
+    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+    try:
+        rows = connection.execute(
+            """
+            SELECT document_key
+            FROM document_processing_runs
+            WHERE status = 'running'
+              AND last_attempt_started_at IS NOT NULL
+              AND last_attempt_started_at <= datetime(
+                    CURRENT_TIMESTAMP,
+                    '-' || ? || ' seconds'
+              )
+            ORDER BY last_attempt_started_at ASC, rowid ASC
+            """,
+            (running_timeout_seconds,),
+        ).fetchall()
+    finally:
+        connection.close()
+
+    recovered_runs = []
+    for row in rows:
+        stale_run = get_document_processing_run(
+            database_url=database_url,
+            document_key=row[0],
+        )
+        recovered_runs.append(
+            fail_document_processing_run(
+                database_url=database_url,
+                document_key=stale_run.document_key,
+                failed_step=stale_run.current_step,
+                error_message="stale running timeout during automatic recovery",
+                automatic_failure_limit=automatic_failure_limit,
+            )
+        )
+    return recovered_runs

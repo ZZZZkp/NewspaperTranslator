@@ -36,6 +36,12 @@ Completed so far in the repository:
   - create or upsert document-processing state
   - claim one document safely without double claim
   - list eligible documents in priority order with `manual_retry_requested` first
+  - mark document `failed_retryable` or `failed_terminal`
+  - request manual retry for a terminal or failed document
+  - run a minimal shared `process_document(...)` orchestration path with immediate step retry
+  - enrich one document's latest visible article set through the existing article-level enrichment pipeline
+  - recover stale `running` documents into retryable or terminal failure state
+- added worker-side pure catch-up scheduling logic for overdue tick detection
 - added targeted TDD coverage for the new migration and persistence helpers
 
 Not implemented yet:
@@ -43,7 +49,7 @@ Not implemented yet:
 - document failure-state mutation helpers
 - manual retry mutation helpers
 - stale-running recovery helpers
-- document-level parse and enrich orchestration
+- real parse-persist orchestration wiring
 - worker scheduler loop and CLI entrypoints
 
 The repository already has the main building blocks needed for this slice:
@@ -105,7 +111,14 @@ Current status on 2026-04-28:
 - idempotent document state initialization: done
 - safe single-document claim: done
 - eligible-document priority ordering: done
-- failure-state and recovery helpers: not started
+- automatic failure-state transitions: done
+- manual retry reactivation: done
+- minimal process orchestration with immediate retry: done
+- real document-level enrichment wiring: done
+- real parse-persist wiring: done
+- stale-running recovery helpers: done
+- worker catch-up tick decision logic: done
+- scheduler loop integration: not started
 
 ### Slice 2: Document Processing Orchestration Service
 

@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 import os
 import time
 
@@ -24,10 +25,31 @@ def build_startup_log_line(
     )
 
 
+def should_run_catch_up_tick(
+    *,
+    last_scheduler_run_started_at: str | None,
+    now: str,
+    interval_seconds: int,
+) -> bool:
+    if not last_scheduler_run_started_at:
+        return True
+    last_started_at = _parse_timestamp(last_scheduler_run_started_at)
+    now_dt = _parse_timestamp(now)
+    return now_dt - last_started_at >= timedelta(seconds=interval_seconds)
+
+
 def main() -> None:
     print(build_startup_log_line(dict(os.environ)), flush=True)
     while True:
         time.sleep(60)
+
+
+def _parse_timestamp(value: str) -> datetime:
+    normalized = value.strip().replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return datetime.strptime(normalized, "%Y-%m-%d %H:%M:%S")
 
 
 if __name__ == "__main__":

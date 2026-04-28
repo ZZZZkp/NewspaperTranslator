@@ -67,7 +67,15 @@ Current automatic-processing behavior:
 - document-processing state creation is idempotent for repeated initialization of the same document
 - one eligible document can now be claimed safely without double claim
 - eligible document ordering now prioritizes `manual_retry_requested` ahead of `pending`, then `failed_retryable`
-- this slice is intentionally persistence-only so far; it does not yet execute parse or enrichment automatically
+- exhausted automatic failures now transition documents into `failed_retryable` and then `failed_terminal`
+- manual retry now reactivates a terminal document into `manual_retry_requested`
+- `process_document(...)` now provides a minimal shared orchestration path with step-level immediate retry and final success/failure state updates
+- `enrich_document_articles(...)` now runs one document's latest visible article set through the existing article-level enrichment pipeline
+- `process_document(...)` can now use the real document-level enrichment path instead of only an injected enrichment stub
+- `process_document(...)` can now also use the real parse-persist pipeline through `persist_document_articles(...)`
+- stale `running` documents can now be recovered into retryable or terminal failure state through control-plane recovery helpers
+- `worker.py` now has a pure catch-up scheduling decision helper for overdue tick detection
+- the current orchestration path is still not wired to the real worker loop or CLI
 
 ## Real Validation Notes
 
@@ -110,6 +118,17 @@ Ran 9 tests in 0.206s
 OK
 ```
 
+Expanded automatic-processing control-plane checks:
+
+```bash
+python3 -m unittest tests.test_database tests.test_document_processing
+```
+
+```text
+Ran 28 tests in 0.678s
+OK
+```
+
 ## Phase 3 Snapshot
 
 Completed Phase 3 slices so far:
@@ -125,6 +144,9 @@ Completed Phase 3 slices so far:
 - CLI read/write surfaces for persisted article enrichment
 - durable scheduler-run and document-processing control-plane persistence
 - single-document safe claim and eligible-document priority ordering for future automatic processing
+- document failure-state transitions, manual retry reactivation, and a first shared `process_document(...)` orchestration path
+- real document-level latest-visible article enrichment wiring inside the control-plane orchestration layer
+- real parse-persist wiring, stale-run recovery, and catch-up tick decision logic for the future worker loop
 
 Still not implemented:
 
@@ -132,11 +154,12 @@ Still not implemented:
 - stronger cleanup and normalization for MinerU newspaper-layout noise before enrichment
 - explicit protection rules for untranslated or verbatim-preserved continuation markers
 - document-level or batch-level enrichment orchestration
-- document failure-state transitions, recovery helpers, and manual retry mutation paths
+- stale-running recovery helpers
+- scheduler loop integration that calls recovery and catch-up decisions at runtime
 - worker-driven background enrichment scheduling and retries
 - dashboard routes or UI for browsing persisted article data
 - post-processing for ads, notices, and other non-article content beyond current heuristics
 
 ## Suggested Next Step
 
-The next automatic-processing slice should move from persistence into orchestration semantics: add document failure-state transitions, manual retry reactivation, and `process_document(...)` step execution with immediate retry before touching the long-running worker loop.
+The next automatic-processing slice should integrate the new recovery and catch-up helpers into a real long-running worker scheduler loop and then expose narrow CLI entrypoints for manual triggering and inspection.

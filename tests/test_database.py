@@ -153,8 +153,58 @@ class DatabaseMigrationTests(unittest.TestCase):
                 "0003_checkpointing_retry",
                 "0004_import_run_retry_summary",
                 "0005_article_persistence_enrichment",
+                "0006_scheduled_automatic_document_processing",
             ],
         )
+
+    def test_applies_scheduled_automatic_processing_schema_migration(self) -> None:
+        self.assertIsNotNone(
+            run_pending_migrations,
+            "run_pending_migrations should be importable from newspaper_translator.database",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+
+            applied_versions = run_pending_migrations(database_url)
+
+            connection = sqlite3.connect(database_path)
+            try:
+                table_names = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    )
+                }
+                scheduler_runs_columns = {
+                    row[1]
+                    for row in connection.execute("PRAGMA table_info(scheduler_runs)")
+                }
+                document_processing_runs_columns = {
+                    row[1]
+                    for row in connection.execute(
+                        "PRAGMA table_info(document_processing_runs)"
+                    )
+                }
+                recorded_versions = [
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT version FROM schema_migrations ORDER BY version"
+                    )
+                ]
+            finally:
+                connection.close()
+
+        self.assertIn("0006_scheduled_automatic_document_processing", applied_versions)
+        self.assertIn("scheduler_runs", table_names)
+        self.assertIn("document_processing_runs", table_names)
+        self.assertIn("scheduler_run_id", scheduler_runs_columns)
+        self.assertIn("trigger_type", scheduler_runs_columns)
+        self.assertIn("document_key", document_processing_runs_columns)
+        self.assertIn("automatic_failure_count", document_processing_runs_columns)
+        self.assertIn("locked_by", document_processing_runs_columns)
+        self.assertIn("0006_scheduled_automatic_document_processing", recorded_versions)
 
     def test_applies_article_persistence_and_enrichment_schema_migration(self) -> None:
         self.assertIsNotNone(
@@ -245,6 +295,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 "0003_checkpointing_retry",
                 "0004_import_run_retry_summary",
                 "0005_article_persistence_enrichment",
+                "0006_scheduled_automatic_document_processing",
             ],
         )
 

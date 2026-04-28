@@ -24,7 +24,27 @@ This plan turns the approved automatic-processing design into a staged delivery 
 
 ## Execution Status
 
-Status on 2026-04-28: planned, not yet implemented.
+Status on 2026-04-28: in progress.
+
+Completed so far in the repository:
+
+- added migration `0006_scheduled_automatic_document_processing`
+- added durable `scheduler_runs` persistence
+- added durable `document_processing_runs` persistence
+- added repository helpers to:
+  - create and finalize scheduler runs
+  - create or upsert document-processing state
+  - claim one document safely without double claim
+  - list eligible documents in priority order with `manual_retry_requested` first
+- added targeted TDD coverage for the new migration and persistence helpers
+
+Not implemented yet:
+
+- document failure-state mutation helpers
+- manual retry mutation helpers
+- stale-running recovery helpers
+- document-level parse and enrich orchestration
+- worker scheduler loop and CLI entrypoints
 
 The repository already has the main building blocks needed for this slice:
 
@@ -77,6 +97,15 @@ Exit criteria:
 - one scheduler run can be created and finalized
 - one imported document can hold current automation state in `document_processing_runs`
 - claim and update helpers support safe single-document ownership
+
+Current status on 2026-04-28:
+
+- scheduler-run create/finalize: done
+- document current-state persistence: done
+- idempotent document state initialization: done
+- safe single-document claim: done
+- eligible-document priority ordering: done
+- failure-state and recovery helpers: not started
 
 ### Slice 2: Document Processing Orchestration Service
 

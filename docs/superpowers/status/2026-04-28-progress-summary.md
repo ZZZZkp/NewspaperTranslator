@@ -20,6 +20,7 @@ The repository currently provides:
 - durable enrichment-run, enrichment-output, and ordered article-tag persistence
 - executable Gemini-backed translation, summary, and tagging for one persisted article
 - read-only CLI query surfaces for current visible article sets, enrichment results, and parse-run debug artifacts
+- an initial scheduled-processing control plane with durable scheduler-run and document-processing state
 
 ## What Was Added On 2026-04-28
 
@@ -51,6 +52,23 @@ Current behavior:
 - latest-visible rules now preserve older usable parse or enrichment results when a newer run fails
 - the translation prompt now tells Gemini that the source may be a newspaper continuation fragment and instructs it to preserve jump markers rather than silently dropping them
 
+Additional automatic-processing foundation implemented in:
+
+- [document_processing.py](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/src/newspaper_translator/document_processing.py)
+- [0006_scheduled_automatic_document_processing.sql](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/src/newspaper_translator/migrations/0006_scheduled_automatic_document_processing.sql)
+- [test_document_processing.py](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/tests/test_document_processing.py)
+- [test_database.py](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/tests/test_database.py)
+
+Current automatic-processing behavior:
+
+- `scheduler_runs` now persists one scheduler tick control-plane record with aggregate result counters
+- `document_processing_runs` now persists one current-state automation record per `document_key`
+- scheduler runs can now be created, finalized, and reloaded through one focused repository module
+- document-processing state creation is idempotent for repeated initialization of the same document
+- one eligible document can now be claimed safely without double claim
+- eligible document ordering now prioritizes `manual_retry_requested` ahead of `pending`, then `failed_retryable`
+- this slice is intentionally persistence-only so far; it does not yet execute parse or enrichment automatically
+
 ## Real Validation Notes
 
 Validated against the local Wall Street Journal sample PDF:
@@ -81,6 +99,17 @@ Ran 103 tests in 3.547s
 OK
 ```
 
+Automatic-processing foundation spot checks:
+
+```bash
+python3 -m unittest tests.test_database tests.test_document_processing
+```
+
+```text
+Ran 9 tests in 0.206s
+OK
+```
+
 ## Phase 3 Snapshot
 
 Completed Phase 3 slices so far:
@@ -94,6 +123,8 @@ Completed Phase 3 slices so far:
 - enrichment persistence foundations and validation rules
 - executable single-article Gemini enrichment with versioned translation, summary, and tags
 - CLI read/write surfaces for persisted article enrichment
+- durable scheduler-run and document-processing control-plane persistence
+- single-document safe claim and eligible-document priority ordering for future automatic processing
 
 Still not implemented:
 
@@ -101,10 +132,11 @@ Still not implemented:
 - stronger cleanup and normalization for MinerU newspaper-layout noise before enrichment
 - explicit protection rules for untranslated or verbatim-preserved continuation markers
 - document-level or batch-level enrichment orchestration
+- document failure-state transitions, recovery helpers, and manual retry mutation paths
 - worker-driven background enrichment scheduling and retries
 - dashboard routes or UI for browsing persisted article data
 - post-processing for ads, notices, and other non-article content beyond current heuristics
 
 ## Suggested Next Step
 
-The next Phase 3 milestone should harden enrichment input quality before scaling execution. The highest-value next slice is to normalize MinerU newspaper artifacts and define explicit continuation-marker handling rules so enrichment runs operate on cleaner article text and preserve cross-page navigation cues predictably.
+The next automatic-processing slice should move from persistence into orchestration semantics: add document failure-state transitions, manual retry reactivation, and `process_document(...)` step execution with immediate retry before touching the long-running worker loop.

@@ -19,6 +19,27 @@ The target outcome is:
 - reliable `succeeded`, `partial`, and `failed` run semantics
 - a minimal CLI read surface for the latest visible enrichment result
 
+## Execution Status
+
+Status on 2026-04-28: completed for the intended single-article execution slice.
+
+Delivered implementation:
+
+- repository read helpers for loading one `final_article` and one latest visible enrichment record
+- `GeminiArticleTranslator` for strict-JSON title/body translation
+- `GeminiArticleSummarizerTagger` for strict-JSON summary and ordered tags
+- `article_enrichment.py` orchestration with `succeeded`, `partial`, and `failed` run semantics
+- `phase3-enrich-article` CLI write path
+- `phase3-latest-enrichment` CLI read path
+- prompt version `article-enrichment-v2` with explicit newspaper-fragment and continuation-marker guidance
+
+Validation notes:
+
+- targeted TDD cycle completed for storage helpers, Gemini clients, orchestration, and CLI
+- local test suite passed after implementation
+- real PDF visual inspection and real Gemini runs confirmed the end-to-end path works on the local Wall Street Journal sample
+- real validation showed that enrichment quality depends heavily on whether continuation fragments have been merged and on how much MinerU layout noise remains in the English source text
+
 ## Current Starting Point
 
 The repository already provides:
@@ -30,16 +51,13 @@ The repository already provides:
 - a Gemini HTTP integration pattern through the continuation matcher
 - CLI patterns for parse-time write paths and read-only inspection commands
 
-The main missing pieces are:
-
-- a Gemini client for article translation
-- a Gemini client for summary and tag generation
-- orchestration logic that executes both stages and persists results
-- write and read CLI entrypoints for enrichment
+The original gaps listed in this plan have now been filled for the single-article execution slice.
 
 ## Recommended Delivery Order
 
 ### Slice 1: Read Path Foundations
+
+Status: completed
 
 Add the missing article-centric repository helpers needed by the enrichment pipeline.
 
@@ -58,8 +76,11 @@ Exit criteria:
 
 - one persisted final article can be loaded as a stable enrichment input object
 - latest visible enrichment remains queryable by article id
+- completed through `get_final_article(...)` and `get_latest_article_enrichment(...)`
 
 ### Slice 2: Gemini Translation Client
+
+Status: completed
 
 Implement a dedicated translation client that only returns:
 
@@ -83,8 +104,11 @@ Exit criteria:
 
 - one English article input produces a parsed translation result object
 - malformed JSON or missing required fields fail deterministically
+- completed through `GeminiArticleTranslator`
 
 ### Slice 3: Gemini Summary And Tag Client
+
+Status: completed
 
 Implement a second dedicated Gemini client that returns:
 
@@ -108,8 +132,11 @@ Exit criteria:
 
 - one article plus successful translation can produce a valid summary and ordered tags
 - invalid tag counts or empty summary values fail deterministically
+- completed through `GeminiArticleSummarizerTagger`
 
 ### Slice 4: Enrichment Orchestration
+
+Status: completed
 
 Implement the main enrichment execution service in a focused module such as `article_enrichment.py`.
 
@@ -133,8 +160,11 @@ Exit criteria:
 - successful two-stage execution persists outputs and tags and ends in `succeeded`
 - translation success plus later failure ends in `partial`
 - translation failure ends in `failed`
+- completed through `enrich_article(...)`
 
 ### Slice 5: CLI Write Surface
+
+Status: completed
 
 Add a narrow execution command:
 
@@ -156,8 +186,11 @@ Exit criteria:
 
 - the command can enrich one persisted article end to end
 - output includes the created run id and final status
+- completed through `phase3-enrich-article`
 
 ### Slice 6: CLI Read Surface
+
+Status: completed
 
 Add a minimal inspection command:
 
@@ -177,6 +210,21 @@ Exit criteria:
 
 - one successfully enriched article can be inspected through CLI
 - later failed runs do not hide older usable output
+- completed through `phase3-latest-enrichment`
+
+## Execution Notes
+
+What worked well:
+
+- the two-stage Gemini split aligned cleanly with the persistence model and made `partial` semantics straightforward
+- strict JSON contracts kept parsing and validation logic small and testable
+- TDD kept the slice focused and avoided mixing transport, orchestration, and CLI concerns
+
+What was learned during real validation:
+
+- MinerU output can still contain broken words, glued continuation markers, and occasional stray tokens
+- if continuation matching does not run, Gemini can produce fluent Chinese from an incomplete fragment, which risks hiding upstream article-boundary problems
+- the `article-enrichment-v2` prompt improves behavior by warning Gemini about newspaper continuation fragments and asking it to preserve jump markers, but current output still translates some markers rather than preserving the exact English source string
 
 ## TDD Queue
 
@@ -203,19 +251,26 @@ Recommended first tests in order:
 11. `phase3-enrich-article calls orchestration and returns run JSON`
 12. `phase3-latest-enrichment returns the latest visible enrichment record`
 
+Implemented additional tests beyond the original queue:
+
+- translation prompt includes newspaper-fragment and jump-marker guidance
+- summary payload rejects line breaks
+- orchestration persists `partial` when stage two fails
+- orchestration persists `failed` when translation fails
+
 ## Suggested File-Level Delivery
 
 ### Likely production files
 
 - [gemini.py](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/src/newspaper_translator/gemini.py)
 - [article_store.py](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/src/newspaper_translator/article_store.py)
-- `src/newspaper_translator/article_enrichment.py`
+- [article_enrichment.py](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/src/newspaper_translator/article_enrichment.py)
 - [manage.py](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/src/newspaper_translator/manage.py)
 
 ### Likely test files
 
 - [test_gemini.py](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/tests/test_gemini.py)
-- `tests/test_article_enrichment.py`
+- [test_article_enrichment.py](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/tests/test_article_enrichment.py)
 - [test_manage.py](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/tests/test_manage.py)
 - possibly [test_article_store.py](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/tests/test_article_store.py) for read helper additions
 
@@ -235,6 +290,8 @@ Recommended first tests in order:
 - dashboard article cards or detail pages
 - non-Gemini providers
 - prompt optimization for style beyond the first strict-output baseline
+- systematic cleanup of MinerU newspaper-layout artifacts before enrichment
+- hard guarantees that continuation markers stay verbatim in the translated output
 
 ## Success Criteria
 
@@ -246,14 +303,16 @@ We should consider this plan successfully executed when the repository can:
 - record correct `succeeded`, `partial`, and `failed` run history
 - expose the latest visible enrichment result through CLI
 
-## Recommended First Vertical Slice
+Result: achieved for the single-article execution slice.
 
-The fastest reliable first slice is:
+## Recommended Next Vertical Slice
 
-1. add a repository helper that loads one final article by `article_id`
-2. implement the translation Gemini client
-3. implement just enough orchestration to create a run and persist a successful translation-plus-summary-plus-tags result
-4. expose it through `phase3-enrich-article`
-5. then add `phase3-latest-enrichment`
+The next highest-value slice should focus on enrichment input quality and continuation safety:
 
-This order gets one real end-to-end result into the database quickly while keeping the code easy to verify and expand later.
+1. normalize MinerU newspaper artifacts before enrichment
+2. detect and preserve continuation markers in a deterministic pre-enrichment step
+3. define when markers should remain verbatim English versus when a structured placeholder should be used
+4. add tests using real noisy examples such as `PleaseturntopageA7`, broken hyphenation, and stray OCR tokens
+5. only after that, expand from single-article enrichment to document-level and worker-level execution
+
+This order hardens correctness before adding scale.

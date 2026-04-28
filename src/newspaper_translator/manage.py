@@ -5,6 +5,14 @@ import os
 from pathlib import Path
 import sys
 
+from newspaper_translator.article_pipeline import persist_document_articles
+from newspaper_translator.article_store import (
+    list_latest_document_articles,
+    list_parse_run_continuation_matches,
+    list_parse_run_final_articles,
+    list_parse_run_fragments,
+    list_parse_runs,
+)
 from newspaper_translator.config import GeminiSettings, MineruSettings
 from newspaper_translator.gemini import GeminiContinuationMatcher
 from newspaper_translator.import_audit import (
@@ -65,6 +73,31 @@ def run_cli(argv: list[str]) -> tuple[int, str]:
 
     phase3_parse_md_parser = subparsers.add_parser("phase3-parse-md")
     phase3_parse_md_parser.add_argument("--markdown-path", required=True)
+
+    phase3_persist_document_parser = subparsers.add_parser("phase3-persist-document")
+    phase3_persist_document_parser.add_argument("--document-key", required=True)
+    phase3_persist_document_parser.add_argument("--database-url")
+    phase3_persist_document_parser.add_argument("--output-root", required=True)
+
+    phase3_latest_articles_parser = subparsers.add_parser("phase3-latest-articles")
+    phase3_latest_articles_parser.add_argument("--database-url")
+    phase3_latest_articles_parser.add_argument("--document-key", required=True)
+
+    phase3_parse_runs_parser = subparsers.add_parser("phase3-parse-runs")
+    phase3_parse_runs_parser.add_argument("--database-url")
+    phase3_parse_runs_parser.add_argument("--document-key", required=True)
+
+    phase3_parse_run_fragments_parser = subparsers.add_parser("phase3-parse-run-fragments")
+    phase3_parse_run_fragments_parser.add_argument("--database-url")
+    phase3_parse_run_fragments_parser.add_argument("--parse-run-id", required=True)
+
+    phase3_parse_run_matches_parser = subparsers.add_parser("phase3-parse-run-matches")
+    phase3_parse_run_matches_parser.add_argument("--database-url")
+    phase3_parse_run_matches_parser.add_argument("--parse-run-id", required=True)
+
+    phase3_parse_run_articles_parser = subparsers.add_parser("phase3-parse-run-articles")
+    phase3_parse_run_articles_parser.add_argument("--database-url")
+    phase3_parse_run_articles_parser.add_argument("--parse-run-id", required=True)
 
     args = parser.parse_args(argv)
 
@@ -149,6 +182,58 @@ def run_cli(argv: list[str]) -> tuple[int, str]:
         )
         return 0, json.dumps(_to_jsonable(articles), sort_keys=True)
 
+    if args.command == "phase3-persist-document":
+        mineru_settings = MineruSettings.from_env(os.environ)
+        mineru_client = MineruClient(settings=mineru_settings)
+        continuation_matcher = _build_continuation_matcher_from_env(os.environ)
+        parse_run = persist_document_articles(
+            database_url=_resolve_setting(args.database_url, "DATABASE_URL"),
+            document_key=args.document_key,
+            output_root=Path(args.output_root),
+            mineru_client=mineru_client,
+            continuation_matcher=continuation_matcher,
+            parser_name="mineru",
+            parser_version=mineru_settings.model_version,
+            continuation_matcher_name=_continuation_matcher_name_from_env(os.environ),
+            continuation_matcher_version=_continuation_matcher_version_from_env(os.environ),
+        )
+        return 0, json.dumps(_to_jsonable(parse_run), sort_keys=True)
+
+    if args.command == "phase3-latest-articles":
+        articles = list_latest_document_articles(
+            database_url=_resolve_setting(args.database_url, "DATABASE_URL"),
+            document_key=args.document_key,
+        )
+        return 0, json.dumps(_to_jsonable(articles), sort_keys=True)
+
+    if args.command == "phase3-parse-runs":
+        runs = list_parse_runs(
+            database_url=_resolve_setting(args.database_url, "DATABASE_URL"),
+            document_key=args.document_key,
+        )
+        return 0, json.dumps(_to_jsonable(runs), sort_keys=True)
+
+    if args.command == "phase3-parse-run-fragments":
+        fragments = list_parse_run_fragments(
+            database_url=_resolve_setting(args.database_url, "DATABASE_URL"),
+            parse_run_id=args.parse_run_id,
+        )
+        return 0, json.dumps(_to_jsonable(fragments), sort_keys=True)
+
+    if args.command == "phase3-parse-run-matches":
+        matches = list_parse_run_continuation_matches(
+            database_url=_resolve_setting(args.database_url, "DATABASE_URL"),
+            parse_run_id=args.parse_run_id,
+        )
+        return 0, json.dumps(_to_jsonable(matches), sort_keys=True)
+
+    if args.command == "phase3-parse-run-articles":
+        articles = list_parse_run_final_articles(
+            database_url=_resolve_setting(args.database_url, "DATABASE_URL"),
+            parse_run_id=args.parse_run_id,
+        )
+        return 0, json.dumps(_to_jsonable(articles), sort_keys=True)
+
     return 1, "Unknown command"
 
 
@@ -169,6 +254,18 @@ def _build_continuation_matcher_from_env(env) -> GeminiContinuationMatcher | Non
         return None
     settings = GeminiSettings.from_env(env)
     return GeminiContinuationMatcher(settings=settings)
+
+
+def _continuation_matcher_name_from_env(env) -> str:
+    if not env.get("GEMINI_TOKEN", "").strip():
+        return ""
+    return "gemini"
+
+
+def _continuation_matcher_version_from_env(env) -> str:
+    if not env.get("GEMINI_TOKEN", "").strip():
+        return ""
+    return env.get("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
 
 
 def _to_jsonable(value):

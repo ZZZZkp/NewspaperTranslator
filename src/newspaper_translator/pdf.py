@@ -21,6 +21,39 @@ class PageArticle:
     body_text: str
 
 
+@dataclass(frozen=True)
+class ParseMatchDecision:
+    front_source_order: int | None
+    back_source_order: int | None
+    decision_status: str
+    decision_reason: str
+    matcher_raw_response: str
+
+
+@dataclass(frozen=True)
+class ArticleSource:
+    source_order: int
+    fragment_role: str
+    sequence_index: int
+
+
+@dataclass(frozen=True)
+class ParsedArticle:
+    article_order: int
+    primary_source_order: int
+    source_fragment_count: int
+    title: str
+    body_text: str
+    source_fragments: list[ArticleSource]
+
+
+@dataclass(frozen=True)
+class ParseResult:
+    fragments: list[ArticleFragment]
+    match_decisions: list[ParseMatchDecision]
+    articles: list[ParsedArticle]
+
+
 def extract_article_fragments_from_mineru_markdown(markdown_text: str) -> list[ArticleFragment]:
     fragments: list[ArticleFragment] = []
     current_title: str | None = None
@@ -89,30 +122,19 @@ def extract_articles_from_mineru_markdown(
     *,
     continuation_matcher=None,
 ) -> list[PageArticle]:
-    fragments = extract_article_fragments_from_mineru_markdown(markdown_text)
-    if continuation_matcher is not None:
-        continuation_fragments = [
-            fragment
-            for fragment in fragments
-            if fragment.continued_to_page or fragment.continued_from_page
-        ]
-        try:
-            matches = continuation_matcher(continuation_fragments)
-        except Exception:
-            matches = []
-        fragments = _merge_matched_fragments(
-            fragments,
-            matches=matches,
-        )
+    parse_result = build_parse_result_from_mineru_markdown(
+        markdown_text,
+        continuation_matcher=continuation_matcher,
+    )
     return [
         PageArticle(
-            page_number=index,
+            page_number=article.article_order,
             x=0.0,
-            y_top=float(index),
-            title=fragment.title,
-            body_text=fragment.body_text,
+            y_top=float(article.article_order),
+            title=article.title,
+            body_text=article.body_text,
         )
-        for index, fragment in enumerate(fragments, start=1)
+        for article in parse_result.articles
     ]
 
 
@@ -130,39 +152,205 @@ def parse_pdf_articles(
     )
 
 
-def _merge_matched_fragments(
+def build_parse_result_from_mineru_markdown(
+    markdown_text: str,
+    *,
+    continuation_matcher=None,
+) -> ParseResult:
+    fragments = extract_article_fragments_from_mineru_markdown(markdown_text)
+    match_decisions: list[ParseMatchDecision] = []
+
+    if continuation_matcher is None:
+        accepted_matches: list[tuple[int, int]] = []
+    else:
+        continuation_fragments = [
+            fragment
+            for fragment in fragments
+            if fragment.continued_to_page or fragment.continued_from_page
+        ]
+        try:
+            raw_matches = continuation_matcher(continuation_fragments)
+        except Exception:
+            raw_matches = []
+        accepted_matches, match_decisions = _normalize_match_decisions(
+            fragments,
+            raw_matches=raw_matches,
+        )
+
+    return ParseResult(
+        fragments=fragments,
+        match_decisions=match_decisions,
+        articles=_build_parsed_articles(
+            fragments,
+            accepted_matches=accepted_matches,
+        ),
+    )
+
+
+def _normalize_match_decisions(
     fragments: list[ArticleFragment],
     *,
-    matches,
-) -> list[ArticleFragment]:
+    raw_matches,
+) -> tuple[list[tuple[int, int]], list[ParseMatchDecision]]:
     fragments_by_order = {fragment.source_order: fragment for fragment in fragments}
-    merged_source_orders: set[int] = set()
-    merged_fragments: list[ArticleFragment] = []
+    used_source_orders: set[int] = set()
+    accepted_matches: list[tuple[int, int]] = []
+    match_decisions: list[ParseMatchDecision] = []
 
-    for front_order, back_order in matches:
+    for raw_match in raw_matches:
+        raw_response = repr(raw_match)
+        if not isinstance(raw_match, (tuple, list)) or len(raw_match) != 2:
+            match_decisions.append(
+                ParseMatchDecision(
+                    front_source_order=None,
+                    back_source_order=None,
+                    decision_status="invalid",
+                    decision_reason="match response must be a pair of source orders",
+                    matcher_raw_response=raw_response,
+                )
+            )
+            continue
+
+        front_order, back_order = raw_match
+        if not isinstance(front_order, int) or not isinstance(back_order, int):
+            match_decisions.append(
+                ParseMatchDecision(
+                    front_source_order=None,
+                    back_source_order=None,
+                    decision_status="invalid",
+                    decision_reason="match response must use integer source orders",
+                    matcher_raw_response=raw_response,
+                )
+            )
+            continue
+
         front_fragment = fragments_by_order.get(front_order)
         back_fragment = fragments_by_order.get(back_order)
         if front_fragment is None or back_fragment is None:
+            match_decisions.append(
+                ParseMatchDecision(
+                    front_source_order=front_order,
+                    back_source_order=back_order,
+                    decision_status="invalid",
+                    decision_reason="unknown fragment source order",
+                    matcher_raw_response=raw_response,
+                )
+            )
             continue
-        merged_source_orders.add(front_order)
-        merged_source_orders.add(back_order)
-        merged_fragments.append(
-            ArticleFragment(
-                title=front_fragment.title,
-                body_text=_merge_fragment_body_text(front_fragment, back_fragment),
-                source_order=front_fragment.source_order,
-                continued_to_page=front_fragment.continued_to_page,
-                continued_from_page=back_fragment.continued_from_page,
+
+        if front_order == back_order:
+            match_decisions.append(
+                ParseMatchDecision(
+                    front_source_order=front_order,
+                    back_source_order=back_order,
+                    decision_status="invalid",
+                    decision_reason="cannot match a fragment to itself",
+                    matcher_raw_response=raw_response,
+                )
+            )
+            continue
+
+        if front_order in used_source_orders or back_order in used_source_orders:
+            match_decisions.append(
+                ParseMatchDecision(
+                    front_source_order=front_order,
+                    back_source_order=back_order,
+                    decision_status="ignored",
+                    decision_reason="fragment already matched by an earlier accepted pair",
+                    matcher_raw_response=raw_response,
+                )
+            )
+            continue
+
+        if not front_fragment.continued_to_page or not back_fragment.continued_from_page:
+            match_decisions.append(
+                ParseMatchDecision(
+                    front_source_order=front_order,
+                    back_source_order=back_order,
+                    decision_status="invalid",
+                    decision_reason="fragments are not a valid continuation pair",
+                    matcher_raw_response=raw_response,
+                )
+            )
+            continue
+
+        used_source_orders.add(front_order)
+        used_source_orders.add(back_order)
+        accepted_matches.append((front_order, back_order))
+        match_decisions.append(
+            ParseMatchDecision(
+                front_source_order=front_order,
+                back_source_order=back_order,
+                decision_status="accepted",
+                decision_reason="accepted continuation pair",
+                matcher_raw_response=raw_response,
             )
         )
 
-    for fragment in fragments:
-        if fragment.source_order in merged_source_orders:
-            continue
-        merged_fragments.append(fragment)
+    return accepted_matches, match_decisions
 
-    merged_fragments.sort(key=lambda fragment: fragment.source_order)
-    return merged_fragments
+
+def _build_parsed_articles(
+    fragments: list[ArticleFragment],
+    *,
+    accepted_matches: list[tuple[int, int]],
+) -> list[ParsedArticle]:
+    fragments_by_order = {fragment.source_order: fragment for fragment in fragments}
+    matched_back_orders = {back_order for _, back_order in accepted_matches}
+    accepted_by_front_order = {
+        front_order: back_order
+        for front_order, back_order in accepted_matches
+    }
+    articles: list[ParsedArticle] = []
+
+    for fragment in fragments:
+        if fragment.source_order in matched_back_orders:
+            continue
+
+        back_order = accepted_by_front_order.get(fragment.source_order)
+        if back_order is None:
+            articles.append(
+                ParsedArticle(
+                    article_order=len(articles) + 1,
+                    primary_source_order=fragment.source_order,
+                    source_fragment_count=1,
+                    title=fragment.title,
+                    body_text=fragment.body_text,
+                    source_fragments=[
+                        ArticleSource(
+                            source_order=fragment.source_order,
+                            fragment_role="standalone",
+                            sequence_index=1,
+                        )
+                    ],
+                )
+            )
+            continue
+
+        back_fragment = fragments_by_order[back_order]
+        articles.append(
+            ParsedArticle(
+                article_order=len(articles) + 1,
+                primary_source_order=fragment.source_order,
+                source_fragment_count=2,
+                title=fragment.title,
+                body_text=_merge_fragment_body_text(fragment, back_fragment),
+                source_fragments=[
+                    ArticleSource(
+                        source_order=fragment.source_order,
+                        fragment_role="front",
+                        sequence_index=1,
+                    ),
+                    ArticleSource(
+                        source_order=back_fragment.source_order,
+                        fragment_role="back",
+                        sequence_index=2,
+                    ),
+                ],
+            )
+        )
+
+    return articles
 
 
 def _extract_continued_to_page(body_text: str) -> str:

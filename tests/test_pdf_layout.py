@@ -11,17 +11,97 @@ if str(SRC_ROOT) not in sys.path:
 
 try:
     from newspaper_translator.pdf import (
+        build_parse_result_from_mineru_markdown,
         extract_article_fragments_from_mineru_markdown,
         extract_articles_from_mineru_markdown,
         parse_pdf_articles,
     )
 except ImportError:
+    build_parse_result_from_mineru_markdown = None
     extract_article_fragments_from_mineru_markdown = None
     extract_articles_from_mineru_markdown = None
     parse_pdf_articles = None
 
 
 class PdfLayoutTests(unittest.TestCase):
+    def test_builds_parse_result_with_match_lineage_for_persistence(self) -> None:
+        self.assertIsNotNone(
+            build_parse_result_from_mineru_markdown,
+            "build_parse_result_from_mineru_markdown should be importable from newspaper_translator.pdf",
+        )
+
+        markdown_text = (
+            "# Big Oil Explores Farther Afield To Dodge Middle East Turmoil\n\n"
+            "U.S. oil futures were trading near $90 a barrel Sunday.\n\n"
+            "Please turn to page A7\n\n"
+            "# Big Oil Explores Farther Out\n\n"
+            "Continued from PageOne Friday after President Trump and Iranian officials said the Strait of Hormuz had reopened.\n\n"
+            "The oil companies want to maximize their production.\n"
+        )
+
+        parse_result = build_parse_result_from_mineru_markdown(
+            markdown_text,
+            continuation_matcher=_FakeContinuationMatcher(matches=[(1, 2)]),
+        )
+
+        self.assertEqual(len(parse_result.fragments), 2)
+        self.assertEqual(len(parse_result.match_decisions), 1)
+        self.assertEqual(parse_result.match_decisions[0].decision_status, "accepted")
+        self.assertEqual(parse_result.match_decisions[0].front_source_order, 1)
+        self.assertEqual(parse_result.match_decisions[0].back_source_order, 2)
+        self.assertEqual(len(parse_result.articles), 1)
+        self.assertEqual(parse_result.articles[0].article_order, 1)
+        self.assertEqual(parse_result.articles[0].primary_source_order, 1)
+        self.assertEqual(parse_result.articles[0].source_fragment_count, 2)
+        self.assertEqual(
+            [
+                (source.source_order, source.fragment_role, source.sequence_index)
+                for source in parse_result.articles[0].source_fragments
+            ],
+            [
+                (1, "front", 1),
+                (2, "back", 2),
+            ],
+        )
+        self.assertNotIn("Please turn to page A7", parse_result.articles[0].body_text)
+        self.assertNotIn("Continued from PageOne", parse_result.articles[0].body_text)
+
+    def test_records_invalid_match_decisions_without_losing_fragments(self) -> None:
+        self.assertIsNotNone(
+            build_parse_result_from_mineru_markdown,
+            "build_parse_result_from_mineru_markdown should be importable from newspaper_translator.pdf",
+        )
+
+        markdown_text = (
+            "# Big Oil Explores Farther Afield To Dodge Middle East Turmoil\n\n"
+            "U.S. oil futures were trading near $90 a barrel Sunday.\n\n"
+            "Please turn to page A7\n\n"
+            "# Big Oil Explores Farther Out\n\n"
+            "Continued from PageOne Friday after President Trump and Iranian officials said the Strait of Hormuz had reopened.\n\n"
+            "The oil companies want to maximize their production.\n"
+        )
+
+        parse_result = build_parse_result_from_mineru_markdown(
+            markdown_text,
+            continuation_matcher=_FakeContinuationMatcher(matches=[(1, 99)]),
+        )
+
+        self.assertEqual(len(parse_result.fragments), 2)
+        self.assertEqual(len(parse_result.match_decisions), 1)
+        self.assertEqual(parse_result.match_decisions[0].decision_status, "invalid")
+        self.assertIn("unknown fragment", parse_result.match_decisions[0].decision_reason)
+        self.assertEqual(len(parse_result.articles), 2)
+        self.assertEqual(
+            [
+                (article.primary_source_order, article.source_fragment_count)
+                for article in parse_result.articles
+            ],
+            [
+                (1, 1),
+                (2, 1),
+            ],
+        )
+
     def test_extracts_continued_to_page_from_mineru_markdown(self) -> None:
         self.assertIsNotNone(
             extract_article_fragments_from_mineru_markdown,

@@ -152,6 +152,99 @@ class DatabaseMigrationTests(unittest.TestCase):
                 "0002_import_audit",
                 "0003_checkpointing_retry",
                 "0004_import_run_retry_summary",
+                "0005_article_persistence_enrichment",
+            ],
+        )
+
+    def test_applies_article_persistence_and_enrichment_schema_migration(self) -> None:
+        self.assertIsNotNone(
+            run_pending_migrations,
+            "run_pending_migrations should be importable from newspaper_translator.database",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+
+            applied_versions = run_pending_migrations(database_url)
+
+            connection = sqlite3.connect(database_path)
+            try:
+                table_names = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    )
+                }
+                parse_runs_columns = {
+                    row[1]
+                    for row in connection.execute("PRAGMA table_info(parse_runs)")
+                }
+                final_articles_columns = {
+                    row[1]
+                    for row in connection.execute("PRAGMA table_info(final_articles)")
+                }
+                enrichment_runs_columns = {
+                    row[1]
+                    for row in connection.execute(
+                        "PRAGMA table_info(article_enrichment_runs)"
+                    )
+                }
+                index_names = {
+                    row[1]
+                    for row in connection.execute("PRAGMA index_list(parse_runs)")
+                }
+                final_articles_index_names = {
+                    row[1]
+                    for row in connection.execute("PRAGMA index_list(final_articles)")
+                }
+                enrichment_index_names = {
+                    row[1]
+                    for row in connection.execute(
+                        "PRAGMA index_list(article_enrichment_runs)"
+                    )
+                }
+                article_tags_index_names = {
+                    row[1]
+                    for row in connection.execute("PRAGMA index_list(article_tags)")
+                }
+                recorded_versions = [
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT version FROM schema_migrations ORDER BY version"
+                    )
+                ]
+            finally:
+                connection.close()
+
+        self.assertIn("0005_article_persistence_enrichment", applied_versions)
+        self.assertIn("parse_runs", table_names)
+        self.assertIn("article_fragments", table_names)
+        self.assertIn("continuation_matches", table_names)
+        self.assertIn("final_articles", table_names)
+        self.assertIn("final_article_fragments", table_names)
+        self.assertIn("article_enrichment_runs", table_names)
+        self.assertIn("article_enrichment_outputs", table_names)
+        self.assertIn("article_tags", table_names)
+        self.assertIn("publication_date", parse_runs_columns)
+        self.assertIn("document_key", parse_runs_columns)
+        self.assertIn("title_en", final_articles_columns)
+        self.assertIn("body_text_en", final_articles_columns)
+        self.assertIn("input_hash", enrichment_runs_columns)
+        self.assertIn("idx_parse_runs_document_key_status_finished_at", index_names)
+        self.assertIn("idx_final_articles_parse_run_id_article_order", final_articles_index_names)
+        self.assertIn("idx_final_articles_publication_date_article_order", final_articles_index_names)
+        self.assertIn("idx_article_enrichment_runs_article_id_status_finished_at", enrichment_index_names)
+        self.assertIn("idx_article_tags_enrichment_run_id_tag_order", article_tags_index_names)
+        self.assertIn("idx_article_tags_tag_text", article_tags_index_names)
+        self.assertEqual(
+            recorded_versions,
+            [
+                "0001_initial",
+                "0002_import_audit",
+                "0003_checkpointing_retry",
+                "0004_import_run_retry_summary",
+                "0005_article_persistence_enrichment",
             ],
         )
 

@@ -271,6 +271,86 @@ class ManagementCommandTests(unittest.TestCase):
         self.assertEqual(matcher_class.call_count, 1)
         self.assertEqual(extract_articles.call_args.kwargs["continuation_matcher"].name, "gemini-matcher")
 
+    def test_phase_3_persist_document_command_uses_article_pipeline_entry(self) -> None:
+        self.assertIsNotNone(
+            run_cli,
+            "run_cli should be importable from newspaper_translator.manage",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_root = pathlib.Path(temp_dir) / "phase3-output"
+
+            with patch.dict(
+                "os.environ",
+                {
+                    "MINERU_API_TOKEN": "mineru-token",
+                },
+                clear=False,
+            ):
+                with patch("newspaper_translator.manage.MineruClient") as mineru_client_class:
+                    mineru_client_class.return_value = SimpleNamespace(name="mineru-client")
+                    with patch("newspaper_translator.manage.persist_document_articles") as persist_document_articles:
+                        persist_document_articles.return_value = SimpleNamespace(
+                            parse_run_id="parse-run-1",
+                            document_key="message-1:attachment-1:abc",
+                            status="succeeded",
+                            publication_date="2026-04-20",
+                        )
+
+                        exit_code, output = run_cli(
+                            [
+                                "phase3-persist-document",
+                                "--document-key",
+                                "message-1:attachment-1:abc",
+                                "--database-url",
+                                "sqlite:////tmp/newspaper-translator.db",
+                                "--output-root",
+                                str(output_root),
+                            ]
+                        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn('"parse_run_id": "parse-run-1"', output)
+        self.assertIn('"publication_date": "2026-04-20"', output)
+        self.assertEqual(
+            persist_document_articles.call_args.kwargs["document_key"],
+            "message-1:attachment-1:abc",
+        )
+
+    def test_phase_3_latest_articles_command_lists_current_visible_articles(self) -> None:
+        self.assertIsNotNone(
+            run_cli,
+            "run_cli should be importable from newspaper_translator.manage",
+        )
+
+        with patch("newspaper_translator.manage.list_latest_document_articles") as list_latest_document_articles:
+            list_latest_document_articles.return_value = [
+                SimpleNamespace(
+                    article_id="article-1",
+                    parse_run_id="parse-run-1",
+                    document_key="message-1:attachment-1:abc",
+                    publication_date="2026-04-20",
+                    article_order=1,
+                    title_en="Big Oil Explores Farther Afield To Dodge Middle East Turmoil",
+                    body_text_en="The oil companies want to maximize their production.",
+                )
+            ]
+
+            exit_code, output = run_cli(
+                [
+                    "phase3-latest-articles",
+                    "--database-url",
+                    "sqlite:////tmp/newspaper-translator.db",
+                    "--document-key",
+                    "message-1:attachment-1:abc",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn('"article_id": "article-1"', output)
+        self.assertIn('"publication_date": "2026-04-20"', output)
+        self.assertIn('"title_en": "Big Oil Explores Farther Afield To Dodge Middle East Turmoil"', output)
+
     def test_check_command_can_read_runtime_settings_from_environment(self) -> None:
         self.assertIsNotNone(
             run_cli,

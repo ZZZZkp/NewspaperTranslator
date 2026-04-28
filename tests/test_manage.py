@@ -351,6 +351,100 @@ class ManagementCommandTests(unittest.TestCase):
         self.assertIn('"publication_date": "2026-04-20"', output)
         self.assertIn('"title_en": "Big Oil Explores Farther Afield To Dodge Middle East Turmoil"', output)
 
+    def test_phase_3_enrich_article_command_calls_orchestration_and_reports_run(self) -> None:
+        self.assertIsNotNone(
+            run_cli,
+            "run_cli should be importable from newspaper_translator.manage",
+        )
+
+        with patch.dict(
+            "os.environ",
+            {
+                "GEMINI_TOKEN": "gemini-token",
+            },
+            clear=False,
+        ):
+            with patch("newspaper_translator.manage.GeminiArticleTranslator") as translator_class:
+                translator_class.return_value = SimpleNamespace(name="translator")
+                with patch("newspaper_translator.manage.GeminiArticleSummarizerTagger") as summarizer_class:
+                    summarizer_class.return_value = SimpleNamespace(name="summarizer")
+                    with patch("newspaper_translator.manage.enrich_article") as enrich_article:
+                        enrich_article.return_value = SimpleNamespace(
+                            enrichment_run_id="enrichment-run-1",
+                            article_id="article-1",
+                            parse_run_id="parse-run-1",
+                            status="succeeded",
+                            provider_name="gemini",
+                            model_name="gemini-2.5-flash",
+                            prompt_version="article-enrichment-v2",
+                            input_hash="hash-1",
+                            started_at="2026-04-28 10:00:00",
+                            finished_at="2026-04-28 10:00:02",
+                            error_message=None,
+                        )
+
+                        exit_code, output = run_cli(
+                            [
+                                "phase3-enrich-article",
+                                "--article-id",
+                                "article-1",
+                                "--database-url",
+                                "sqlite:////tmp/newspaper-translator.db",
+                            ]
+                        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn('"enrichment_run_id": "enrichment-run-1"', output)
+        self.assertIn('"status": "succeeded"', output)
+        self.assertEqual(translator_class.call_count, 1)
+        self.assertEqual(summarizer_class.call_count, 1)
+        self.assertEqual(enrich_article.call_args.kwargs["article_id"], "article-1")
+        self.assertEqual(enrich_article.call_args.kwargs["provider_name"], "gemini")
+        self.assertEqual(enrich_article.call_args.kwargs["translator"].name, "translator")
+        self.assertEqual(enrich_article.call_args.kwargs["summarizer_tagger"].name, "summarizer")
+
+    def test_phase_3_latest_enrichment_command_reports_current_visible_result(self) -> None:
+        self.assertIsNotNone(
+            run_cli,
+            "run_cli should be importable from newspaper_translator.manage",
+        )
+
+        with patch("newspaper_translator.manage.get_latest_article_enrichment") as get_latest_article_enrichment:
+            get_latest_article_enrichment.return_value = SimpleNamespace(
+                enrichment_run_id="enrichment-run-1",
+                article_id="article-1",
+                parse_run_id="parse-run-1",
+                status="partial",
+                provider_name="gemini",
+                model_name="gemini-2.5-flash",
+                prompt_version="article-enrichment-v2",
+                input_hash="hash-1",
+                translated_title_zh="大型石油公司远赴他处避开中东动荡",
+                summary_zh=None,
+                translated_body_zh="多家能源企业正加速在非洲和南美寻找新机会。",
+                translation_status="succeeded",
+                summary_status="failed",
+                tagging_status="failed",
+                tags=[],
+                started_at="2026-04-28 10:00:00",
+                finished_at="2026-04-28 10:00:02",
+            )
+
+            exit_code, output = run_cli(
+                [
+                    "phase3-latest-enrichment",
+                    "--database-url",
+                    "sqlite:////tmp/newspaper-translator.db",
+                    "--article-id",
+                    "article-1",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn('"enrichment_run_id": "enrichment-run-1"', output)
+        self.assertIn('"status": "partial"', output)
+        self.assertIn('"translated_title_zh": "\\u5927\\u578b\\u77f3\\u6cb9\\u516c\\u53f8\\u8fdc\\u8d74\\u4ed6\\u5904\\u907f\\u5f00\\u4e2d\\u4e1c\\u52a8\\u8361"', output)
+
     def test_check_command_can_read_runtime_settings_from_environment(self) -> None:
         self.assertIsNotNone(
             run_cli,

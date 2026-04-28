@@ -11,23 +11,16 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 try:
+    from newspaper_translator.article_enrichment import enrich_article
     from newspaper_translator.article_store import (
-        create_article_enrichment_run,
         create_parse_run,
-        finalize_article_enrichment_run,
         finalize_parse_run,
-        get_final_article,
         get_latest_article_enrichment,
-        list_latest_document_articles,
-        list_parse_run_continuation_matches,
         list_parse_run_final_articles,
-        list_parse_run_fragments,
-        list_parse_runs,
-        record_article_enrichment_outputs,
         record_parse_run_result,
-        update_parse_run_source_artifacts,
     )
     from newspaper_translator.database import run_pending_migrations
+    from newspaper_translator.gemini import ArticleSummaryTagResult, ArticleTranslationResult
     from newspaper_translator.pdf import (
         ArticleFragment,
         ArticleSource,
@@ -36,21 +29,15 @@ try:
         ParsedArticle,
     )
 except ImportError:
-    create_article_enrichment_run = None
+    enrich_article = None
     create_parse_run = None
-    finalize_article_enrichment_run = None
     finalize_parse_run = None
-    get_final_article = None
     get_latest_article_enrichment = None
-    list_latest_document_articles = None
-    list_parse_run_continuation_matches = None
     list_parse_run_final_articles = None
-    list_parse_run_fragments = None
-    list_parse_runs = None
-    record_article_enrichment_outputs = None
     record_parse_run_result = None
     run_pending_migrations = None
-    update_parse_run_source_artifacts = None
+    ArticleSummaryTagResult = None
+    ArticleTranslationResult = None
     ArticleFragment = None
     ArticleSource = None
     ParseMatchDecision = None
@@ -58,101 +45,10 @@ except ImportError:
     ParsedArticle = None
 
 
-class ArticleStoreTests(unittest.TestCase):
-    def test_persists_parse_run_history_and_latest_visible_articles(self) -> None:
+class ArticleEnrichmentTests(unittest.TestCase):
+    def test_persists_a_succeeded_enrichment_run(self) -> None:
+        self.assertIsNotNone(enrich_article)
         self.assertIsNotNone(run_pending_migrations)
-        self.assertIsNotNone(create_parse_run)
-        self.assertIsNotNone(record_parse_run_result)
-        self.assertIsNotNone(list_latest_document_articles)
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            database_path = pathlib.Path(temp_dir) / "app.db"
-            database_url = f"sqlite:///{database_path}"
-            run_pending_migrations(database_url)
-            document_key = self._insert_document(
-                database_path,
-                original_filename="wsj-2026-04-20.pdf",
-            )
-
-            first_run = create_parse_run(
-                database_url=database_url,
-                document_key=document_key,
-                parser_name="mineru",
-                parser_version="vlm",
-                publication_date="2026-04-20",
-                continuation_matcher_name="gemini",
-                continuation_matcher_version="2.5-flash",
-            )
-            update_parse_run_source_artifacts(
-                database_url=database_url,
-                parse_run_id=first_run.parse_run_id,
-                mineru_batch_id="batch-1",
-                mineru_file_id="file-1",
-                markdown_path="/tmp/wsj-2026-04-20/full.md",
-            )
-            record_parse_run_result(
-                database_url=database_url,
-                parse_run_id=first_run.parse_run_id,
-                parse_result=self._build_parse_result(
-                    title="Big Oil Explores Farther Afield To Dodge Middle East Turmoil",
-                    body_suffix="The oil companies want to maximize their production.",
-                ),
-                document_key=document_key,
-                publication_date="2026-04-20",
-            )
-            finalize_parse_run(
-                database_url=database_url,
-                parse_run_id=first_run.parse_run_id,
-                status="succeeded",
-            )
-
-            second_run = create_parse_run(
-                database_url=database_url,
-                document_key=document_key,
-                parser_name="mineru",
-                parser_version="vlm",
-                publication_date="2026-04-20",
-                continuation_matcher_name="gemini",
-                continuation_matcher_version="2.5-flash",
-            )
-            finalize_parse_run(
-                database_url=database_url,
-                parse_run_id=second_run.parse_run_id,
-                status="failed",
-                error_message="publication date missing from markdown fallback",
-            )
-
-            parse_runs = list_parse_runs(database_url=database_url, document_key=document_key)
-            fragments = list_parse_run_fragments(
-                database_url=database_url,
-                parse_run_id=first_run.parse_run_id,
-            )
-            matches = list_parse_run_continuation_matches(
-                database_url=database_url,
-                parse_run_id=first_run.parse_run_id,
-            )
-            final_articles = list_parse_run_final_articles(
-                database_url=database_url,
-                parse_run_id=first_run.parse_run_id,
-            )
-            latest_articles = list_latest_document_articles(
-                database_url=database_url,
-                document_key=document_key,
-            )
-
-        self.assertEqual([run.status for run in parse_runs], ["failed", "succeeded"])
-        self.assertEqual(len(fragments), 2)
-        self.assertEqual(len(matches), 1)
-        self.assertEqual(matches[0].decision_status, "accepted")
-        self.assertEqual(len(final_articles), 1)
-        self.assertEqual(final_articles[0].source_fragment_count, 2)
-        self.assertEqual(len(latest_articles), 1)
-        self.assertEqual(latest_articles[0].parse_run_id, first_run.parse_run_id)
-        self.assertIn("The oil companies want to maximize their production.", latest_articles[0].body_text_en)
-
-    def test_persists_enrichment_history_and_keeps_latest_usable_result(self) -> None:
-        self.assertIsNotNone(run_pending_migrations)
-        self.assertIsNotNone(create_article_enrichment_run)
         self.assertIsNotNone(get_latest_article_enrichment)
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -193,124 +89,46 @@ class ArticleStoreTests(unittest.TestCase):
                 parse_run_id=parse_run.parse_run_id,
             )[0]
 
-            usable_run = create_article_enrichment_run(
+            run = enrich_article(
                 database_url=database_url,
                 article_id=article.article_id,
-                parse_run_id=parse_run.parse_run_id,
+                translator=_FakeTranslator(),
+                summarizer_tagger=_FakeSummarizerTagger(),
                 provider_name="gemini",
                 model_name="gemini-2.5-flash",
-                prompt_version="v1",
-                input_hash="hash-1",
+                prompt_version="article-enrichment-v1",
             )
-            record_article_enrichment_outputs(
-                database_url=database_url,
-                enrichment_run_id=usable_run.enrichment_run_id,
-                translated_title_zh="大石油公司向更远地区寻找新油源",
-                summary_zh="油企正在加速寻找新的油气勘探区。",
-                translated_body_zh="在中东局势动荡之际，多家油企正在扩大勘探范围。",
-                translation_status="succeeded",
-                summary_status="succeeded",
-                tagging_status="succeeded",
-                tags=["能源", "石油", "中东局势"],
-            )
-            finalize_article_enrichment_run(
-                database_url=database_url,
-                enrichment_run_id=usable_run.enrichment_run_id,
-                status="succeeded",
-            )
-
-            failed_run = create_article_enrichment_run(
-                database_url=database_url,
-                article_id=article.article_id,
-                parse_run_id=parse_run.parse_run_id,
-                provider_name="gemini",
-                model_name="gemini-2.5-flash",
-                prompt_version="v2",
-                input_hash="hash-1",
-            )
-            finalize_article_enrichment_run(
-                database_url=database_url,
-                enrichment_run_id=failed_run.enrichment_run_id,
-                status="failed",
-                error_message="translation timeout",
-            )
-
             latest_enrichment = get_latest_article_enrichment(
                 database_url=database_url,
                 article_id=article.article_id,
             )
 
-        self.assertEqual(latest_enrichment.enrichment_run_id, usable_run.enrichment_run_id)
+        self.assertEqual(run.article_id, article.article_id)
+        self.assertEqual(run.parse_run_id, parse_run.parse_run_id)
+        self.assertEqual(run.status, "succeeded")
+        self.assertIsNotNone(run.finished_at)
+        self.assertEqual(latest_enrichment.enrichment_run_id, run.enrichment_run_id)
         self.assertEqual(latest_enrichment.status, "succeeded")
-        self.assertEqual(latest_enrichment.translated_title_zh, "大石油公司向更远地区寻找新油源")
-        self.assertEqual(latest_enrichment.tags, ["能源", "石油", "中东局势"])
-
-    def test_loads_one_final_article_by_article_id_for_enrichment_input(self) -> None:
-        self.assertIsNotNone(run_pending_migrations)
-        self.assertIsNotNone(create_parse_run)
-        self.assertIsNotNone(record_parse_run_result)
-        self.assertIsNotNone(get_final_article)
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            database_path = pathlib.Path(temp_dir) / "app.db"
-            database_url = f"sqlite:///{database_path}"
-            run_pending_migrations(database_url)
-            document_key = self._insert_document(
-                database_path,
-                original_filename="wsj-2026-04-20.pdf",
-            )
-
-            parse_run = create_parse_run(
-                database_url=database_url,
-                document_key=document_key,
-                parser_name="mineru",
-                parser_version="vlm",
-                publication_date="2026-04-20",
-                continuation_matcher_name="gemini",
-                continuation_matcher_version="2.5-flash",
-            )
-            record_parse_run_result(
-                database_url=database_url,
-                parse_run_id=parse_run.parse_run_id,
-                parse_result=self._build_parse_result(
-                    title="Big Oil Explores Farther Afield To Dodge Middle East Turmoil",
-                    body_suffix="The oil companies want to maximize their production.",
-                ),
-                document_key=document_key,
-                publication_date="2026-04-20",
-            )
-            finalize_parse_run(
-                database_url=database_url,
-                parse_run_id=parse_run.parse_run_id,
-                status="succeeded",
-            )
-            stored_article = list_parse_run_final_articles(
-                database_url=database_url,
-                parse_run_id=parse_run.parse_run_id,
-            )[0]
-
-            loaded_article = get_final_article(
-                database_url=database_url,
-                article_id=stored_article.article_id,
-            )
-
-        self.assertEqual(loaded_article.article_id, stored_article.article_id)
-        self.assertEqual(loaded_article.parse_run_id, parse_run.parse_run_id)
-        self.assertEqual(loaded_article.document_key, document_key)
-        self.assertEqual(loaded_article.publication_date, "2026-04-20")
+        self.assertEqual(latest_enrichment.translation_status, "succeeded")
+        self.assertEqual(latest_enrichment.summary_status, "succeeded")
+        self.assertEqual(latest_enrichment.tagging_status, "succeeded")
         self.assertEqual(
-            loaded_article.title_en,
-            "Big Oil Explores Farther Afield To Dodge Middle East Turmoil",
+            latest_enrichment.translated_title_zh,
+            "大型石油公司远赴他处避开中东动荡",
         )
-        self.assertIn(
-            "The oil companies want to maximize their production.",
-            loaded_article.body_text_en,
+        self.assertEqual(
+            latest_enrichment.summary_zh,
+            "油企为避开中东风险，正把勘探重点转向非洲和南美。",
+        )
+        self.assertEqual(
+            latest_enrichment.tags,
+            ["能源", "石油", "中东局势"],
         )
 
-    def test_rejects_successful_tagging_outside_allowed_range(self) -> None:
+    def test_marks_translation_only_success_as_partial_when_summary_stage_fails(self) -> None:
+        self.assertIsNotNone(enrich_article)
         self.assertIsNotNone(run_pending_migrations)
-        self.assertIsNotNone(create_article_enrichment_run)
-        self.assertIsNotNone(record_article_enrichment_outputs)
+        self.assertIsNotNone(get_latest_article_enrichment)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = pathlib.Path(temp_dir) / "app.db"
@@ -349,28 +167,96 @@ class ArticleStoreTests(unittest.TestCase):
                 database_url=database_url,
                 parse_run_id=parse_run.parse_run_id,
             )[0]
-            enrichment_run = create_article_enrichment_run(
+
+            run = enrich_article(
                 database_url=database_url,
                 article_id=article.article_id,
-                parse_run_id=parse_run.parse_run_id,
+                translator=_FakeTranslator(),
+                summarizer_tagger=_FailingSummarizerTagger("summary timeout"),
                 provider_name="gemini",
                 model_name="gemini-2.5-flash",
-                prompt_version="v1",
-                input_hash="hash-1",
+                prompt_version="article-enrichment-v1",
+            )
+            latest_enrichment = get_latest_article_enrichment(
+                database_url=database_url,
+                article_id=article.article_id,
             )
 
-            with self.assertRaisesRegex(ValueError, "3 to 8 tags"):
-                record_article_enrichment_outputs(
+        self.assertEqual(run.status, "partial")
+        self.assertEqual(run.error_message, "summary timeout")
+        self.assertEqual(latest_enrichment.enrichment_run_id, run.enrichment_run_id)
+        self.assertEqual(latest_enrichment.status, "partial")
+        self.assertEqual(latest_enrichment.translation_status, "succeeded")
+        self.assertEqual(latest_enrichment.summary_status, "failed")
+        self.assertEqual(latest_enrichment.tagging_status, "failed")
+        self.assertEqual(
+            latest_enrichment.translated_title_zh,
+            "大型石油公司远赴他处避开中东动荡",
+        )
+        self.assertEqual(latest_enrichment.summary_zh, None)
+        self.assertEqual(latest_enrichment.tags, [])
+
+    def test_marks_translation_failure_as_failed(self) -> None:
+        self.assertIsNotNone(enrich_article)
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(get_latest_article_enrichment)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                original_filename="wsj-2026-04-20.pdf",
+            )
+
+            parse_run = create_parse_run(
+                database_url=database_url,
+                document_key=document_key,
+                parser_name="mineru",
+                parser_version="vlm",
+                publication_date="2026-04-20",
+                continuation_matcher_name="gemini",
+                continuation_matcher_version="2.5-flash",
+            )
+            record_parse_run_result(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                parse_result=self._build_parse_result(
+                    title="Big Oil Explores Farther Afield To Dodge Middle East Turmoil",
+                    body_suffix="The oil companies want to maximize their production.",
+                ),
+                document_key=document_key,
+                publication_date="2026-04-20",
+            )
+            finalize_parse_run(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                status="succeeded",
+            )
+            article = list_parse_run_final_articles(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+            )[0]
+
+            run = enrich_article(
+                database_url=database_url,
+                article_id=article.article_id,
+                translator=_FailingTranslator("translation timeout"),
+                summarizer_tagger=_FakeSummarizerTagger(),
+                provider_name="gemini",
+                model_name="gemini-2.5-flash",
+                prompt_version="article-enrichment-v1",
+            )
+
+            with self.assertRaises(LookupError):
+                get_latest_article_enrichment(
                     database_url=database_url,
-                    enrichment_run_id=enrichment_run.enrichment_run_id,
-                    translated_title_zh="大石油公司向更远地区寻找新油源",
-                    summary_zh="油企正在加速寻找新的油气勘探区。",
-                    translated_body_zh="在中东局势动荡之际，多家油企正在扩大勘探范围。",
-                    translation_status="succeeded",
-                    summary_status="succeeded",
-                    tagging_status="succeeded",
-                    tags=["能源", "石油"],
+                    article_id=article.article_id,
                 )
+
+        self.assertEqual(run.status, "failed")
+        self.assertEqual(run.error_message, "translation timeout")
 
     def _insert_document(self, database_path: pathlib.Path, *, original_filename: str) -> str:
         document_key = "message-1:attachment-1:hash-1"
@@ -454,6 +340,38 @@ class ArticleStoreTests(unittest.TestCase):
                 )
             ],
         )
+
+
+class _FakeTranslator:
+    def __call__(self, article):
+        return ArticleTranslationResult(
+            translated_title_zh="大型石油公司远赴他处避开中东动荡",
+            translated_body_zh="多家能源企业正加速在非洲和南美寻找新机会。",
+        )
+
+
+class _FailingTranslator:
+    def __init__(self, message: str) -> None:
+        self._message = message
+
+    def __call__(self, article):
+        raise RuntimeError(self._message)
+
+
+class _FakeSummarizerTagger:
+    def __call__(self, *, article, translated_title_zh: str, translated_body_zh: str):
+        return ArticleSummaryTagResult(
+            summary_zh="油企为避开中东风险，正把勘探重点转向非洲和南美。",
+            tags=["能源", "石油", "中东局势"],
+        )
+
+
+class _FailingSummarizerTagger:
+    def __init__(self, message: str) -> None:
+        self._message = message
+
+    def __call__(self, *, article, translated_title_zh: str, translated_body_zh: str):
+        raise RuntimeError(self._message)
 
 
 if __name__ == "__main__":

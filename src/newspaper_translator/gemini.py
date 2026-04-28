@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 import json
 import ssl
 from typing import Protocol
@@ -5,12 +6,25 @@ from urllib import request
 
 import certifi
 
+from newspaper_translator.article_store import StoredFinalArticle
 from newspaper_translator.config import GeminiSettings
 from newspaper_translator.pdf import ArticleFragment
 
 
 class GeminiError(RuntimeError):
     """Raised when the Gemini API returns an invalid response."""
+
+
+@dataclass(frozen=True)
+class ArticleTranslationResult:
+    translated_title_zh: str
+    translated_body_zh: str
+
+
+@dataclass(frozen=True)
+class ArticleSummaryTagResult:
+    summary_zh: str
+    tags: list[str]
 
 
 class _TransportResponse(Protocol):
@@ -118,6 +132,195 @@ class GeminiContinuationMatcher:
             "Fragments:\n"
             + json.dumps(fragment_payload, ensure_ascii=False, indent=2)
         )
+
+
+class GeminiArticleTranslator:
+    def __init__(
+        self,
+        *,
+        settings: GeminiSettings,
+        transport: _Transport | None = None,
+    ) -> None:
+        self._settings = settings
+        self._transport = transport or _UrllibTransport()
+
+    def __call__(self, article: StoredFinalArticle) -> ArticleTranslationResult:
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {
+                            "text": self._build_prompt(article),
+                        }
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0,
+                "responseMimeType": "application/json",
+            },
+        }
+        response = self._transport.request(
+            method="POST",
+            url=f"https://generativelanguage.googleapis.com/v1beta/models/{self._settings.model}:generateContent",
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": self._settings.api_token,
+            },
+            body=json.dumps(payload).encode("utf-8"),
+            timeout=self._settings.timeout_seconds,
+        )
+        if response.status_code < 200 or response.status_code >= 300:
+            raise GeminiError(f"Gemini request failed with status {response.status_code}")
+
+        try:
+            result = json.loads(_extract_response_text(response.body))
+            translated_title_zh = result["translated_title_zh"]
+            translated_body_zh = result["translated_body_zh"]
+        except (KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise GeminiError("Gemini response did not contain a valid translation payload") from exc
+
+        if not isinstance(translated_title_zh, str) or not translated_title_zh.strip():
+            raise GeminiError("Gemini translation payload must include translated_title_zh")
+        if not isinstance(translated_body_zh, str) or not translated_body_zh.strip():
+            raise GeminiError("Gemini translation payload must include translated_body_zh")
+
+        return ArticleTranslationResult(
+            translated_title_zh=translated_title_zh.strip(),
+            translated_body_zh=translated_body_zh.strip(),
+        )
+
+    def _build_prompt(self, article: StoredFinalArticle) -> str:
+        return (
+            "Translate this English newspaper article into Simplified Chinese. "
+            "This may be a continuation fragment from a printed newspaper layout rather than a clean standalone article. "
+            "return JSON only. "
+            "Do not use Markdown code fences. "
+            "Do not include explanations. "
+            'Return exactly these fields: {"translated_title_zh":"...","translated_body_zh":"..."}. '
+            "Preserve continuation markers and jump words exactly when they appear in the source, "
+            'such as "Please turn to page A7" or "Continued from Page One". '
+            "Do not silently remove, summarize, or normalize those navigation markers. "
+            "Preserve meaning rather than literal word order.\n\n"
+            f"Title:\n{article.title_en}\n\n"
+            f"Body:\n{article.body_text_en}\n"
+        )
+
+
+class GeminiArticleSummarizerTagger:
+    def __init__(
+        self,
+        *,
+        settings: GeminiSettings,
+        transport: _Transport | None = None,
+    ) -> None:
+        self._settings = settings
+        self._transport = transport or _UrllibTransport()
+
+    def __call__(
+        self,
+        *,
+        article: StoredFinalArticle,
+        translated_title_zh: str,
+        translated_body_zh: str,
+    ) -> ArticleSummaryTagResult:
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {
+                            "text": self._build_prompt(
+                                article=article,
+                                translated_title_zh=translated_title_zh,
+                                translated_body_zh=translated_body_zh,
+                            ),
+                        }
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0,
+                "responseMimeType": "application/json",
+            },
+        }
+        response = self._transport.request(
+            method="POST",
+            url=f"https://generativelanguage.googleapis.com/v1beta/models/{self._settings.model}:generateContent",
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": self._settings.api_token,
+            },
+            body=json.dumps(payload).encode("utf-8"),
+            timeout=self._settings.timeout_seconds,
+        )
+        if response.status_code < 200 or response.status_code >= 300:
+            raise GeminiError(f"Gemini request failed with status {response.status_code}")
+
+        try:
+            result = json.loads(_extract_response_text(response.body))
+            summary_zh = result["summary_zh"]
+            tags = result["tags"]
+        except (KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise GeminiError("Gemini response did not contain a valid summary and tags payload") from exc
+
+        if not isinstance(summary_zh, str) or not summary_zh.strip():
+            raise GeminiError("Gemini summary payload must include summary_zh")
+        if "\n" in summary_zh or "\r" in summary_zh:
+            raise GeminiError("Gemini summary payload must be a single paragraph")
+        normalized_tags = _normalize_tags(tags)
+        if not 3 <= len(normalized_tags) <= 8:
+            raise GeminiError("Gemini tags payload must include 3 to 8 non-empty tags")
+
+        return ArticleSummaryTagResult(
+            summary_zh=summary_zh.strip(),
+            tags=normalized_tags,
+        )
+
+    def _build_prompt(
+        self,
+        *,
+        article: StoredFinalArticle,
+        translated_title_zh: str,
+        translated_body_zh: str,
+    ) -> str:
+        return (
+            "Write a Simplified Chinese news-card summary and ordered Chinese tags for this article. "
+            "return JSON only. "
+            "Do not use Markdown code fences. "
+            "Do not include explanations. "
+            'Return exactly these fields: {"summary_zh":"...","tags":["...", "..."]}. '
+            "summary_zh must be a single paragraph. "
+            "tags must contain 3 to 8 short Chinese phrases with no leading #.\n\n"
+            f"English title:\n{article.title_en}\n\n"
+            f"English body:\n{article.body_text_en}\n\n"
+            f"translated_title_zh:\n{translated_title_zh}\n\n"
+            f"translated_body_zh:\n{translated_body_zh}\n"
+        )
+
+
+def _normalize_tags(raw_tags: object) -> list[str]:
+    if not isinstance(raw_tags, list):
+        raise GeminiError("Gemini tags payload must be a list")
+
+    normalized_tags: list[str] = []
+    seen_tags: set[str] = set()
+    for raw_tag in raw_tags:
+        if not isinstance(raw_tag, str):
+            raise GeminiError("Gemini tags payload entries must be strings")
+        normalized_tag = raw_tag.strip()
+        if not normalized_tag or normalized_tag in seen_tags:
+            continue
+        normalized_tags.append(normalized_tag)
+        seen_tags.add(normalized_tag)
+    return normalized_tags
+
+
+def _extract_response_text(body: bytes) -> str:
+    response_payload = json.loads(body.decode("utf-8"))
+    try:
+        return response_payload["candidates"][0]["content"]["parts"][0]["text"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise GeminiError("Gemini response did not contain a valid text candidate") from exc
 
 
 class _UrllibTransport:

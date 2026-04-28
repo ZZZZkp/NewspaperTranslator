@@ -11,13 +11,22 @@ if str(SRC_ROOT) not in sys.path:
 
 try:
     from newspaper_translator.config import GeminiSettings
-    from newspaper_translator.gemini import GeminiContinuationMatcher, GeminiError
+    from newspaper_translator.gemini import (
+        GeminiArticleTranslator,
+        GeminiArticleSummarizerTagger,
+        GeminiContinuationMatcher,
+        GeminiError,
+    )
     from newspaper_translator.pdf import ArticleFragment
+    from newspaper_translator.article_store import StoredFinalArticle
 except ImportError:
     GeminiSettings = None
+    GeminiArticleTranslator = None
+    GeminiArticleSummarizerTagger = None
     GeminiContinuationMatcher = None
     GeminiError = None
     ArticleFragment = None
+    StoredFinalArticle = None
 
 
 class GeminiContinuationMatcherTests(unittest.TestCase):
@@ -178,6 +187,199 @@ class GeminiContinuationMatcherTests(unittest.TestCase):
                         continued_from_page="",
                     )
                 ]
+            )
+
+
+class GeminiArticleTranslatorTests(unittest.TestCase):
+    def test_builds_strict_generate_content_request_for_article_translation(self) -> None:
+        self.assertIsNotNone(GeminiSettings)
+        self.assertIsNotNone(GeminiArticleTranslator)
+        self.assertIsNotNone(StoredFinalArticle)
+
+        transport = _FakeTransport(
+            response_payload={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": json.dumps(
+                                        {
+                                            "translated_title_zh": "大型石油公司远赴他处避开中东动荡",
+                                            "translated_body_zh": "多家能源企业正加速在非洲和南美寻找新机会。",
+                                        }
+                                    )
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+        translator = GeminiArticleTranslator(
+            settings=GeminiSettings(api_token="gemini-token", model="gemini-2.5-flash", timeout_seconds=45),
+            transport=transport,
+        )
+
+        result = translator(
+            StoredFinalArticle(
+                article_id="article-1",
+                parse_run_id="parse-run-1",
+                document_key="message-1:attachment-1:hash-1",
+                publication_date="2026-04-20",
+                article_order=1,
+                primary_source_order=1,
+                source_fragment_count=2,
+                title_en="Big Oil Explores Farther Afield To Dodge Middle East Turmoil",
+                body_text_en=(
+                    "Exxon, Chevron and others turn to Africa and South America for next prospects.\n"
+                    "Please turn to page A7"
+                ),
+                created_at="2026-04-28 00:00:00",
+            )
+        )
+
+        self.assertEqual(result.translated_title_zh, "大型石油公司远赴他处避开中东动荡")
+        self.assertEqual(
+            result.translated_body_zh,
+            "多家能源企业正加速在非洲和南美寻找新机会。",
+        )
+        self.assertEqual(len(transport.requests), 1)
+
+        request = transport.requests[0]
+        self.assertEqual(request["method"], "POST")
+        self.assertIn("gemini-2.5-flash:generateContent", request["url"])
+        self.assertEqual(request["headers"]["x-goog-api-key"], "gemini-token")
+
+        payload = json.loads(request["body"].decode("utf-8"))
+        self.assertEqual(payload["generationConfig"]["responseMimeType"], "application/json")
+        self.assertEqual(payload["generationConfig"]["temperature"], 0)
+        prompt_text = payload["contents"][0]["parts"][0]["text"]
+        self.assertIn("return JSON only", prompt_text)
+        self.assertIn("newspaper article", prompt_text)
+        self.assertIn("continuation fragment", prompt_text)
+        self.assertIn("Preserve continuation markers", prompt_text)
+        self.assertIn("Please turn to page A7", prompt_text)
+        self.assertIn("translated_title_zh", prompt_text)
+        self.assertIn("Big Oil Explores Farther Afield To Dodge Middle East Turmoil", prompt_text)
+
+
+class GeminiArticleSummarizerTaggerTests(unittest.TestCase):
+    def test_builds_strict_generate_content_request_for_summary_and_tags(self) -> None:
+        self.assertIsNotNone(GeminiSettings)
+        self.assertIsNotNone(GeminiArticleSummarizerTagger)
+        self.assertIsNotNone(StoredFinalArticle)
+
+        transport = _FakeTransport(
+            response_payload={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": json.dumps(
+                                        {
+                                            "summary_zh": "油企为避开中东风险，正把勘探重点转向非洲和南美。",
+                                            "tags": ["能源", "石油", "中东局势"],
+                                        }
+                                    )
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+        summarizer = GeminiArticleSummarizerTagger(
+            settings=GeminiSettings(api_token="gemini-token", model="gemini-2.5-flash", timeout_seconds=45),
+            transport=transport,
+        )
+
+        result = summarizer(
+            article=StoredFinalArticle(
+                article_id="article-1",
+                parse_run_id="parse-run-1",
+                document_key="message-1:attachment-1:hash-1",
+                publication_date="2026-04-20",
+                article_order=1,
+                primary_source_order=1,
+                source_fragment_count=2,
+                title_en="Big Oil Explores Farther Afield To Dodge Middle East Turmoil",
+                body_text_en="Exxon, Chevron and others turn to Africa and South America for next prospects.",
+                created_at="2026-04-28 00:00:00",
+            ),
+            translated_title_zh="大型石油公司远赴他处避开中东动荡",
+            translated_body_zh="多家能源企业正加速在非洲和南美寻找新机会。",
+        )
+
+        self.assertEqual(
+            result.summary_zh,
+            "油企为避开中东风险，正把勘探重点转向非洲和南美。",
+        )
+        self.assertEqual(result.tags, ["能源", "石油", "中东局势"])
+        self.assertEqual(len(transport.requests), 1)
+
+        request = transport.requests[0]
+        self.assertEqual(request["method"], "POST")
+        self.assertIn("gemini-2.5-flash:generateContent", request["url"])
+        self.assertEqual(request["headers"]["x-goog-api-key"], "gemini-token")
+
+        payload = json.loads(request["body"].decode("utf-8"))
+        self.assertEqual(payload["generationConfig"]["responseMimeType"], "application/json")
+        self.assertEqual(payload["generationConfig"]["temperature"], 0)
+        prompt_text = payload["contents"][0]["parts"][0]["text"]
+        self.assertIn("summary_zh", prompt_text)
+        self.assertIn("tags", prompt_text)
+        self.assertIn("translated_title_zh", prompt_text)
+        self.assertIn("大型石油公司远赴他处避开中东动荡", prompt_text)
+
+    def test_rejects_summary_payload_with_line_breaks(self) -> None:
+        self.assertIsNotNone(GeminiSettings)
+        self.assertIsNotNone(GeminiArticleSummarizerTagger)
+        self.assertIsNotNone(GeminiError)
+        self.assertIsNotNone(StoredFinalArticle)
+
+        transport = _FakeTransport(
+            response_payload={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": json.dumps(
+                                        {
+                                            "summary_zh": "第一段摘要。\n第二段摘要。",
+                                            "tags": ["能源", "石油", "中东局势"],
+                                        }
+                                    )
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+        summarizer = GeminiArticleSummarizerTagger(
+            settings=GeminiSettings(api_token="gemini-token", model="gemini-2.5-flash", timeout_seconds=45),
+            transport=transport,
+        )
+
+        with self.assertRaises(GeminiError):
+            summarizer(
+                article=StoredFinalArticle(
+                    article_id="article-1",
+                    parse_run_id="parse-run-1",
+                    document_key="message-1:attachment-1:hash-1",
+                    publication_date="2026-04-20",
+                    article_order=1,
+                    primary_source_order=1,
+                    source_fragment_count=2,
+                    title_en="Big Oil Explores Farther Afield To Dodge Middle East Turmoil",
+                    body_text_en="Exxon, Chevron and others turn to Africa and South America for next prospects.",
+                    created_at="2026-04-28 00:00:00",
+                ),
+                translated_title_zh="大型石油公司远赴他处避开中东动荡",
+                translated_body_zh="多家能源企业正加速在非洲和南美寻找新机会。",
             )
 
 

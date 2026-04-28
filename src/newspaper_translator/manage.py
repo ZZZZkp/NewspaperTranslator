@@ -5,8 +5,10 @@ import os
 from pathlib import Path
 import sys
 
+from newspaper_translator.article_enrichment import enrich_article
 from newspaper_translator.article_pipeline import persist_document_articles
 from newspaper_translator.article_store import (
+    get_latest_article_enrichment,
     list_latest_document_articles,
     list_parse_run_continuation_matches,
     list_parse_run_final_articles,
@@ -14,7 +16,11 @@ from newspaper_translator.article_store import (
     list_parse_runs,
 )
 from newspaper_translator.config import GeminiSettings, MineruSettings
-from newspaper_translator.gemini import GeminiContinuationMatcher
+from newspaper_translator.gemini import (
+    GeminiArticleSummarizerTagger,
+    GeminiArticleTranslator,
+    GeminiContinuationMatcher,
+)
 from newspaper_translator.import_audit import (
     list_import_items,
     list_import_run_items,
@@ -82,6 +88,14 @@ def run_cli(argv: list[str]) -> tuple[int, str]:
     phase3_latest_articles_parser = subparsers.add_parser("phase3-latest-articles")
     phase3_latest_articles_parser.add_argument("--database-url")
     phase3_latest_articles_parser.add_argument("--document-key", required=True)
+
+    phase3_enrich_article_parser = subparsers.add_parser("phase3-enrich-article")
+    phase3_enrich_article_parser.add_argument("--database-url")
+    phase3_enrich_article_parser.add_argument("--article-id", required=True)
+
+    phase3_latest_enrichment_parser = subparsers.add_parser("phase3-latest-enrichment")
+    phase3_latest_enrichment_parser.add_argument("--database-url")
+    phase3_latest_enrichment_parser.add_argument("--article-id", required=True)
 
     phase3_parse_runs_parser = subparsers.add_parser("phase3-parse-runs")
     phase3_parse_runs_parser.add_argument("--database-url")
@@ -205,6 +219,26 @@ def run_cli(argv: list[str]) -> tuple[int, str]:
             document_key=args.document_key,
         )
         return 0, json.dumps(_to_jsonable(articles), sort_keys=True)
+
+    if args.command == "phase3-enrich-article":
+        gemini_settings = GeminiSettings.from_env(os.environ)
+        enrichment_run = enrich_article(
+            database_url=_resolve_setting(args.database_url, "DATABASE_URL"),
+            article_id=args.article_id,
+            translator=GeminiArticleTranslator(settings=gemini_settings),
+            summarizer_tagger=GeminiArticleSummarizerTagger(settings=gemini_settings),
+            provider_name="gemini",
+            model_name=gemini_settings.model,
+            prompt_version="article-enrichment-v2",
+        )
+        return 0, json.dumps(_to_jsonable(enrichment_run), sort_keys=True)
+
+    if args.command == "phase3-latest-enrichment":
+        enrichment = get_latest_article_enrichment(
+            database_url=_resolve_setting(args.database_url, "DATABASE_URL"),
+            article_id=args.article_id,
+        )
+        return 0, json.dumps(_to_jsonable(enrichment), sort_keys=True)
 
     if args.command == "phase3-parse-runs":
         runs = list_parse_runs(

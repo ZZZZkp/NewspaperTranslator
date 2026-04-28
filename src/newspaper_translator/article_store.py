@@ -496,6 +496,39 @@ def list_latest_document_articles(
     )
 
 
+def get_final_article(
+    *,
+    database_url: str,
+    article_id: str,
+) -> StoredFinalArticle:
+    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+    try:
+        row = connection.execute(
+            """
+            SELECT
+                article_id,
+                parse_run_id,
+                document_key,
+                publication_date,
+                article_order,
+                primary_source_order,
+                source_fragment_count,
+                title_en,
+                body_text_en,
+                created_at
+            FROM final_articles
+            WHERE article_id = ?
+            """,
+            (article_id,),
+        ).fetchone()
+    finally:
+        connection.close()
+
+    if row is None:
+        raise LookupError(f"Final article not found: {article_id}")
+    return _final_article_from_row(row)
+
+
 def create_article_enrichment_run(
     *,
     database_url: str,
@@ -536,6 +569,17 @@ def create_article_enrichment_run(
         connection.commit()
     finally:
         connection.close()
+    return _get_article_enrichment_run(
+        database_url=database_url,
+        enrichment_run_id=enrichment_run_id,
+    )
+
+
+def get_article_enrichment_run(
+    *,
+    database_url: str,
+    enrichment_run_id: str,
+) -> ArticleEnrichmentRun:
     return _get_article_enrichment_run(
         database_url=database_url,
         enrichment_run_id=enrichment_run_id,

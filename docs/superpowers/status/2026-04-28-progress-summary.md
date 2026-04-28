@@ -75,7 +75,9 @@ Current automatic-processing behavior:
 - `process_document(...)` can now also use the real parse-persist pipeline through `persist_document_articles(...)`
 - stale `running` documents can now be recovered into retryable or terminal failure state through control-plane recovery helpers
 - `worker.py` now has a pure catch-up scheduling decision helper for overdue tick detection
-- the current orchestration path is still not wired to the real worker loop or CLI
+- `run_startup_maintenance(...)` now orchestrates startup recovery plus overdue catch-up decisions in one testable worker entrypoint
+- `run_scheduler_tick(...)` now provides a minimal shared scheduler tick path with scheduler-run persistence, import-run linkage, retryable-document continuation, and partial-run accounting
+- the current orchestration path is still not wired to the real long-running worker loop or CLI
 
 ## Real Validation Notes
 
@@ -121,11 +123,11 @@ OK
 Expanded automatic-processing control-plane checks:
 
 ```bash
-python3 -m unittest tests.test_database tests.test_document_processing
+python3 -m unittest tests.test_document_processing tests.test_worker
 ```
 
 ```text
-Ran 28 tests in 0.678s
+Ran 22 tests in 0.538s
 OK
 ```
 
@@ -146,20 +148,21 @@ Completed Phase 3 slices so far:
 - single-document safe claim and eligible-document priority ordering for future automatic processing
 - document failure-state transitions, manual retry reactivation, and a first shared `process_document(...)` orchestration path
 - real document-level latest-visible article enrichment wiring inside the control-plane orchestration layer
-- real parse-persist wiring, stale-run recovery, and catch-up tick decision logic for the future worker loop
+- real parse-persist wiring, stale-run recovery, startup maintenance, and minimal scheduler tick behavior for the future worker loop
 
 Still not implemented:
 
 - non-explicit continuation inference
 - stronger cleanup and normalization for MinerU newspaper-layout noise before enrichment
 - explicit protection rules for untranslated or verbatim-preserved continuation markers
-- document-level or batch-level enrichment orchestration
-- stale-running recovery helpers
-- scheduler loop integration that calls recovery and catch-up decisions at runtime
+- full long-running worker scheduler loop integration that calls recovery and catch-up decisions at runtime
+- real Gmail import wiring inside the shared scheduler tick helper
+- document-level parallel execution inside one scheduler tick
+- CLI retry/status/manual scheduler entrypoints
 - worker-driven background enrichment scheduling and retries
 - dashboard routes or UI for browsing persisted article data
 - post-processing for ads, notices, and other non-article content beyond current heuristics
 
 ## Suggested Next Step
 
-The next automatic-processing slice should integrate the new recovery and catch-up helpers into a real long-running worker scheduler loop and then expose narrow CLI entrypoints for manual triggering and inspection.
+The next automatic-processing slice should connect the new startup-maintenance and scheduler-tick helpers into a real long-running worker loop, then expose narrow CLI entrypoints for manual triggering and inspection.

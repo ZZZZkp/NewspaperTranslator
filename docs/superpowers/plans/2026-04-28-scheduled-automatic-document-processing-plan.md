@@ -41,16 +41,22 @@ Completed so far in the repository:
   - run a minimal shared `process_document(...)` orchestration path with immediate step retry
   - enrich one document's latest visible article set through the existing article-level enrichment pipeline
   - recover stale `running` documents into retryable or terminal failure state
+- added a minimal shared `run_scheduler_tick(...)` helper that:
+  - creates and finalizes one scheduler run
+  - records import run linkage
+  - continues retryable documents even when Gmail import finds nothing new
+  - keeps processing later documents when one document fails
 - added worker-side pure catch-up scheduling logic for overdue tick detection
+- added worker-side startup maintenance orchestration for recovery plus catch-up decision
 - added targeted TDD coverage for the new migration and persistence helpers
 
 Not implemented yet:
 
-- document failure-state mutation helpers
-- manual retry mutation helpers
-- stale-running recovery helpers
-- real parse-persist orchestration wiring
-- worker scheduler loop and CLI entrypoints
+- full long-running worker scheduler loop integration in `main()`
+- real Gmail import wiring inside `run_scheduler_tick(...)`
+- document-level parallel processing inside one scheduler tick
+- CLI entrypoints for scheduler run, retry, and status inspection
+- backend read/write surfaces for future web endpoints
 
 The repository already has the main building blocks needed for this slice:
 
@@ -118,7 +124,9 @@ Current status on 2026-04-28:
 - real parse-persist wiring: done
 - stale-running recovery helpers: done
 - worker catch-up tick decision logic: done
-- scheduler loop integration: not started
+- startup maintenance orchestration: done
+- minimal scheduler tick helper: done
+- scheduler loop integration in `main()`: not started
 
 ### Slice 2: Document Processing Orchestration Service
 
@@ -195,6 +203,14 @@ Exit criteria:
 - the worker can perform one full scheduler tick end to end
 - overdue startup and post-sleep catch-up behavior are both test-covered
 - a tick that finds no new Gmail documents can still process retryable documents
+
+Current status on 2026-04-28:
+
+- overdue catch-up decision helper: done
+- startup maintenance entrypoint for recovery plus catch-up: done
+- shared scheduler tick helper: partially done
+- real worker loop and timer-driven execution: not started
+- real Gmail import and real document processing wiring inside scheduler tick: not started
 
 ### Slice 5: Document-Level Parallelism And Safe Claiming
 
@@ -315,6 +331,11 @@ Recommended first tests in order:
 12. `scheduler tick processes multiple documents without duplicate claims`
 13. `retry_document command requests manual retry`
 14. `document_processing_status command returns current state`
+
+Current completion against the TDD queue on 2026-04-28:
+
+- 1 through 11: done
+- 12 through 14: not started
 
 ## Success Criteria
 

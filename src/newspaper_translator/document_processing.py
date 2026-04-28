@@ -736,3 +736,66 @@ def recover_stale_document_runs(
             )
         )
     return recovered_runs
+
+
+def run_scheduler_tick(
+    *,
+    database_url: str,
+    trigger_type: str,
+    import_documents,
+    process_one_document,
+    document_limit: int,
+    locked_by_prefix: str = "scheduler-worker",
+) -> SchedulerRun:
+    scheduler_run = create_scheduler_run(
+        database_url=database_url,
+        trigger_type=trigger_type,
+    )
+
+    import_result = import_documents()
+    import_run_id = getattr(import_result, "run_id", None)
+    eligible_runs = list_eligible_document_processing_runs(
+        database_url=database_url,
+        limit=document_limit,
+    )
+
+    completed_document_count = 0
+    failed_document_count = 0
+    error_messages: list[str] = []
+    for index, eligible_run in enumerate(eligible_runs, start=1):
+        try:
+            result = process_one_document(
+                document_key=eligible_run.document_key,
+                scheduler_run_id=scheduler_run.scheduler_run_id,
+                locked_by=f"{locked_by_prefix}-{index}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            failed_document_count += 1
+            error_messages.append(str(exc))
+            continue
+
+        if getattr(result, "status", "") == "succeeded":
+            completed_document_count += 1
+        else:
+            failed_document_count += 1
+
+    final_status = "succeeded"
+    if failed_document_count and completed_document_count:
+        final_status = "partial"
+    elif failed_document_count:
+        final_status = "failed"
+
+    finalize_scheduler_run(
+        database_url=database_url,
+        scheduler_run_id=scheduler_run.scheduler_run_id,
+        status=final_status,
+        import_run_id=import_run_id,
+        selected_document_count=len(eligible_runs),
+        completed_document_count=completed_document_count,
+        failed_document_count=failed_document_count,
+        error_message="; ".join(error_messages) if error_messages else None,
+    )
+    return get_scheduler_run(
+        database_url=database_url,
+        scheduler_run_id=scheduler_run.scheduler_run_id,
+    )

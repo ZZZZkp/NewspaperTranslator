@@ -38,6 +38,34 @@ def should_run_catch_up_tick(
     return now_dt - last_started_at >= timedelta(seconds=interval_seconds)
 
 
+def run_startup_maintenance(
+    *,
+    last_scheduler_run_started_at: str | None,
+    now: str,
+    interval_seconds: int,
+    recover_stale_document_runs,
+    run_scheduler_tick,
+) -> dict[str, object]:
+    recovered_runs = recover_stale_document_runs()
+    catch_up_triggered = should_run_catch_up_tick(
+        last_scheduler_run_started_at=last_scheduler_run_started_at,
+        now=now,
+        interval_seconds=interval_seconds,
+    )
+    scheduler_run_id = None
+    if catch_up_triggered:
+        scheduler_run_id = run_scheduler_tick(trigger_type="interval")
+
+    return {
+        "recovered_document_keys": [
+            getattr(run, "document_key", run)
+            for run in recovered_runs
+        ],
+        "catch_up_triggered": catch_up_triggered,
+        "scheduler_run_id": scheduler_run_id,
+    }
+
+
 def main() -> None:
     print(build_startup_log_line(dict(os.environ)), flush=True)
     while True:

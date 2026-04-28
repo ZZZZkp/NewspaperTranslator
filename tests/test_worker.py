@@ -15,12 +15,14 @@ try:
     from newspaper_translator.worker import (
         build_startup_report,
         build_startup_log_line,
+        run_startup_maintenance,
         should_run_catch_up_tick,
     )
 except ImportError:
     build_startup_log_line = None
     build_startup_report = None
     run_pending_migrations = None
+    run_startup_maintenance = None
     should_run_catch_up_tick = None
 
 
@@ -96,6 +98,58 @@ class WorkerStartupTests(unittest.TestCase):
         )
 
         self.assertEqual(should_run, False)
+
+    def test_startup_maintenance_runs_recovery_and_catch_up_when_overdue(self) -> None:
+        self.assertIsNotNone(run_startup_maintenance)
+
+        calls: list[tuple[str, str | None]] = []
+
+        def recover() -> list[str]:
+            calls.append(("recover", None))
+            return ["message-1:attachment-1:hash-1"]
+
+        def run_tick(*, trigger_type: str) -> str:
+            calls.append(("tick", trigger_type))
+            return "scheduler-run-1"
+
+        result = run_startup_maintenance(
+            last_scheduler_run_started_at="2026-04-28T08:00:00",
+            now="2026-04-28T12:00:00",
+            interval_seconds=7200,
+            recover_stale_document_runs=recover,
+            run_scheduler_tick=run_tick,
+        )
+
+        self.assertEqual(calls, [("recover", None), ("tick", "interval")])
+        self.assertEqual(result["recovered_document_keys"], ["message-1:attachment-1:hash-1"])
+        self.assertEqual(result["catch_up_triggered"], True)
+        self.assertEqual(result["scheduler_run_id"], "scheduler-run-1")
+
+    def test_startup_maintenance_skips_catch_up_when_scheduler_is_fresh(self) -> None:
+        self.assertIsNotNone(run_startup_maintenance)
+
+        calls: list[tuple[str, str | None]] = []
+
+        def recover() -> list[str]:
+            calls.append(("recover", None))
+            return []
+
+        def run_tick(*, trigger_type: str) -> str:
+            calls.append(("tick", trigger_type))
+            return "scheduler-run-1"
+
+        result = run_startup_maintenance(
+            last_scheduler_run_started_at="2026-04-28T10:30:00",
+            now="2026-04-28T12:00:00",
+            interval_seconds=7200,
+            recover_stale_document_runs=recover,
+            run_scheduler_tick=run_tick,
+        )
+
+        self.assertEqual(calls, [("recover", None)])
+        self.assertEqual(result["recovered_document_keys"], [])
+        self.assertEqual(result["catch_up_triggered"], False)
+        self.assertEqual(result["scheduler_run_id"], None)
 
 
 if __name__ == "__main__":

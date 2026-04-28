@@ -2,6 +2,7 @@ import pathlib
 import sqlite3
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 
@@ -60,6 +61,7 @@ try:
         list_eligible_document_processing_runs,
         process_document,
         recover_stale_document_runs,
+        run_scheduler_tick,
         request_manual_document_retry,
     )
 except ImportError:
@@ -74,6 +76,7 @@ except ImportError:
     list_eligible_document_processing_runs = None
     process_document = None
     recover_stale_document_runs = None
+    run_scheduler_tick = None
     request_manual_document_retry = None
 
 
@@ -765,6 +768,123 @@ class SchedulerRunStoreTests(unittest.TestCase):
         self.assertEqual(terminal_run.status, "failed_terminal")
         self.assertEqual(terminal_run.automatic_failure_count, 2)
         self.assertEqual(fresh_run.status, "running")
+
+    def test_scheduler_tick_can_continue_retryable_documents_when_gmail_import_finds_nothing_new(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_document_processing_run)
+        self.assertIsNotNone(run_scheduler_tick)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            create_document_processing_run(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            self._set_document_processing_status(
+                database_path=database_path,
+                document_key=document_key,
+                status="failed_retryable",
+            )
+
+            processed_document_keys: list[str] = []
+
+            def import_documents():
+                return SimpleNamespace(run_id="import-run-1", created_document_count=0)
+
+            def process_one_document(*, document_key: str, scheduler_run_id: str, locked_by: str):
+                processed_document_keys.append(document_key)
+                return SimpleNamespace(
+                    document_key=document_key,
+                    status="succeeded",
+                    scheduler_run_id=scheduler_run_id,
+                    locked_by=locked_by,
+                )
+
+            scheduler_run = run_scheduler_tick(
+                database_url=database_url,
+                trigger_type="interval",
+                import_documents=import_documents,
+                process_one_document=process_one_document,
+                document_limit=10,
+            )
+            stored_scheduler_run = get_scheduler_run(
+                database_url=database_url,
+                scheduler_run_id=scheduler_run.scheduler_run_id,
+            )
+
+        self.assertEqual(processed_document_keys, [document_key])
+        self.assertEqual(stored_scheduler_run.import_run_id, "import-run-1")
+        self.assertEqual(stored_scheduler_run.selected_document_count, 1)
+        self.assertEqual(stored_scheduler_run.completed_document_count, 1)
+        self.assertEqual(stored_scheduler_run.failed_document_count, 0)
+        self.assertEqual(stored_scheduler_run.status, "succeeded")
+
+    def test_scheduler_tick_continues_when_one_document_fails_and_marks_run_partial(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_document_processing_run)
+        self.assertIsNotNone(run_scheduler_tick)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            first_document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            second_document_key = self._insert_document(
+                database_path,
+                "message-2:attachment-1:hash-2",
+            )
+            create_document_processing_run(
+                database_url=database_url,
+                document_key=first_document_key,
+            )
+            create_document_processing_run(
+                database_url=database_url,
+                document_key=second_document_key,
+            )
+
+            processed_document_keys: list[str] = []
+
+            def import_documents():
+                return SimpleNamespace(run_id="import-run-1", created_document_count=0)
+
+            def process_one_document(*, document_key: str, scheduler_run_id: str, locked_by: str):
+                processed_document_keys.append(document_key)
+                if document_key == first_document_key:
+                    raise RuntimeError("parse timeout")
+                return SimpleNamespace(
+                    document_key=document_key,
+                    status="succeeded",
+                    scheduler_run_id=scheduler_run_id,
+                    locked_by=locked_by,
+                )
+
+            scheduler_run = run_scheduler_tick(
+                database_url=database_url,
+                trigger_type="interval",
+                import_documents=import_documents,
+                process_one_document=process_one_document,
+                document_limit=10,
+            )
+            stored_scheduler_run = get_scheduler_run(
+                database_url=database_url,
+                scheduler_run_id=scheduler_run.scheduler_run_id,
+            )
+
+        self.assertEqual(processed_document_keys, [first_document_key, second_document_key])
+        self.assertEqual(stored_scheduler_run.selected_document_count, 2)
+        self.assertEqual(stored_scheduler_run.completed_document_count, 1)
+        self.assertEqual(stored_scheduler_run.failed_document_count, 1)
+        self.assertEqual(stored_scheduler_run.status, "partial")
+        self.assertIn("parse timeout", stored_scheduler_run.error_message)
 
     def _insert_document(
         self,

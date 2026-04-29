@@ -11,6 +11,21 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 try:
+    from newspaper_translator.api.queries import (
+        get_article_detail_view,
+        get_filter_options_view,
+        get_overview_view,
+        list_focus_tag_article_card_views,
+    )
+    from newspaper_translator.article_store import (
+        create_article_enrichment_run,
+        create_parse_run,
+        finalize_article_enrichment_run,
+        finalize_parse_run,
+        list_parse_run_final_articles,
+        record_article_enrichment_outputs,
+        record_parse_run_result,
+    )
     from newspaper_translator.database import run_pending_migrations
     from newspaper_translator.import_audit import (
         create_import_run,
@@ -24,12 +39,23 @@ try:
     )
     from newspaper_translator.web import create_app
 except ImportError:
+    create_article_enrichment_run = None
     create_app = None
+    create_parse_run = None
     create_document_processing_run = None
     create_import_run = None
+    get_article_detail_view = None
+    get_filter_options_view = None
+    finalize_article_enrichment_run = None
+    finalize_parse_run = None
+    get_overview_view = None
+    list_focus_tag_article_card_views = None
+    list_parse_run_final_articles = None
     finalize_import_run = None
+    record_article_enrichment_outputs = None
     record_import_run_retry_summary = None
     record_import_run_item = None
+    record_parse_run_result = None
     request_manual_document_retry = None
     run_pending_migrations = None
 
@@ -341,6 +367,584 @@ class WebHealthEndpointTests(unittest.TestCase):
         self.assertEqual(status, "200 OK")
         self.assertEqual([item["document_key"] for item in payload["runs"]], [retry_key])
 
+    def test_articles_endpoint_returns_article_cards(self) -> None:
+        self.assertIsNotNone(create_parse_run)
+        self.assertIsNotNone(create_article_enrichment_run)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-1:attachment-1:hash-1",
+                original_filename="ft-2026-04-22.pdf",
+            )
+
+            parse_run = create_parse_run(
+                database_url=database_url,
+                document_key=document_key,
+                parser_name="mineru",
+                parser_version="vlm",
+                publication_date="2026-04-22",
+                continuation_matcher_name="gemini",
+                continuation_matcher_version="2.5-flash",
+            )
+            record_parse_run_result(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                parse_result=self._build_parse_result(
+                    title="Chipmakers prepare for a new subsidy dispute",
+                    body_suffix="Subsidy pressure is spreading across Asia and Europe.",
+                ),
+                document_key=document_key,
+                publication_date="2026-04-22",
+            )
+            finalize_parse_run(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                status="succeeded",
+            )
+            article = list_parse_run_final_articles(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+            )[0]
+            enrichment_run = create_article_enrichment_run(
+                database_url=database_url,
+                article_id=article.article_id,
+                parse_run_id=parse_run.parse_run_id,
+                provider_name="gemini",
+                model_name="gemini-2.5-flash",
+                prompt_version="article-enrichment-v2",
+                input_hash="hash-1",
+            )
+            record_article_enrichment_outputs(
+                database_url=database_url,
+                enrichment_run_id=enrichment_run.enrichment_run_id,
+                translated_title_zh="芯片制造商准备应对新的补贴争端",
+                summary_zh="多国芯片企业正重新评估补贴竞争和供应链布局。",
+                translated_body_zh="随着补贴争夺升级，芯片制造商开始重新配置产能与投资方向。",
+                translation_status="succeeded",
+                summary_status="succeeded",
+                tagging_status="succeeded",
+                tags=["Semiconductors", "Policy", "Trade"],
+            )
+            finalize_article_enrichment_run(
+                database_url=database_url,
+                enrichment_run_id=enrichment_run.enrichment_run_id,
+                status="succeeded",
+            )
+
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path="/api/articles",
+            )
+
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(len(payload["articles"]), 1)
+        self.assertEqual(payload["articles"][0]["title_zh"], "芯片制造商准备应对新的补贴争端")
+        self.assertEqual(payload["articles"][0]["tags"], ["Semiconductors", "Policy", "Trade"])
+
+    def test_overview_endpoint_returns_dashboard_summary_counts(self) -> None:
+        self.assertIsNotNone(get_overview_view)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            self._insert_import_run(database_path=database_path, created_document_count=2)
+            doc_running = self._insert_document(
+                database_path=database_path,
+                document_key="message-1:attachment-1:hash-1",
+                original_filename="ft-2026-04-22.pdf",
+            )
+            doc_retryable = self._insert_document(
+                database_path=database_path,
+                document_key="message-2:attachment-1:hash-2",
+                original_filename="wsj-2026-04-22.pdf",
+            )
+            self._insert_document_processing_run(
+                database_path=database_path,
+                document_key=doc_running,
+                status="running",
+                current_step="parse_persist",
+            )
+            self._insert_document_processing_run(
+                database_path=database_path,
+                document_key=doc_retryable,
+                status="failed_retryable",
+                current_step="enrich",
+            )
+
+            parse_run = create_parse_run(
+                database_url=database_url,
+                document_key=doc_running,
+                parser_name="mineru",
+                parser_version="vlm",
+                publication_date="2026-04-22",
+                continuation_matcher_name="gemini",
+                continuation_matcher_version="2.5-flash",
+            )
+            record_parse_run_result(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                parse_result=self._build_parse_result(
+                    title="Chipmakers prepare for a new subsidy dispute",
+                    body_suffix="Subsidy pressure is spreading across Asia and Europe.",
+                ),
+                document_key=doc_running,
+                publication_date="2026-04-22",
+            )
+            finalize_parse_run(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                status="succeeded",
+            )
+
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path="/api/overview",
+            )
+
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(payload["overview"]["imported_document_count"], 2)
+        self.assertEqual(payload["overview"]["article_count"], 1)
+        self.assertEqual(payload["overview"]["processing_document_count"], 1)
+        self.assertEqual(payload["overview"]["pending_exception_count"], 1)
+
+    def test_article_detail_endpoint_returns_bilingual_payload(self) -> None:
+        self.assertIsNotNone(get_article_detail_view)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-1:attachment-1:hash-1",
+                original_filename="ft-2026-04-22.pdf",
+            )
+            parse_run = create_parse_run(
+                database_url=database_url,
+                document_key=document_key,
+                parser_name="mineru",
+                parser_version="vlm",
+                publication_date="2026-04-22",
+                continuation_matcher_name="gemini",
+                continuation_matcher_version="2.5-flash",
+            )
+            record_parse_run_result(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                parse_result=self._build_parse_result(
+                    title="Chipmakers prepare for a new subsidy dispute",
+                    body_suffix="Subsidy pressure is spreading across Asia and Europe.",
+                ),
+                document_key=document_key,
+                publication_date="2026-04-22",
+            )
+            finalize_parse_run(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                status="succeeded",
+            )
+            article = list_parse_run_final_articles(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+            )[0]
+            enrichment_run = create_article_enrichment_run(
+                database_url=database_url,
+                article_id=article.article_id,
+                parse_run_id=parse_run.parse_run_id,
+                provider_name="gemini",
+                model_name="gemini-2.5-flash",
+                prompt_version="article-enrichment-v2",
+                input_hash="hash-1",
+            )
+            record_article_enrichment_outputs(
+                database_url=database_url,
+                enrichment_run_id=enrichment_run.enrichment_run_id,
+                translated_title_zh="芯片制造商准备应对新的补贴争端",
+                summary_zh="多国芯片企业正重新评估补贴竞争和供应链布局。",
+                translated_body_zh="随着补贴争夺升级，芯片制造商开始重新配置产能与投资方向。",
+                translation_status="succeeded",
+                summary_status="succeeded",
+                tagging_status="succeeded",
+                tags=["Semiconductors", "Policy", "Trade"],
+            )
+            finalize_article_enrichment_run(
+                database_url=database_url,
+                enrichment_run_id=enrichment_run.enrichment_run_id,
+                status="succeeded",
+            )
+            self._insert_document_processing_run(
+                database_path=database_path,
+                document_key=document_key,
+                status="succeeded",
+                current_step="completed",
+            )
+
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path=f"/api/articles/{article.article_id}",
+            )
+
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(payload["article"]["title_zh"], "芯片制造商准备应对新的补贴争端")
+        self.assertEqual(payload["article"]["processing"]["latest_enrichment_status"], "succeeded")
+
+    def test_filters_endpoint_returns_distinct_sources_and_tags(self) -> None:
+        self.assertIsNotNone(get_filter_options_view)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            first_document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-1:attachment-1:hash-1",
+                original_filename="ft-2026-04-22.pdf",
+                source_name="Financial Times",
+            )
+            second_document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-2:attachment-1:hash-2",
+                original_filename="wsj-2026-04-22.pdf",
+                source_name="Wall Street Journal",
+            )
+            self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=first_document_key,
+                publication_date="2026-04-22",
+                title="Chipmakers prepare for a new subsidy dispute",
+                body_suffix="Subsidy pressure is spreading across Asia and Europe.",
+                translated_title_zh="芯片制造商准备应对新的补贴争端",
+                summary_zh="多国芯片企业正重新评估补贴竞争和供应链布局。",
+                translated_body_zh="随着补贴争夺升级，芯片制造商开始重新配置产能与投资方向。",
+                tags=["Semiconductors", "Policy", "Trade"],
+            )
+            self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=second_document_key,
+                publication_date="2026-04-22",
+                title="Export controls reshape hardware planning",
+                body_suffix="Manufacturers are adjusting long-term procurement plans.",
+                translated_title_zh="出口管制正在重塑硬件规划",
+                summary_zh="硬件制造商正在根据新的出口限制重新安排采购。",
+                translated_body_zh="新的出口限制正在迫使硬件公司调整长期规划与供应商结构。",
+                tags=["Policy", "Hardware", "Trade"],
+            )
+
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path="/api/filters",
+            )
+
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(payload["filters"]["sources"], ["Financial Times", "Wall Street Journal"])
+        self.assertEqual(payload["filters"]["tags"], ["Hardware", "Policy", "Semiconductors", "Trade"])
+
+    def test_articles_endpoint_supports_source_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            first_document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-1:attachment-1:hash-1",
+                original_filename="ft-2026-04-22.pdf",
+                source_name="Financial Times",
+            )
+            second_document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-2:attachment-1:hash-2",
+                original_filename="wsj-2026-04-22.pdf",
+                source_name="Wall Street Journal",
+            )
+            self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=first_document_key,
+                publication_date="2026-04-22",
+                title="Chipmakers prepare for a new subsidy dispute",
+                body_suffix="Subsidy pressure is spreading across Asia and Europe.",
+                translated_title_zh="芯片制造商准备应对新的补贴争端",
+                summary_zh="多国芯片企业正重新评估补贴竞争和供应链布局。",
+                translated_body_zh="随着补贴争夺升级，芯片制造商开始重新配置产能与投资方向。",
+                tags=["Semiconductors", "Policy", "Trade"],
+            )
+            second_article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=second_document_key,
+                publication_date="2026-04-22",
+                title="Export controls reshape hardware planning",
+                body_suffix="Manufacturers are adjusting long-term procurement plans.",
+                translated_title_zh="出口管制正在重塑硬件规划",
+                summary_zh="硬件制造商正在根据新的出口限制重新安排采购。",
+                translated_body_zh="新的出口限制正在迫使硬件公司调整长期规划与供应商结构。",
+                tags=["Policy", "Hardware", "Trade"],
+            )
+
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path="/api/articles",
+                query_string="source=Wall%20Street%20Journal",
+            )
+
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(len(payload["articles"]), 1)
+        self.assertEqual(payload["articles"][0]["article_id"], second_article_id)
+
+    def test_articles_endpoint_supports_tag_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            first_document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-1:attachment-1:hash-1",
+                original_filename="ft-2026-04-22.pdf",
+                source_name="Financial Times",
+            )
+            second_document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-2:attachment-1:hash-2",
+                original_filename="wsj-2026-04-22.pdf",
+                source_name="Wall Street Journal",
+            )
+            self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=first_document_key,
+                publication_date="2026-04-22",
+                title="Chipmakers prepare for a new subsidy dispute",
+                body_suffix="Subsidy pressure is spreading across Asia and Europe.",
+                translated_title_zh="芯片制造商准备应对新的补贴争端",
+                summary_zh="多国芯片企业正重新评估补贴竞争和供应链布局。",
+                translated_body_zh="随着补贴争夺升级，芯片制造商开始重新配置产能与投资方向。",
+                tags=["Semiconductors", "Policy", "Trade"],
+            )
+            second_article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=second_document_key,
+                publication_date="2026-04-22",
+                title="Export controls reshape hardware planning",
+                body_suffix="Manufacturers are adjusting long-term procurement plans.",
+                translated_title_zh="出口管制正在重塑硬件规划",
+                summary_zh="硬件制造商正在根据新的出口限制重新安排采购。",
+                translated_body_zh="新的出口限制正在迫使硬件公司调整长期规划与供应商结构。",
+                tags=["Policy", "Hardware", "Trade"],
+            )
+
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path="/api/articles",
+                query_string="tag=Hardware",
+            )
+
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(len(payload["articles"]), 1)
+        self.assertEqual(payload["articles"][0]["article_id"], second_article_id)
+
+    def test_focus_tag_articles_endpoint_returns_articles_matching_configured_focus_tags(self) -> None:
+        self.assertIsNotNone(list_focus_tag_article_card_views)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            first_document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-1:attachment-1:hash-1",
+                original_filename="ft-2026-04-22.pdf",
+                source_name="Financial Times",
+            )
+            second_document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-2:attachment-1:hash-2",
+                original_filename="wsj-2026-04-22.pdf",
+                source_name="Wall Street Journal",
+            )
+            third_document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-3:attachment-1:hash-3",
+                original_filename="econ-2026-04-22.pdf",
+                source_name="The Economist",
+            )
+            first_article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=first_document_key,
+                publication_date="2026-04-22",
+                title="Chipmakers prepare for a new subsidy dispute",
+                body_suffix="Subsidy pressure is spreading across Asia and Europe.",
+                translated_title_zh="芯片制造商准备应对新的补贴争端",
+                summary_zh="多国芯片企业正重新评估补贴竞争和供应链布局。",
+                translated_body_zh="随着补贴争夺升级，芯片制造商开始重新配置产能与投资方向。",
+                tags=["Semiconductors", "Policy", "Trade"],
+            )
+            second_article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=second_document_key,
+                publication_date="2026-04-22",
+                title="Export controls reshape hardware planning",
+                body_suffix="Manufacturers are adjusting long-term procurement plans.",
+                translated_title_zh="出口管制正在重塑硬件规划",
+                summary_zh="硬件制造商正在根据新的出口限制重新安排采购。",
+                translated_body_zh="新的出口限制正在迫使硬件公司调整长期规划与供应商结构。",
+                tags=["Hardware", "Trade", "Policy"],
+            )
+            self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=third_document_key,
+                publication_date="2026-04-22",
+                title="Cities recover commuter traffic",
+                body_suffix="Urban planners are reassessing transport demand.",
+                translated_title_zh="城市正在恢复通勤流量",
+                summary_zh="城市规划者正在重新评估交通需求。",
+                translated_body_zh="随着通勤回暖，城市交通系统正在重新分配资源。",
+                tags=["Cities", "Transport", "Urbanism"],
+            )
+
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                    "FOCUS_TAGS": "Semiconductors, Hardware",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path="/api/focus-tags/articles",
+            )
+
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(
+            [item["article_id"] for item in payload["articles"]],
+            [first_article_id, second_article_id],
+        )
+
+    def test_articles_endpoint_supports_publication_date_range_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            older_document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-1:attachment-1:hash-1",
+                original_filename="ft-2026-04-21.pdf",
+                source_name="Financial Times",
+            )
+            newer_document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-2:attachment-1:hash-2",
+                original_filename="wsj-2026-04-22.pdf",
+                source_name="Wall Street Journal",
+            )
+            self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=older_document_key,
+                publication_date="2026-04-21",
+                title="Older article",
+                body_suffix="Older article body.",
+                translated_title_zh="较早文章",
+                summary_zh="较早文章摘要。",
+                translated_body_zh="较早文章正文。",
+                tags=["Markets", "Europe", "Trade"],
+            )
+            newer_article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=newer_document_key,
+                publication_date="2026-04-22",
+                title="Newer article",
+                body_suffix="Newer article body.",
+                translated_title_zh="较新文章",
+                summary_zh="较新文章摘要。",
+                translated_body_zh="较新文章正文。",
+                tags=["Policy", "Hardware", "Trade"],
+            )
+
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path="/api/articles",
+                query_string="publication_date_from=2026-04-22&publication_date_to=2026-04-22",
+            )
+
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(len(payload["articles"]), 1)
+        self.assertEqual(payload["articles"][0]["article_id"], newer_article_id)
+
     def _insert_document(
         self,
         *,
@@ -348,6 +952,7 @@ class WebHealthEndpointTests(unittest.TestCase):
         document_key: str,
         raw_path: str = "/tmp/wsj-2026-04-20.pdf",
         original_filename: str = "wsj-2026-04-20.pdf",
+        source_name: str = "gmail",
     ) -> str:
         import sqlite3
 
@@ -369,7 +974,7 @@ class WebHealthEndpointTests(unittest.TestCase):
                 """,
                 (
                     document_key,
-                    "gmail",
+                    source_name,
                     document_key.split(":")[0],
                     "attachment-1",
                     "news@example.com",
@@ -383,6 +988,196 @@ class WebHealthEndpointTests(unittest.TestCase):
         finally:
             connection.close()
         return document_key
+
+    def _insert_import_run(self, *, database_path: pathlib.Path, created_document_count: int) -> str:
+        import sqlite3
+
+        run_id = "import-run-1"
+        connection = sqlite3.connect(database_path)
+        try:
+            connection.execute(
+                """
+                INSERT INTO import_runs (
+                    run_id,
+                    source_name,
+                    status,
+                    query,
+                    allowed_senders_json,
+                    max_results,
+                    created_document_count,
+                    finished_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (
+                    run_id,
+                    "gmail",
+                    "succeeded",
+                    "newer_than:7d",
+                    "[]",
+                    25,
+                    created_document_count,
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        return run_id
+
+    def _insert_document_processing_run(
+        self,
+        *,
+        database_path: pathlib.Path,
+        document_key: str,
+        status: str,
+        current_step: str,
+    ) -> None:
+        import sqlite3
+
+        connection = sqlite3.connect(database_path)
+        try:
+            connection.execute(
+                """
+                INSERT INTO document_processing_runs (
+                    processing_run_id,
+                    document_key,
+                    status,
+                    current_step
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (
+                    f"processing-{document_key}",
+                    document_key,
+                    status,
+                    current_step,
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def _build_parse_result(self, *, title: str, body_suffix: str):
+        from newspaper_translator.pdf import (
+            ArticleFragment,
+            ArticleSource,
+            ParseMatchDecision,
+            ParseResult,
+            ParsedArticle,
+        )
+
+        return ParseResult(
+            fragments=[
+                ArticleFragment(
+                    title=title,
+                    body_text="The policy outlook shifted rapidly.\nPlease turn to page A7",
+                    source_order=1,
+                    continued_to_page="A7",
+                    continued_from_page="",
+                ),
+                ArticleFragment(
+                    title="Chipmakers prepare",
+                    body_text=(
+                        "Continued from PageOne after new proposals were circulated.\n"
+                        f"{body_suffix}"
+                    ),
+                    source_order=2,
+                    continued_to_page="",
+                    continued_from_page="PageOne",
+                ),
+            ],
+            match_decisions=[
+                ParseMatchDecision(
+                    front_source_order=1,
+                    back_source_order=2,
+                    decision_status="accepted",
+                    decision_reason="accepted continuation pair",
+                    matcher_raw_response="(1, 2)",
+                )
+            ],
+            articles=[
+                ParsedArticle(
+                    article_order=1,
+                    primary_source_order=1,
+                    source_fragment_count=2,
+                    title=title,
+                    body_text=(
+                        "The policy outlook shifted rapidly.\n"
+                        f"{body_suffix}"
+                    ),
+                    source_fragments=[
+                        ArticleSource(source_order=1, fragment_role="front", sequence_index=1),
+                        ArticleSource(source_order=2, fragment_role="back", sequence_index=2),
+                    ],
+                )
+            ],
+        )
+
+    def _insert_succeeded_article_with_enrichment(
+        self,
+        *,
+        database_url: str,
+        document_key: str,
+        publication_date: str,
+        title: str,
+        body_suffix: str,
+        translated_title_zh: str,
+        summary_zh: str,
+        translated_body_zh: str,
+        tags: list[str],
+    ) -> str:
+        parse_run = create_parse_run(
+            database_url=database_url,
+            document_key=document_key,
+            parser_name="mineru",
+            parser_version="vlm",
+            publication_date=publication_date,
+            continuation_matcher_name="gemini",
+            continuation_matcher_version="2.5-flash",
+        )
+        record_parse_run_result(
+            database_url=database_url,
+            parse_run_id=parse_run.parse_run_id,
+            parse_result=self._build_parse_result(
+                title=title,
+                body_suffix=body_suffix,
+            ),
+            document_key=document_key,
+            publication_date=publication_date,
+        )
+        finalize_parse_run(
+            database_url=database_url,
+            parse_run_id=parse_run.parse_run_id,
+            status="succeeded",
+        )
+        article = list_parse_run_final_articles(
+            database_url=database_url,
+            parse_run_id=parse_run.parse_run_id,
+        )[0]
+        enrichment_run = create_article_enrichment_run(
+            database_url=database_url,
+            article_id=article.article_id,
+            parse_run_id=parse_run.parse_run_id,
+            provider_name="gemini",
+            model_name="gemini-2.5-flash",
+            prompt_version="article-enrichment-v2",
+            input_hash=f"hash-{article.article_id}",
+        )
+        record_article_enrichment_outputs(
+            database_url=database_url,
+            enrichment_run_id=enrichment_run.enrichment_run_id,
+            translated_title_zh=translated_title_zh,
+            summary_zh=summary_zh,
+            translated_body_zh=translated_body_zh,
+            translation_status="succeeded",
+            summary_status="succeeded",
+            tagging_status="succeeded",
+            tags=tags,
+        )
+        finalize_article_enrichment_run(
+            database_url=database_url,
+            enrichment_run_id=enrichment_run.enrichment_run_id,
+            status="succeeded",
+        )
+        return article.article_id
 
 
 def _perform_wsgi_request(app, *, method: str = "GET", path: str, query_string: str = "") -> tuple[str, dict[str, str], bytes]:

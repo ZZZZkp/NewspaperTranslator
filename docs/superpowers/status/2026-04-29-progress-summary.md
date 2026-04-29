@@ -8,7 +8,9 @@ Phase 1 foundation work remains complete.
 
 Phase 2 Gmail ingestion remains complete for the current repository goals.
 
-Phase 3 automatic backend processing has now reached the intended first unattended milestone for this repository slice.
+Phase 3 automatic backend processing remains at the intended first unattended milestone for the backend slice.
+
+The repository has now also started the first product-facing dashboard slice on top of that backend.
 
 The repository currently provides:
 
@@ -23,19 +25,33 @@ The repository currently provides:
 - CLI operator surfaces for manual scheduler execution, manual retry, and document-processing inspection
 - backend-only web surfaces for listing document-processing state, reading one document state, and requesting retry
 - structured scheduler, document, and retry lifecycle logs
+- aggregated dashboard query surfaces for overview, article cards, article detail, filters, and focus-tag article feeds
+- a first standalone `frontend/` dashboard shell packaged as a separate service in Docker Compose
+- a browser-rendered dashboard home with summary cards, filter controls, focus-tag cards, and full article cards
+- a first browser-rendered article detail view with Chinese, English, and compare modes
 
 ## What Was Added On 2026-04-29
 
 Implemented in:
 
+- [queries.py](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/src/newspaper_translator/api/queries.py)
 - [document_processing.py](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/src/newspaper_translator/document_processing.py)
+- [frontend/index.html](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/frontend/index.html)
+- [frontend/styles.css](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/frontend/styles.css)
+- [frontend/app.js](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/frontend/app.js)
+- [frontend/Dockerfile](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/frontend/Dockerfile)
+- [frontend/nginx.conf](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/frontend/nginx.conf)
 - [manage.py](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/src/newspaper_translator/manage.py)
 - [web.py](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/src/newspaper_translator/web.py)
 - [worker.py](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/src/newspaper_translator/worker.py)
+- [test_api_queries.py](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/tests/test_api_queries.py)
 - [test_document_processing.py](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/tests/test_document_processing.py)
+- [test_frontend_static.py](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/tests/test_frontend_static.py)
 - [test_manage.py](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/tests/test_manage.py)
 - [test_web.py](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/tests/test_web.py)
 - [test_worker.py](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/tests/test_worker.py)
+- [docker-compose.yml](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/docker-compose.yml)
+- [.env.example](/Users/pzk/workspace/NewspaperTranslator/NewspaperTranslator/.env.example)
 
 Current behavior:
 
@@ -52,30 +68,39 @@ Current behavior:
 - `POST /document-processing/<document_key>/retry` requests manual retry through the web backend
 - scheduler ticks now emit structured JSON lifecycle logs for tick start, Gmail import start/finish, and tick finish
 - document orchestration now emits structured JSON logs for claim, step start/finish, immediate retry scheduling, stale recovery, failure-state transitions, and manual retry requests
+- `GET /api/overview` returns dashboard summary counts for imported documents, visible articles, running documents, and pending exceptions
+- `GET /api/articles` returns article-card payloads and now supports `source`, `tag`, `publication_date_from`, and `publication_date_to`
+- `GET /api/articles/<article_id>` returns bilingual article detail payloads plus lightweight processing context
+- `GET /api/filters` returns distinct source and tag values for dashboard filter controls
+- `GET /api/focus-tags/articles` returns article cards matching `FOCUS_TAGS` from environment configuration
+- `frontend/app.js` now renders a dashboard home by calling the new read APIs through an Nginx reverse-proxy container
+- dashboard article cards are clickable and open an in-page article detail view through `#article/<article_id>` hash routing
+- the article detail view now supports Chinese, English, and compare modes without leaving the frontend shell
+- Docker Compose now includes a dedicated `frontend` service listening on port `3000`
 
 ## Current Test Status
 
 Current command:
 
 ```bash
-./.venv/bin/python -m unittest discover -s tests
+./.venv/bin/python -m unittest tests.test_api_queries tests.test_web tests.test_frontend_static tests.test_container_scaffolding -v
 ```
 
 Current result:
 
 ```text
-Ran 140 tests in 4.465s
+Ran 37 tests in 1.305s
 OK
 ```
 
 Primary slice verification:
 
 ```bash
-./.venv/bin/python -m unittest tests.test_worker tests.test_document_processing tests.test_manage tests.test_web
+./.venv/bin/python -m unittest tests.test_api_queries tests.test_web tests.test_frontend_static tests.test_container_scaffolding -v
 ```
 
 ```text
-Ran 57 tests in 1.320s
+Ran 37 tests in 1.305s
 OK
 ```
 
@@ -97,7 +122,8 @@ Completed automatic-processing slices so far:
 
 Still intentionally out of scope:
 
-- dashboard pages
+- frontend article detail route as a dedicated standalone page
+- frontend operator pages for document-processing list and single-document inspection
 - article-level parallel enrichment
 - advanced scheduling policies beyond the fixed interval
 - notifications or alerting
@@ -106,4 +132,4 @@ Still intentionally out of scope:
 
 ## Suggested Next Step
 
-The approved backend automatic-processing slice is complete. The next meaningful product slice would be a dashboard or richer operator UX on top of the new CLI and web control surfaces.
+The next meaningful product slice is to expand the standalone frontend from the current dashboard and inline article detail into the operator-facing document-processing pages.

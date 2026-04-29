@@ -1,0 +1,984 @@
+import pathlib
+import sqlite3
+import sys
+import tempfile
+import unittest
+
+
+PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+try:
+    from newspaper_translator.api.queries import (
+        get_article_detail_view,
+        get_filter_options_view,
+        get_overview_view,
+        list_article_card_views,
+        list_focus_tag_article_card_views,
+    )
+    from newspaper_translator.article_store import (
+        create_article_enrichment_run,
+        create_parse_run,
+        finalize_article_enrichment_run,
+        finalize_parse_run,
+        list_parse_run_final_articles,
+        record_article_enrichment_outputs,
+        record_parse_run_result,
+    )
+    from newspaper_translator.database import run_pending_migrations
+    from newspaper_translator.pdf import (
+        ArticleFragment,
+        ArticleSource,
+        ParseMatchDecision,
+        ParseResult,
+        ParsedArticle,
+    )
+except ImportError:
+    get_article_detail_view = None
+    get_filter_options_view = None
+    get_overview_view = None
+    list_article_card_views = None
+    list_focus_tag_article_card_views = None
+    create_article_enrichment_run = None
+    create_parse_run = None
+    finalize_article_enrichment_run = None
+    finalize_parse_run = None
+    list_parse_run_final_articles = None
+    record_article_enrichment_outputs = None
+    record_parse_run_result = None
+    run_pending_migrations = None
+    ArticleFragment = None
+    ArticleSource = None
+    ParseMatchDecision = None
+    ParseResult = None
+    ParsedArticle = None
+
+
+class ArticleQueryTests(unittest.TestCase):
+    def test_focus_tag_article_cards_return_articles_matching_any_configured_focus_tag(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(list_focus_tag_article_card_views)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            first_document_key = self._insert_document(
+                database_path,
+                original_filename="ft-2026-04-22.pdf",
+                source_name="Financial Times",
+                document_key="message-1:attachment-1:hash-1",
+            )
+            second_document_key = self._insert_document(
+                database_path,
+                original_filename="wsj-2026-04-22.pdf",
+                source_name="Wall Street Journal",
+                document_key="message-2:attachment-1:hash-2",
+            )
+            third_document_key = self._insert_document(
+                database_path,
+                original_filename="econ-2026-04-22.pdf",
+                source_name="The Economist",
+                document_key="message-3:attachment-1:hash-3",
+            )
+
+            first_article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=first_document_key,
+                publication_date="2026-04-22",
+                title="Chipmakers prepare for a new subsidy dispute",
+                body_suffix="Subsidy pressure is spreading across Asia and Europe.",
+                translated_title_zh="芯片制造商准备应对新的补贴争端",
+                summary_zh="多国芯片企业正重新评估补贴竞争和供应链布局。",
+                translated_body_zh="随着补贴争夺升级，芯片制造商开始重新配置产能与投资方向。",
+                tags=["Semiconductors", "Policy", "Trade"],
+            )
+            second_article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=second_document_key,
+                publication_date="2026-04-22",
+                title="Export controls reshape hardware planning",
+                body_suffix="Manufacturers are adjusting long-term procurement plans.",
+                translated_title_zh="出口管制正在重塑硬件规划",
+                summary_zh="硬件制造商正在根据新的出口限制重新安排采购。",
+                translated_body_zh="新的出口限制正在迫使硬件公司调整长期规划与供应商结构。",
+                tags=["Hardware", "Trade", "Policy"],
+            )
+            self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=third_document_key,
+                publication_date="2026-04-22",
+                title="Cities recover commuter traffic",
+                body_suffix="Urban planners are reassessing transport demand.",
+                translated_title_zh="城市正在恢复通勤流量",
+                summary_zh="城市规划者正在重新评估交通需求。",
+                translated_body_zh="随着通勤回暖，城市交通系统正在重新分配资源。",
+                tags=["Cities", "Transport", "Urbanism"],
+            )
+
+            cards = list_focus_tag_article_card_views(
+                database_url=database_url,
+                focus_tags=["Semiconductors", "Hardware"],
+            )
+
+        self.assertEqual([card.article_id for card in cards], [first_article_id, second_article_id])
+
+    def test_filter_options_return_distinct_sources_and_tags(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(get_filter_options_view)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            first_document_key = self._insert_document(
+                database_path,
+                original_filename="ft-2026-04-22.pdf",
+                source_name="Financial Times",
+                document_key="message-1:attachment-1:hash-1",
+            )
+            second_document_key = self._insert_document(
+                database_path,
+                original_filename="wsj-2026-04-22.pdf",
+                source_name="Wall Street Journal",
+                document_key="message-2:attachment-1:hash-2",
+            )
+
+            first_article = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=first_document_key,
+                publication_date="2026-04-22",
+                title="Chipmakers prepare for a new subsidy dispute",
+                body_suffix="Subsidy pressure is spreading across Asia and Europe.",
+                translated_title_zh="芯片制造商准备应对新的补贴争端",
+                summary_zh="多国芯片企业正重新评估补贴竞争和供应链布局。",
+                translated_body_zh="随着补贴争夺升级，芯片制造商开始重新配置产能与投资方向。",
+                tags=["Semiconductors", "Policy", "Trade"],
+            )
+            self.assertIsNotNone(first_article)
+            self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=second_document_key,
+                publication_date="2026-04-22",
+                title="Export controls reshape hardware planning",
+                body_suffix="Manufacturers are adjusting long-term procurement plans.",
+                translated_title_zh="出口管制正在重塑硬件规划",
+                summary_zh="硬件制造商正在根据新的出口限制重新安排采购。",
+                translated_body_zh="新的出口限制正在迫使硬件公司调整长期规划与供应商结构。",
+                tags=["Policy", "Hardware", "Trade"],
+            )
+
+            filters = get_filter_options_view(database_url=database_url)
+
+        self.assertEqual(filters.sources, ["Financial Times", "Wall Street Journal"])
+        self.assertEqual(filters.tags, ["Hardware", "Policy", "Semiconductors", "Trade"])
+
+    def test_overview_counts_imports_articles_processing_and_pending_exceptions(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(get_overview_view)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            import_run_id = self._insert_import_run(database_path, created_document_count=2)
+            doc_running = self._insert_document(
+                database_path,
+                original_filename="ft-2026-04-22.pdf",
+                source_name="Financial Times",
+                document_key="message-1:attachment-1:hash-1",
+            )
+            doc_retryable = self._insert_document(
+                database_path,
+                original_filename="wsj-2026-04-22.pdf",
+                source_name="Wall Street Journal",
+                document_key="message-2:attachment-1:hash-2",
+            )
+            doc_terminal = self._insert_document(
+                database_path,
+                original_filename="econ-2026-04-22.pdf",
+                source_name="The Economist",
+                document_key="message-3:attachment-1:hash-3",
+            )
+
+            self._insert_document_processing_run(
+                database_path,
+                document_key=doc_running,
+                status="running",
+                current_step="parse_persist",
+            )
+            self._insert_document_processing_run(
+                database_path,
+                document_key=doc_retryable,
+                status="failed_retryable",
+                current_step="enrich",
+            )
+            self._insert_document_processing_run(
+                database_path,
+                document_key=doc_terminal,
+                status="failed_terminal",
+                current_step="enrich",
+            )
+
+            parse_run = create_parse_run(
+                database_url=database_url,
+                document_key=doc_running,
+                parser_name="mineru",
+                parser_version="vlm",
+                publication_date="2026-04-22",
+                continuation_matcher_name="gemini",
+                continuation_matcher_version="2.5-flash",
+            )
+            record_parse_run_result(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                parse_result=self._build_parse_result(
+                    title="Chipmakers prepare for a new subsidy dispute",
+                    body_suffix="Subsidy pressure is spreading across Asia and Europe.",
+                ),
+                document_key=doc_running,
+                publication_date="2026-04-22",
+            )
+            finalize_parse_run(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                status="succeeded",
+            )
+
+            overview = get_overview_view(database_url=database_url)
+
+        self.assertEqual(import_run_id is not None, True)
+        self.assertEqual(overview.imported_document_count, 2)
+        self.assertEqual(overview.article_count, 1)
+        self.assertEqual(overview.processing_document_count, 1)
+        self.assertEqual(overview.pending_exception_count, 2)
+
+    def test_article_cards_prefer_latest_usable_chinese_enrichment(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(list_article_card_views)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                original_filename="ft-2026-04-22.pdf",
+                source_name="Financial Times",
+            )
+
+            parse_run = create_parse_run(
+                database_url=database_url,
+                document_key=document_key,
+                parser_name="mineru",
+                parser_version="vlm",
+                publication_date="2026-04-22",
+                continuation_matcher_name="gemini",
+                continuation_matcher_version="2.5-flash",
+            )
+            record_parse_run_result(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                parse_result=self._build_parse_result(
+                    title="Chipmakers prepare for a new subsidy dispute",
+                    body_suffix="Subsidy pressure is spreading across Asia and Europe.",
+                ),
+                document_key=document_key,
+                publication_date="2026-04-22",
+            )
+            finalize_parse_run(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                status="succeeded",
+            )
+            article = list_parse_run_final_articles(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+            )[0]
+
+            enrichment_run = create_article_enrichment_run(
+                database_url=database_url,
+                article_id=article.article_id,
+                parse_run_id=parse_run.parse_run_id,
+                provider_name="gemini",
+                model_name="gemini-2.5-flash",
+                prompt_version="article-enrichment-v2",
+                input_hash="hash-1",
+            )
+            record_article_enrichment_outputs(
+                database_url=database_url,
+                enrichment_run_id=enrichment_run.enrichment_run_id,
+                translated_title_zh="芯片制造商准备应对新的补贴争端",
+                summary_zh="多国芯片企业正重新评估补贴竞争和供应链布局。",
+                translated_body_zh="随着补贴争夺升级，芯片制造商开始重新配置产能与投资方向。",
+                translation_status="succeeded",
+                summary_status="succeeded",
+                tagging_status="succeeded",
+                tags=["Semiconductors", "Policy", "Trade"],
+            )
+            finalize_article_enrichment_run(
+                database_url=database_url,
+                enrichment_run_id=enrichment_run.enrichment_run_id,
+                status="succeeded",
+            )
+
+            cards = list_article_card_views(database_url=database_url)
+
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0].article_id, article.article_id)
+        self.assertEqual(cards[0].source_name, "Financial Times")
+        self.assertEqual(cards[0].publication_date, "2026-04-22")
+        self.assertEqual(cards[0].title_zh, "芯片制造商准备应对新的补贴争端")
+        self.assertEqual(cards[0].summary_zh, "多国芯片企业正重新评估补贴竞争和供应链布局。")
+        self.assertEqual(cards[0].tags, ["Semiconductors", "Policy", "Trade"])
+        self.assertEqual(cards[0].processing_badges, [])
+        self.assertEqual(cards[0].quality_flags, [])
+
+    def test_article_cards_mark_partial_enrichment_when_latest_usable_run_is_partial(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(list_article_card_views)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                original_filename="ft-2026-04-22.pdf",
+                source_name="Financial Times",
+            )
+
+            parse_run = create_parse_run(
+                database_url=database_url,
+                document_key=document_key,
+                parser_name="mineru",
+                parser_version="vlm",
+                publication_date="2026-04-22",
+                continuation_matcher_name="gemini",
+                continuation_matcher_version="2.5-flash",
+            )
+            record_parse_run_result(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                parse_result=self._build_parse_result(
+                    title="Chipmakers prepare for a new subsidy dispute",
+                    body_suffix="Subsidy pressure is spreading across Asia and Europe.",
+                ),
+                document_key=document_key,
+                publication_date="2026-04-22",
+            )
+            finalize_parse_run(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                status="succeeded",
+            )
+            article = list_parse_run_final_articles(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+            )[0]
+
+            enrichment_run = create_article_enrichment_run(
+                database_url=database_url,
+                article_id=article.article_id,
+                parse_run_id=parse_run.parse_run_id,
+                provider_name="gemini",
+                model_name="gemini-2.5-flash",
+                prompt_version="article-enrichment-v2",
+                input_hash="hash-1",
+            )
+            record_article_enrichment_outputs(
+                database_url=database_url,
+                enrichment_run_id=enrichment_run.enrichment_run_id,
+                translated_title_zh="芯片制造商准备应对新的补贴争端",
+                summary_zh=None,
+                translated_body_zh="随着补贴争夺升级，芯片制造商开始重新配置产能与投资方向。",
+                translation_status="succeeded",
+                summary_status="failed",
+                tagging_status="failed",
+                tags=[],
+            )
+            finalize_article_enrichment_run(
+                database_url=database_url,
+                enrichment_run_id=enrichment_run.enrichment_run_id,
+                status="partial",
+                error_message="summary timeout",
+            )
+
+            cards = list_article_card_views(database_url=database_url)
+
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0].title_zh, "芯片制造商准备应对新的补贴争端")
+        self.assertEqual(cards[0].summary_zh, None)
+        self.assertEqual(cards[0].processing_badges, ["partial_enrichment"])
+
+    def test_article_cards_fall_back_to_english_when_no_usable_enrichment_exists(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(list_article_card_views)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                original_filename="ft-2026-04-22.pdf",
+                source_name="Financial Times",
+            )
+
+            parse_run = create_parse_run(
+                database_url=database_url,
+                document_key=document_key,
+                parser_name="mineru",
+                parser_version="vlm",
+                publication_date="2026-04-22",
+                continuation_matcher_name="gemini",
+                continuation_matcher_version="2.5-flash",
+            )
+            record_parse_run_result(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                parse_result=self._build_parse_result(
+                    title="Chipmakers prepare for a new subsidy dispute",
+                    body_suffix="Subsidy pressure is spreading across Asia and Europe.",
+                ),
+                document_key=document_key,
+                publication_date="2026-04-22",
+            )
+            finalize_parse_run(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                status="succeeded",
+            )
+
+            cards = list_article_card_views(database_url=database_url)
+
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0].title_en, "Chipmakers prepare for a new subsidy dispute")
+        self.assertEqual(cards[0].title_zh, None)
+        self.assertEqual(cards[0].summary_zh, None)
+        self.assertEqual(cards[0].tags, [])
+        self.assertEqual(cards[0].reading_status, "english_fallback")
+
+    def test_article_detail_returns_bilingual_content_and_processing_context(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(get_article_detail_view)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                original_filename="ft-2026-04-22.pdf",
+                source_name="Financial Times",
+            )
+
+            parse_run = create_parse_run(
+                database_url=database_url,
+                document_key=document_key,
+                parser_name="mineru",
+                parser_version="vlm",
+                publication_date="2026-04-22",
+                continuation_matcher_name="gemini",
+                continuation_matcher_version="2.5-flash",
+            )
+            record_parse_run_result(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                parse_result=self._build_parse_result(
+                    title="Chipmakers prepare for a new subsidy dispute",
+                    body_suffix="Subsidy pressure is spreading across Asia and Europe.",
+                ),
+                document_key=document_key,
+                publication_date="2026-04-22",
+            )
+            finalize_parse_run(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                status="succeeded",
+            )
+            article = list_parse_run_final_articles(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+            )[0]
+
+            enrichment_run = create_article_enrichment_run(
+                database_url=database_url,
+                article_id=article.article_id,
+                parse_run_id=parse_run.parse_run_id,
+                provider_name="gemini",
+                model_name="gemini-2.5-flash",
+                prompt_version="article-enrichment-v2",
+                input_hash="hash-1",
+            )
+            record_article_enrichment_outputs(
+                database_url=database_url,
+                enrichment_run_id=enrichment_run.enrichment_run_id,
+                translated_title_zh="芯片制造商准备应对新的补贴争端",
+                summary_zh="多国芯片企业正重新评估补贴竞争和供应链布局。",
+                translated_body_zh="随着补贴争夺升级，芯片制造商开始重新配置产能与投资方向。",
+                translation_status="succeeded",
+                summary_status="succeeded",
+                tagging_status="succeeded",
+                tags=["Semiconductors", "Policy", "Trade"],
+            )
+            finalize_article_enrichment_run(
+                database_url=database_url,
+                enrichment_run_id=enrichment_run.enrichment_run_id,
+                status="succeeded",
+            )
+            self._insert_document_processing_run(
+                database_path,
+                document_key=document_key,
+                status="succeeded",
+                current_step="completed",
+            )
+
+            detail = get_article_detail_view(
+                database_url=database_url,
+                article_id=article.article_id,
+            )
+
+        self.assertEqual(detail.article_id, article.article_id)
+        self.assertEqual(detail.source_name, "Financial Times")
+        self.assertEqual(detail.title_zh, "芯片制造商准备应对新的补贴争端")
+        self.assertEqual(detail.summary_zh, "多国芯片企业正重新评估补贴竞争和供应链布局。")
+        self.assertIn("Subsidy pressure is spreading across Asia and Europe.", detail.body_text_en)
+        self.assertEqual(detail.body_text_zh, "随着补贴争夺升级，芯片制造商开始重新配置产能与投资方向。")
+        self.assertEqual(detail.tags, ["Semiconductors", "Policy", "Trade"])
+        self.assertEqual(detail.processing["document_status"], "succeeded")
+        self.assertEqual(detail.processing["latest_parse_status"], "succeeded")
+        self.assertEqual(detail.processing["latest_enrichment_status"], "succeeded")
+
+    def test_article_cards_support_source_filter(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(list_article_card_views)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            first_document_key = self._insert_document(
+                database_path,
+                original_filename="ft-2026-04-22.pdf",
+                source_name="Financial Times",
+                document_key="message-1:attachment-1:hash-1",
+            )
+            second_document_key = self._insert_document(
+                database_path,
+                original_filename="wsj-2026-04-22.pdf",
+                source_name="Wall Street Journal",
+                document_key="message-2:attachment-1:hash-2",
+            )
+
+            self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=first_document_key,
+                publication_date="2026-04-22",
+                title="Chipmakers prepare for a new subsidy dispute",
+                body_suffix="Subsidy pressure is spreading across Asia and Europe.",
+                translated_title_zh="芯片制造商准备应对新的补贴争端",
+                summary_zh="多国芯片企业正重新评估补贴竞争和供应链布局。",
+                translated_body_zh="随着补贴争夺升级，芯片制造商开始重新配置产能与投资方向。",
+                tags=["Semiconductors", "Policy", "Trade"],
+            )
+            second_article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=second_document_key,
+                publication_date="2026-04-22",
+                title="Export controls reshape hardware planning",
+                body_suffix="Manufacturers are adjusting long-term procurement plans.",
+                translated_title_zh="出口管制正在重塑硬件规划",
+                summary_zh="硬件制造商正在根据新的出口限制重新安排采购。",
+                translated_body_zh="新的出口限制正在迫使硬件公司调整长期规划与供应商结构。",
+                tags=["Policy", "Hardware", "Trade"],
+            )
+
+            cards = list_article_card_views(
+                database_url=database_url,
+                source="Wall Street Journal",
+            )
+
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0].article_id, second_article_id)
+        self.assertEqual(cards[0].source_name, "Wall Street Journal")
+
+    def test_article_cards_support_tag_filter(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(list_article_card_views)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            first_document_key = self._insert_document(
+                database_path,
+                original_filename="ft-2026-04-22.pdf",
+                source_name="Financial Times",
+                document_key="message-1:attachment-1:hash-1",
+            )
+            second_document_key = self._insert_document(
+                database_path,
+                original_filename="wsj-2026-04-22.pdf",
+                source_name="Wall Street Journal",
+                document_key="message-2:attachment-1:hash-2",
+            )
+
+            self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=first_document_key,
+                publication_date="2026-04-22",
+                title="Chipmakers prepare for a new subsidy dispute",
+                body_suffix="Subsidy pressure is spreading across Asia and Europe.",
+                translated_title_zh="芯片制造商准备应对新的补贴争端",
+                summary_zh="多国芯片企业正重新评估补贴竞争和供应链布局。",
+                translated_body_zh="随着补贴争夺升级，芯片制造商开始重新配置产能与投资方向。",
+                tags=["Semiconductors", "Policy", "Trade"],
+            )
+            second_article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=second_document_key,
+                publication_date="2026-04-22",
+                title="Export controls reshape hardware planning",
+                body_suffix="Manufacturers are adjusting long-term procurement plans.",
+                translated_title_zh="出口管制正在重塑硬件规划",
+                summary_zh="硬件制造商正在根据新的出口限制重新安排采购。",
+                translated_body_zh="新的出口限制正在迫使硬件公司调整长期规划与供应商结构。",
+                tags=["Policy", "Hardware", "Trade"],
+            )
+
+            cards = list_article_card_views(
+                database_url=database_url,
+                tag="Hardware",
+            )
+
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0].article_id, second_article_id)
+        self.assertEqual(cards[0].tags, ["Policy", "Hardware", "Trade"])
+
+    def test_article_cards_support_publication_date_range_filter(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(list_article_card_views)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            older_document_key = self._insert_document(
+                database_path,
+                original_filename="ft-2026-04-21.pdf",
+                source_name="Financial Times",
+                document_key="message-1:attachment-1:hash-1",
+            )
+            newer_document_key = self._insert_document(
+                database_path,
+                original_filename="wsj-2026-04-22.pdf",
+                source_name="Wall Street Journal",
+                document_key="message-2:attachment-1:hash-2",
+            )
+
+            self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=older_document_key,
+                publication_date="2026-04-21",
+                title="Older article",
+                body_suffix="Older article body.",
+                translated_title_zh="较早文章",
+                summary_zh="较早文章摘要。",
+                translated_body_zh="较早文章正文。",
+                tags=["Markets", "Europe", "Trade"],
+            )
+            newer_article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=newer_document_key,
+                publication_date="2026-04-22",
+                title="Newer article",
+                body_suffix="Newer article body.",
+                translated_title_zh="较新文章",
+                summary_zh="较新文章摘要。",
+                translated_body_zh="较新文章正文。",
+                tags=["Policy", "Hardware", "Trade"],
+            )
+
+            cards = list_article_card_views(
+                database_url=database_url,
+                publication_date_from="2026-04-22",
+                publication_date_to="2026-04-22",
+            )
+
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0].article_id, newer_article_id)
+        self.assertEqual(cards[0].publication_date, "2026-04-22")
+
+    def test_article_cards_are_sorted_by_publication_date_desc(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(list_article_card_views)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            older_document_key = self._insert_document(
+                database_path,
+                original_filename="ft-2026-04-21.pdf",
+                source_name="Financial Times",
+                document_key="message-1:attachment-1:hash-1",
+            )
+            newer_document_key = self._insert_document(
+                database_path,
+                original_filename="wsj-2026-04-22.pdf",
+                source_name="Wall Street Journal",
+                document_key="message-2:attachment-1:hash-2",
+            )
+
+            older_article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=older_document_key,
+                publication_date="2026-04-21",
+                title="Older article",
+                body_suffix="Older article body.",
+                translated_title_zh="较早文章",
+                summary_zh="较早文章摘要。",
+                translated_body_zh="较早文章正文。",
+                tags=["Markets", "Europe", "Trade"],
+            )
+            newer_article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=newer_document_key,
+                publication_date="2026-04-22",
+                title="Newer article",
+                body_suffix="Newer article body.",
+                translated_title_zh="较新文章",
+                summary_zh="较新文章摘要。",
+                translated_body_zh="较新文章正文。",
+                tags=["Policy", "Hardware", "Trade"],
+            )
+
+            cards = list_article_card_views(database_url=database_url)
+
+        self.assertEqual([card.article_id for card in cards], [newer_article_id, older_article_id])
+
+    def _insert_document(
+        self,
+        database_path: pathlib.Path,
+        *,
+        original_filename: str,
+        source_name: str,
+        document_key: str = "message-1:attachment-1:hash-1",
+    ) -> str:
+        connection = sqlite3.connect(database_path)
+        try:
+            connection.execute(
+                """
+                INSERT INTO documents (
+                    document_key,
+                    source_name,
+                    source_message_id,
+                    source_attachment_id,
+                    sender,
+                    original_filename,
+                    content_hash,
+                    raw_path,
+                    import_status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    document_key,
+                    source_name,
+                    "message-1",
+                    "attachment-1",
+                    "news@example.com",
+                    original_filename,
+                    "hash-1",
+                    "/tmp/ft-2026-04-22.pdf",
+                    "imported",
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        return document_key
+
+    def _insert_import_run(self, database_path: pathlib.Path, *, created_document_count: int) -> str:
+        run_id = "import-run-1"
+        connection = sqlite3.connect(database_path)
+        try:
+            connection.execute(
+                """
+                INSERT INTO import_runs (
+                    run_id,
+                    source_name,
+                    status,
+                    query,
+                    allowed_senders_json,
+                    max_results,
+                    created_document_count,
+                    finished_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (
+                    run_id,
+                    "gmail",
+                    "succeeded",
+                    "newer_than:7d",
+                    "[]",
+                    25,
+                    created_document_count,
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        return run_id
+
+    def _insert_document_processing_run(
+        self,
+        database_path: pathlib.Path,
+        *,
+        document_key: str,
+        status: str,
+        current_step: str,
+    ) -> None:
+        connection = sqlite3.connect(database_path)
+        try:
+            connection.execute(
+                """
+                INSERT INTO document_processing_runs (
+                    processing_run_id,
+                    document_key,
+                    status,
+                    current_step
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (
+                    f"processing-{document_key}",
+                    document_key,
+                    status,
+                    current_step,
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def _build_parse_result(self, *, title: str, body_suffix: str) -> ParseResult:
+        return ParseResult(
+            fragments=[
+                ArticleFragment(
+                    title=title,
+                    body_text="The policy outlook shifted rapidly.\nPlease turn to page A7",
+                    source_order=1,
+                    continued_to_page="A7",
+                    continued_from_page="",
+                ),
+                ArticleFragment(
+                    title="Chipmakers prepare",
+                    body_text=(
+                        "Continued from PageOne after new proposals were circulated.\n"
+                        f"{body_suffix}"
+                    ),
+                    source_order=2,
+                    continued_to_page="",
+                    continued_from_page="PageOne",
+                ),
+            ],
+            match_decisions=[
+                ParseMatchDecision(
+                    front_source_order=1,
+                    back_source_order=2,
+                    decision_status="accepted",
+                    decision_reason="accepted continuation pair",
+                    matcher_raw_response="(1, 2)",
+                )
+            ],
+            articles=[
+                ParsedArticle(
+                    article_order=1,
+                    primary_source_order=1,
+                    source_fragment_count=2,
+                    title=title,
+                    body_text=(
+                        "The policy outlook shifted rapidly.\n"
+                        f"{body_suffix}"
+                    ),
+                    source_fragments=[
+                        ArticleSource(source_order=1, fragment_role="front", sequence_index=1),
+                        ArticleSource(source_order=2, fragment_role="back", sequence_index=2),
+                    ],
+                )
+            ],
+        )
+
+    def _insert_succeeded_article_with_enrichment(
+        self,
+        *,
+        database_url: str,
+        document_key: str,
+        publication_date: str,
+        title: str,
+        body_suffix: str,
+        translated_title_zh: str,
+        summary_zh: str,
+        translated_body_zh: str,
+        tags: list[str],
+    ) -> str:
+        parse_run = create_parse_run(
+            database_url=database_url,
+            document_key=document_key,
+            parser_name="mineru",
+            parser_version="vlm",
+            publication_date=publication_date,
+            continuation_matcher_name="gemini",
+            continuation_matcher_version="2.5-flash",
+        )
+        record_parse_run_result(
+            database_url=database_url,
+            parse_run_id=parse_run.parse_run_id,
+            parse_result=self._build_parse_result(
+                title=title,
+                body_suffix=body_suffix,
+            ),
+            document_key=document_key,
+            publication_date=publication_date,
+        )
+        finalize_parse_run(
+            database_url=database_url,
+            parse_run_id=parse_run.parse_run_id,
+            status="succeeded",
+        )
+        article = list_parse_run_final_articles(
+            database_url=database_url,
+            parse_run_id=parse_run.parse_run_id,
+        )[0]
+        enrichment_run = create_article_enrichment_run(
+            database_url=database_url,
+            article_id=article.article_id,
+            parse_run_id=parse_run.parse_run_id,
+            provider_name="gemini",
+            model_name="gemini-2.5-flash",
+            prompt_version="article-enrichment-v2",
+            input_hash=f"hash-{article.article_id}",
+        )
+        record_article_enrichment_outputs(
+            database_url=database_url,
+            enrichment_run_id=enrichment_run.enrichment_run_id,
+            translated_title_zh=translated_title_zh,
+            summary_zh=summary_zh,
+            translated_body_zh=translated_body_zh,
+            translation_status="succeeded",
+            summary_status="succeeded",
+            tagging_status="succeeded",
+            tags=tags,
+        )
+        finalize_article_enrichment_run(
+            database_url=database_url,
+            enrichment_run_id=enrichment_run.enrichment_run_id,
+            status="succeeded",
+        )
+        return article.article_id
+
+
+if __name__ == "__main__":
+    unittest.main()

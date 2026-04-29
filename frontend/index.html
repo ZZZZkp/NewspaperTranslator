@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Newspaper Translator Dashboard</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Daily Papers</p>
+          <h1>本地新闻工作台</h1>
+          <p class="hero-text">
+            中文优先阅读、重点标签追踪、异常处理状态一屏可见。
+          </p>
+        </div>
+        <div id="summary-bar" class="summary-grid" aria-live="polite"></div>
+      </header>
+
+      <main class="page-grid">
+        <aside class="sidebar">
+          <section class="panel">
+            <div class="panel-header">
+              <h2>筛选</h2>
+              <p>按来源、标签和日期收窄结果</p>
+            </div>
+            <form id="filter-form" class="filter-form">
+              <label>
+                <span>来源</span>
+                <select id="source-filter" name="source">
+                  <option value="">全部来源</option>
+                </select>
+              </label>
+              <label>
+                <span>标签</span>
+                <select id="tag-filter" name="tag">
+                  <option value="">全部标签</option>
+                </select>
+              </label>
+              <label>
+                <span>开始日期</span>
+                <input id="date-from-filter" name="publication_date_from" type="date" />
+              </label>
+              <label>
+                <span>结束日期</span>
+                <input id="date-to-filter" name="publication_date_to" type="date" />
+              </label>
+              <div class="filter-actions">
+                <button type="submit">应用筛选</button>
+                <button type="button" id="reset-filters" class="ghost-button">重置</button>
+              </div>
+            </form>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <h2>状态</h2>
+              <p id="dashboard-status">正在加载首页数据...</p>
+            </div>
+          </section>
+        </aside>
+
+        <div class="content">
+          <section id="article-detail-view" class="panel article-detail hidden">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Article Detail</p>
+                <h2 id="detail-title">文章详情</h2>
+              </div>
+              <button id="detail-back-button" class="ghost-button detail-back-button" type="button">
+                返回列表
+              </button>
+            </div>
+            <div class="detail-layout">
+              <aside class="detail-sidebar">
+                <div class="detail-block">
+                  <h3>摘要</h3>
+                  <p id="detail-summary">等待加载摘要...</p>
+                </div>
+                <div class="detail-block">
+                  <h3>来源与日期</h3>
+                  <p id="detail-meta">等待加载来源信息...</p>
+                </div>
+                <div class="detail-block">
+                  <h3>标签</h3>
+                  <div id="detail-tags" class="tag-row"></div>
+                </div>
+                <div class="detail-block">
+                  <h3>处理状态</h3>
+                  <div id="detail-processing" class="badge-row"></div>
+                </div>
+              </aside>
+              <div class="detail-main">
+                <div class="detail-language-bar">
+                  <button id="mode-zh" class="language-button active" type="button">中文</button>
+                  <button id="mode-en" class="language-button" type="button">English</button>
+                  <button id="mode-compare" class="language-button" type="button">对照</button>
+                </div>
+                <div id="detail-single-pane" class="detail-pane">
+                  <article>
+                    <h3 id="detail-single-title">等待加载标题...</h3>
+                    <p id="detail-single-body">等待加载正文...</p>
+                  </article>
+                </div>
+                <div id="detail-compare-pane" class="detail-compare hidden">
+                  <article class="detail-pane">
+                    <h3>中文</h3>
+                    <p id="detail-zh-body">等待加载中文正文...</p>
+                  </article>
+                  <article class="detail-pane">
+                    <h3>English</h3>
+                    <p id="detail-en-body">Waiting for English body...</p>
+                  </article>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section id="focus-tag-section" class="panel">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Focus Tags</p>
+                <h2>你关注的标签</h2>
+              </div>
+              <p id="focus-tag-meta" class="meta-copy">等待加载关注标签文章...</p>
+            </div>
+            <div id="focus-tag-cards" class="card-grid"></div>
+          </section>
+
+          <section id="all-articles-section" class="panel">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">All Articles</p>
+                <h2>全部新闻</h2>
+              </div>
+              <p id="all-articles-meta" class="meta-copy">等待加载文章列表...</p>
+            </div>
+            <div id="all-article-cards" class="card-grid"></div>
+          </section>
+        </div>
+      </main>
+    </div>
+
+    <template id="summary-card-template">
+      <article class="summary-card">
+        <p class="summary-label"></p>
+        <p class="summary-value"></p>
+      </article>
+    </template>
+
+    <template id="article-card-template">
+      <article class="article-card">
+        <div class="card-topline">
+          <span class="card-source"></span>
+          <span class="card-date"></span>
+        </div>
+        <h3 class="card-title"></h3>
+        <p class="card-summary"></p>
+        <div class="badge-row"></div>
+        <div class="tag-row"></div>
+      </article>
+    </template>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

@@ -5,6 +5,13 @@ from typing import Mapping
 from urllib.parse import parse_qs
 from wsgiref.simple_server import make_server
 
+from newspaper_translator.api.queries import (
+    get_article_detail_view,
+    get_filter_options_view,
+    get_overview_view,
+    list_article_card_views,
+    list_focus_tag_article_card_views,
+)
 from newspaper_translator.document_processing import (
     get_document_processing_run,
     list_document_processing_runs,
@@ -22,6 +29,7 @@ from newspaper_translator.runtime import build_runtime_report
 def create_app(env: Mapping[str, str]):
     runtime_report = build_runtime_report(env=env, service="web")
     database_url = env["DATABASE_URL"]
+    focus_tags = _read_csv_setting(env, "FOCUS_TAGS")
 
     def app(environ, start_response):
         path = environ.get("PATH_INFO", "")
@@ -56,6 +64,63 @@ def create_app(env: Mapping[str, str]):
                         limit=_query_int(query, "limit", default=50),
                         status=_query_value(query, "status"),
                         item_type=_query_value(query, "item_type"),
+                    )
+                )
+            }
+            return _json_response(start_response, "200 OK", payload)
+
+        if path == "/api/articles":
+            payload = {
+                "articles": _to_jsonable(
+                    list_article_card_views(
+                        database_url=database_url,
+                        source=_query_value(query, "source"),
+                        tag=_query_value(query, "tag"),
+                        publication_date_from=_query_value(query, "publication_date_from"),
+                        publication_date_to=_query_value(query, "publication_date_to"),
+                    )
+                )
+            }
+            return _json_response(start_response, "200 OK", payload)
+
+        if path.startswith("/api/articles/"):
+            article_id = path.removeprefix("/api/articles/")
+            payload = {
+                "article": _to_jsonable(
+                    get_article_detail_view(
+                        database_url=database_url,
+                        article_id=article_id,
+                    )
+                )
+            }
+            return _json_response(start_response, "200 OK", payload)
+
+        if path == "/api/overview":
+            payload = {
+                "overview": _to_jsonable(
+                    get_overview_view(
+                        database_url=database_url,
+                    )
+                )
+            }
+            return _json_response(start_response, "200 OK", payload)
+
+        if path == "/api/filters":
+            payload = {
+                "filters": _to_jsonable(
+                    get_filter_options_view(
+                        database_url=database_url,
+                    )
+                )
+            }
+            return _json_response(start_response, "200 OK", payload)
+
+        if path == "/api/focus-tags/articles":
+            payload = {
+                "articles": _to_jsonable(
+                    list_focus_tag_article_card_views(
+                        database_url=database_url,
+                        focus_tags=focus_tags,
                     )
                 )
             }
@@ -168,6 +233,11 @@ def _to_jsonable(value):
     if hasattr(value, "__dict__"):
         return value.__dict__
     return value
+
+
+def _read_csv_setting(env: Mapping[str, str], key: str) -> list[str]:
+    raw_value = env.get(key, "")
+    return [item.strip() for item in raw_value.split(",") if item.strip()]
 
 
 def main() -> None:

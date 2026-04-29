@@ -22,11 +22,18 @@ class FrontendStaticTests(unittest.TestCase):
 
         index_text = index_path.read_text()
 
+        self.assertIn('id="primary-nav"', index_text)
         self.assertIn('id="summary-bar"', index_text)
         self.assertIn('id="filter-form"', index_text)
         self.assertIn('id="focus-tag-section"', index_text)
         self.assertIn('id="all-articles-section"', index_text)
         self.assertIn('id="article-detail-view"', index_text)
+        self.assertIn('id="detail-open-document-button"', index_text)
+        self.assertIn('id="document-processing-section"', index_text)
+        self.assertIn('id="document-detail-view"', index_text)
+        self.assertIn('id="document-visible-articles"', index_text)
+        self.assertIn('id="document-identity-fields"', index_text)
+        self.assertIn('id="document-error-summary"', index_text)
         self.assertIn('src="./app.js"', index_text)
 
     def test_frontend_app_requests_dashboard_api_surfaces(self) -> None:
@@ -40,6 +47,15 @@ class FrontendStaticTests(unittest.TestCase):
         self.assertIn("/api/focus-tags/articles", app_text)
         self.assertIn("/api/articles", app_text)
         self.assertIn("/api/articles/", app_text)
+        self.assertIn("/api/document-processing", app_text)
+        self.assertIn("showDocumentProcessingPage", app_text)
+        self.assertIn("showDocumentDetail", app_text)
+        self.assertIn("renderDocumentVisibleArticles", app_text)
+        self.assertIn("documentIdentityFields", app_text)
+        self.assertIn("documentErrorSummary", app_text)
+        self.assertIn("openSourceDocumentFromArticleDetail", app_text)
+        self.assertIn("requestManualRetry", app_text)
+        self.assertIn("document/", app_text)
         self.assertIn("window.location.hash", app_text)
         self.assertIn("showArticleDetail", app_text)
 
@@ -50,7 +66,7 @@ class FrontendStaticTests(unittest.TestCase):
         compose_text = compose_path.read_text()
 
         self.assertIn("frontend:", compose_text)
-        self.assertIn("3000:3000", compose_text)
+        self.assertIn('${FRONTEND_PORT:-3000}:3000', compose_text)
 
 
 if __name__ == "__main__":

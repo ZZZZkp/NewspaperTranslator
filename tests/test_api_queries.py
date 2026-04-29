@@ -12,6 +12,7 @@ if str(SRC_ROOT) not in sys.path:
 
 try:
     from newspaper_translator.api.queries import (
+        get_document_processing_detail_view,
         get_article_detail_view,
         get_filter_options_view,
         get_overview_view,
@@ -36,6 +37,7 @@ try:
         ParsedArticle,
     )
 except ImportError:
+    get_document_processing_detail_view = None
     get_article_detail_view = None
     get_filter_options_view = None
     get_overview_view = None
@@ -552,6 +554,95 @@ class ArticleQueryTests(unittest.TestCase):
         self.assertEqual(detail.processing["latest_parse_status"], "succeeded")
         self.assertEqual(detail.processing["latest_enrichment_status"], "succeeded")
 
+    def test_document_processing_detail_includes_current_visible_articles(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(get_document_processing_detail_view)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                original_filename="ft-2026-04-22.pdf",
+                source_name="Financial Times",
+            )
+
+            first_article = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=document_key,
+                publication_date="2026-04-22",
+                title="Chipmakers prepare for a new subsidy dispute",
+                body_suffix="Subsidy pressure is spreading across Asia and Europe.",
+                translated_title_zh="芯片制造商准备应对新的补贴争端",
+                summary_zh="多国芯片企业正重新评估补贴竞争和供应链布局。",
+                translated_body_zh="随着补贴争夺升级，芯片制造商开始重新配置产能与投资方向。",
+                tags=["Semiconductors", "Policy", "Trade"],
+            )
+            self._insert_document_processing_run(
+                database_path,
+                document_key=document_key,
+                status="succeeded",
+                current_step="completed",
+            )
+
+            detail = get_document_processing_detail_view(
+                database_url=database_url,
+                document_key=document_key,
+            )
+
+        self.assertEqual(detail.document_key, document_key)
+        self.assertEqual(detail.status, "succeeded")
+        self.assertEqual(detail.source_name, "Financial Times")
+        self.assertEqual(detail.original_filename, "ft-2026-04-22.pdf")
+        self.assertEqual(detail.sender, "news@example.com")
+        self.assertEqual(detail.import_status, "imported")
+        self.assertEqual(detail.raw_path, "/tmp/ft-2026-04-22.pdf")
+        self.assertEqual(detail.visible_article_count, 1)
+        self.assertEqual(
+            [article.article_id for article in detail.visible_articles],
+            [first_article],
+        )
+        self.assertEqual(
+            detail.visible_articles[0].title_zh,
+            "芯片制造商准备应对新的补贴争端",
+        )
+        self.assertEqual(detail.visible_articles[0].reading_status, "ready")
+        self.assertEqual(detail.latest_error_summary, "当前没有错误。")
+
+    def test_document_processing_detail_surfaces_failure_summary(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(get_document_processing_detail_view)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                original_filename="wsj-2026-04-22.pdf",
+                source_name="Wall Street Journal",
+                document_key="message-2:attachment-1:hash-2",
+            )
+            self._insert_document_processing_run(
+                database_path,
+                document_key=document_key,
+                status="failed_retryable",
+                current_step="enrich",
+                last_failure_step="enrich",
+                last_error_message="gemini quota exhausted",
+            )
+
+            detail = get_document_processing_detail_view(
+                database_url=database_url,
+                document_key=document_key,
+            )
+
+        self.assertEqual(
+            detail.latest_error_summary,
+            "enrich: gemini quota exhausted",
+        )
+
     def test_article_cards_support_source_filter(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
         self.assertIsNotNone(list_article_card_views)
@@ -840,6 +931,8 @@ class ArticleQueryTests(unittest.TestCase):
         document_key: str,
         status: str,
         current_step: str,
+        last_failure_step: str | None = None,
+        last_error_message: str | None = None,
     ) -> None:
         connection = sqlite3.connect(database_path)
         try:
@@ -849,14 +942,18 @@ class ArticleQueryTests(unittest.TestCase):
                     processing_run_id,
                     document_key,
                     status,
-                    current_step
-                ) VALUES (?, ?, ?, ?)
+                    current_step,
+                    last_failure_step,
+                    last_error_message
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     f"processing-{document_key}",
                     document_key,
                     status,
                     current_step,
+                    last_failure_step,
+                    last_error_message,
                 ),
             )
             connection.commit()

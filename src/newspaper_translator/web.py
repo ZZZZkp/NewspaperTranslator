@@ -7,13 +7,13 @@ from wsgiref.simple_server import make_server
 
 from newspaper_translator.api.queries import (
     get_article_detail_view,
+    get_document_processing_detail_view,
     get_filter_options_view,
     get_overview_view,
     list_article_card_views,
     list_focus_tag_article_card_views,
 )
 from newspaper_translator.document_processing import (
-    get_document_processing_run,
     list_document_processing_runs,
     request_manual_document_retry,
 )
@@ -126,7 +126,7 @@ def create_app(env: Mapping[str, str]):
             }
             return _json_response(start_response, "200 OK", payload)
 
-        if path == "/document-processing":
+        if path in {"/document-processing", "/api/document-processing"}:
             payload = {
                 "runs": _to_jsonable(
                     list_document_processing_runs(
@@ -138,8 +138,9 @@ def create_app(env: Mapping[str, str]):
             }
             return _json_response(start_response, "200 OK", payload)
 
-        if path.startswith("/document-processing/"):
-            suffix = path.removeprefix("/document-processing/")
+        if path.startswith("/document-processing/") or path.startswith("/api/document-processing/"):
+            prefix = "/api/document-processing/" if path.startswith("/api/document-processing/") else "/document-processing/"
+            suffix = path.removeprefix(prefix)
             if suffix.endswith("/retry"):
                 document_key = suffix.removesuffix("/retry").rstrip("/")
                 payload = {
@@ -154,7 +155,7 @@ def create_app(env: Mapping[str, str]):
 
             payload = {
                 "run": _to_jsonable(
-                    get_document_processing_run(
+                    get_document_processing_detail_view(
                         database_url=database_url,
                         document_key=suffix,
                     )

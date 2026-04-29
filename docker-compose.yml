@@ -4,7 +4,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     ports:
-      - "3000:3000"
+      - "${FRONTEND_PORT:-3000}:3000"
     depends_on:
       web:
         condition: service_started
@@ -20,7 +20,7 @@ services:
       STORAGE_ROOT: ${STORAGE_ROOT:-/data}
       GMAIL_CONFIG_PATH: ${GMAIL_CONFIG_PATH:-/app/config/gmail-config.json}
     ports:
-      - "8000:8000"
+      - "${WEB_PORT:-8000}:8000"
     volumes:
       - app-data:/data
     healthcheck:
@@ -59,8 +59,6 @@ services:
       POSTGRES_DB: newspaper_translator
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-    ports:
-      - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
 

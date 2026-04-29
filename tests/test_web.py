@@ -319,6 +319,126 @@ class WebHealthEndpointTests(unittest.TestCase):
         self.assertEqual(retry_payload["run"]["document_key"], document_key)
         self.assertEqual(retry_payload["run"]["status"], "manual_retry_requested")
 
+    def test_api_document_processing_endpoints_return_current_state_and_support_retry(self) -> None:
+        self.assertIsNotNone(create_document_processing_run)
+        self.assertIsNotNone(request_manual_document_retry)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-1:attachment-1:hash-1",
+            )
+            create_document_processing_run(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            request_manual_document_retry(
+                database_url=database_url,
+                document_key=document_key,
+            )
+
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status_list, _, body_list = _perform_wsgi_request(
+                app,
+                path="/api/document-processing",
+            )
+            status_one, _, body_one = _perform_wsgi_request(
+                app,
+                path=f"/api/document-processing/{document_key}",
+            )
+            status_retry, _, body_retry = _perform_wsgi_request(
+                app,
+                method="POST",
+                path=f"/api/document-processing/{document_key}/retry",
+            )
+
+        list_payload = json.loads(body_list.decode("utf-8"))
+        one_payload = json.loads(body_one.decode("utf-8"))
+        retry_payload = json.loads(body_retry.decode("utf-8"))
+
+        self.assertEqual(status_list, "200 OK")
+        self.assertEqual([item["document_key"] for item in list_payload["runs"]], [document_key])
+        self.assertEqual(list_payload["runs"][0]["status"], "manual_retry_requested")
+        self.assertEqual(status_one, "200 OK")
+        self.assertEqual(one_payload["run"]["document_key"], document_key)
+        self.assertEqual(one_payload["run"]["status"], "manual_retry_requested")
+        self.assertEqual(status_retry, "200 OK")
+        self.assertEqual(retry_payload["run"]["document_key"], document_key)
+        self.assertEqual(retry_payload["run"]["status"], "manual_retry_requested")
+
+    def test_api_document_processing_detail_endpoint_includes_visible_articles(self) -> None:
+        self.assertIsNotNone(create_parse_run)
+        self.assertIsNotNone(create_article_enrichment_run)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-1:attachment-1:hash-1",
+                original_filename="ft-2026-04-22.pdf",
+                source_name="Financial Times",
+            )
+
+            first_article = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=document_key,
+                publication_date="2026-04-22",
+                title="Chipmakers prepare for a new subsidy dispute",
+                body_suffix="Subsidy pressure is spreading across Asia and Europe.",
+                translated_title_zh="芯片制造商准备应对新的补贴争端",
+                summary_zh="多国芯片企业正重新评估补贴竞争和供应链布局。",
+                translated_body_zh="随着补贴争夺升级，芯片制造商开始重新配置产能与投资方向。",
+                tags=["Semiconductors", "Policy", "Trade"],
+            )
+            self._insert_document_processing_run(
+                database_path=database_path,
+                document_key=document_key,
+                status="succeeded",
+                current_step="completed",
+            )
+
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path=f"/api/document-processing/{document_key}",
+            )
+
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(payload["run"]["document_key"], document_key)
+        self.assertEqual(payload["run"]["visible_article_count"], 1)
+        self.assertEqual(payload["run"]["visible_articles"][0]["article_id"], first_article)
+        self.assertEqual(
+            payload["run"]["visible_articles"][0]["title_zh"],
+            "芯片制造商准备应对新的补贴争端",
+        )
+        self.assertEqual(payload["run"]["source_name"], "Financial Times")
+        self.assertEqual(payload["run"]["original_filename"], "ft-2026-04-22.pdf")
+        self.assertEqual(payload["run"]["sender"], "news@example.com")
+        self.assertEqual(payload["run"]["import_status"], "imported")
+        self.assertEqual(payload["run"]["latest_error_summary"], "当前没有错误。")
+
     def test_document_processing_list_endpoint_supports_status_filter(self) -> None:
         self.assertIsNotNone(create_document_processing_run)
         self.assertIsNotNone(request_manual_document_retry)

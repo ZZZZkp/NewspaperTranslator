@@ -15,13 +15,21 @@
           <p class="hero-text">
             中文优先阅读、重点标签追踪、异常处理状态一屏可见。
           </p>
+          <nav id="primary-nav" class="primary-nav" aria-label="Primary">
+            <button id="nav-dashboard" class="nav-button active" data-route="dashboard" type="button">
+              阅读首页
+            </button>
+            <button id="nav-documents" class="nav-button" data-route="documents" type="button">
+              处理工作台
+            </button>
+          </nav>
         </div>
         <div id="summary-bar" class="summary-grid" aria-live="polite"></div>
       </header>
 
       <main class="page-grid">
         <aside class="sidebar">
-          <section class="panel">
+          <section id="dashboard-controls-section" class="panel">
             <div class="panel-header">
               <h2>筛选</h2>
               <p>按来源、标签和日期收窄结果</p>
@@ -52,6 +60,30 @@
                 <button type="button" id="reset-filters" class="ghost-button">重置</button>
               </div>
             </form>
+          </section>
+
+          <section id="document-controls-section" class="panel hidden">
+            <div class="panel-header">
+              <h2>处理筛选</h2>
+              <p>按当前状态聚焦失败、重试或运行中的文档</p>
+            </div>
+            <div class="filter-form">
+              <label>
+                <span>文档状态</span>
+                <select id="document-status-filter" name="document_status">
+                  <option value="">全部状态</option>
+                  <option value="pending">pending</option>
+                  <option value="running">running</option>
+                  <option value="failed_retryable">failed_retryable</option>
+                  <option value="manual_retry_requested">manual_retry_requested</option>
+                  <option value="failed_terminal">failed_terminal</option>
+                  <option value="succeeded">succeeded</option>
+                </select>
+              </label>
+              <div class="filter-actions">
+                <button id="document-refresh-button" type="button">刷新列表</button>
+              </div>
+            </div>
           </section>
 
           <section class="panel">
@@ -90,6 +122,9 @@
                 <div class="detail-block">
                   <h3>处理状态</h3>
                   <div id="detail-processing" class="badge-row"></div>
+                  <div class="button-row">
+                    <button id="detail-open-document-button" type="button">查看源文档</button>
+                  </div>
                 </div>
               </aside>
               <div class="detail-main">
@@ -139,6 +174,65 @@
             </div>
             <div id="all-article-cards" class="card-grid"></div>
           </section>
+
+          <section id="document-processing-section" class="panel hidden">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Operator View</p>
+                <h2>文档处理列表</h2>
+              </div>
+              <p id="document-processing-meta" class="meta-copy">等待加载文档处理记录...</p>
+            </div>
+            <div id="document-processing-cards" class="card-grid"></div>
+          </section>
+
+          <section id="document-detail-view" class="panel hidden">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Document Detail</p>
+                <h2 id="document-detail-title">文档处理详情</h2>
+              </div>
+              <div class="button-row">
+                <button id="document-retry-button" type="button">请求重试</button>
+                <button id="document-back-button" class="ghost-button" type="button">返回列表</button>
+              </div>
+            </div>
+            <div class="detail-layout">
+              <aside class="detail-sidebar">
+                <div class="detail-block">
+                  <h3>状态摘要</h3>
+                  <p id="document-detail-meta">等待加载状态...</p>
+                </div>
+                <div class="detail-block">
+                  <h3>状态标签</h3>
+                  <div id="document-detail-badges" class="badge-row"></div>
+                </div>
+                <div class="detail-block">
+                  <h3>最新错误</h3>
+                  <p id="document-detail-error">等待加载错误信息...</p>
+                </div>
+              </aside>
+              <div class="detail-main">
+                <div class="detail-block">
+                  <h3>文档身份</h3>
+                  <div id="document-identity-fields" class="key-value-list"></div>
+                </div>
+                <div class="detail-block">
+                  <h3>错误摘要</h3>
+                  <p id="document-error-summary">等待加载错误摘要...</p>
+                </div>
+                <div class="detail-block">
+                  <h3>运行字段</h3>
+                  <div id="document-detail-fields" class="key-value-list"></div>
+                </div>
+                <div class="detail-block">
+                  <h3>当前可见文章</h3>
+                  <p id="document-visible-articles-meta" class="meta-copy">等待加载当前可见文章...</p>
+                  <div id="document-visible-articles" class="card-grid"></div>
+                </div>
+              </div>
+            </div>
+          </section>
         </div>
       </main>
     </div>
@@ -160,6 +254,22 @@
         <p class="card-summary"></p>
         <div class="badge-row"></div>
         <div class="tag-row"></div>
+      </article>
+    </template>
+
+    <template id="document-card-template">
+      <article class="article-card">
+        <div class="card-topline">
+          <span class="document-card-status"></span>
+          <span class="document-card-updated-at"></span>
+        </div>
+        <h3 class="card-title document-card-key"></h3>
+        <p class="card-summary document-card-summary"></p>
+        <div class="badge-row"></div>
+        <div class="card-topline">
+          <span>当前步骤</span>
+          <span class="document-card-step"></span>
+        </div>
       </article>
     </template>
 

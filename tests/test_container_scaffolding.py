@@ -47,6 +47,18 @@ class ContainerScaffoldingTests(unittest.TestCase):
         self.assertIn("DATABASE_URL=", env_text)
         self.assertIn("STORAGE_ROOT=", env_text)
         self.assertIn("GMAIL_CONFIG_PATH=", env_text)
+        self.assertIn("FRONTEND_PORT=", env_text)
+        self.assertIn("WEB_PORT=", env_text)
+
+    def test_compose_avoids_default_host_port_conflicts_for_db_and_allows_configurable_web_ports(self) -> None:
+        compose_path = PROJECT_ROOT / "docker-compose.yml"
+        self.assertTrue(compose_path.exists(), "docker-compose.yml should exist at the project root")
+
+        compose_text = compose_path.read_text()
+
+        self.assertIn('${FRONTEND_PORT:-3000}:3000', compose_text)
+        self.assertIn('${WEB_PORT:-8000}:8000', compose_text)
+        self.assertNotIn('5432:5432', compose_text)
 
     def test_project_includes_a_readme_with_local_startup_steps(self) -> None:
         readme_path = PROJECT_ROOT / "README.md"

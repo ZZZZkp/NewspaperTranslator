@@ -1,8 +1,13 @@
 from dataclasses import dataclass
 import sqlite3
 
-from newspaper_translator.article_store import get_final_article, get_latest_article_enrichment
+from newspaper_translator.article_store import (
+    get_final_article,
+    get_latest_article_enrichment,
+    list_latest_document_articles,
+)
 from newspaper_translator.database import sqlite_path_from_database_url
+from newspaper_translator.document_processing import get_document_processing_run
 
 
 @dataclass(frozen=True)
@@ -52,6 +57,42 @@ class ArticleDetailView:
 class FilterOptionsView:
     sources: list[str]
     tags: list[str]
+
+
+@dataclass(frozen=True)
+class DocumentVisibleArticleView:
+    article_id: str
+    publication_date: str
+    title_en: str
+    title_zh: str | None
+    summary_zh: str | None
+    reading_status: str
+
+
+@dataclass(frozen=True)
+class DocumentProcessingDetailView:
+    processing_run_id: str
+    scheduler_run_id: str | None
+    document_key: str
+    source_name: str
+    original_filename: str
+    sender: str
+    raw_path: str
+    import_status: str
+    status: str
+    current_step: str
+    automatic_failure_count: int
+    last_failure_step: str | None
+    last_error_message: str | None
+    last_attempt_started_at: str | None
+    last_attempt_finished_at: str | None
+    locked_by: str | None
+    lock_expires_at: str | None
+    created_at: str
+    updated_at: str
+    latest_error_summary: str
+    visible_article_count: int
+    visible_articles: list[DocumentVisibleArticleView]
 
 
 def get_overview_view(*, database_url: str) -> OverviewView:
@@ -208,6 +249,94 @@ def get_article_detail_view(*, database_url: str, article_id: str) -> ArticleDet
             "latest_parse_status": parse_row[0] if parse_row else "unknown",
             "latest_enrichment_status": enrichment_status,
         },
+    )
+
+
+def get_document_processing_detail_view(
+    *,
+    database_url: str,
+    document_key: str,
+) -> DocumentProcessingDetailView:
+    run = get_document_processing_run(
+        database_url=database_url,
+        document_key=document_key,
+    )
+    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+    try:
+        document_row = connection.execute(
+            """
+            SELECT source_name, original_filename, sender, raw_path, import_status
+            FROM documents
+            WHERE document_key = ?
+            """,
+            (document_key,),
+        ).fetchone()
+    finally:
+        connection.close()
+
+    if document_row is None:
+        raise LookupError(f"Document not found: {document_key}")
+
+    visible_articles: list[DocumentVisibleArticleView] = []
+    for article in list_latest_document_articles(
+        database_url=database_url,
+        document_key=document_key,
+    ):
+        title_zh = None
+        summary_zh = None
+        reading_status = "english_fallback"
+        try:
+            enrichment = get_latest_article_enrichment(
+                database_url=database_url,
+                article_id=article.article_id,
+            )
+        except LookupError:
+            enrichment = None
+        if enrichment is not None:
+            title_zh = enrichment.translated_title_zh
+            summary_zh = enrichment.summary_zh
+            reading_status = "ready"
+
+        visible_articles.append(
+            DocumentVisibleArticleView(
+                article_id=article.article_id,
+                publication_date=article.publication_date,
+                title_en=article.title_en,
+                title_zh=title_zh,
+                summary_zh=summary_zh,
+                reading_status=reading_status,
+            )
+        )
+
+    latest_error_summary = "当前没有错误。"
+    if run.last_error_message and run.last_failure_step:
+        latest_error_summary = f"{run.last_failure_step}: {run.last_error_message}"
+    elif run.last_error_message:
+        latest_error_summary = run.last_error_message
+
+    return DocumentProcessingDetailView(
+        processing_run_id=run.processing_run_id,
+        scheduler_run_id=run.scheduler_run_id,
+        document_key=run.document_key,
+        source_name=document_row[0],
+        original_filename=document_row[1],
+        sender=document_row[2],
+        raw_path=document_row[3],
+        import_status=document_row[4],
+        status=run.status,
+        current_step=run.current_step,
+        automatic_failure_count=run.automatic_failure_count,
+        last_failure_step=run.last_failure_step,
+        last_error_message=run.last_error_message,
+        last_attempt_started_at=run.last_attempt_started_at,
+        last_attempt_finished_at=run.last_attempt_finished_at,
+        locked_by=run.locked_by,
+        lock_expires_at=run.lock_expires_at,
+        created_at=run.created_at,
+        updated_at=run.updated_at,
+        latest_error_summary=latest_error_summary,
+        visible_article_count=len(visible_articles),
+        visible_articles=visible_articles,
     )
 
 

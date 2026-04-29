@@ -29,6 +29,9 @@ The repository currently provides:
 - a first standalone `frontend/` dashboard shell packaged as a separate service in Docker Compose
 - a browser-rendered dashboard home with summary cards, filter controls, focus-tag cards, and full article cards
 - a first browser-rendered article detail view with Chinese, English, and compare modes
+- a browser-rendered operator workbench for document-processing list and document detail flows
+- document detail bridge content showing visible articles, document identity, and failure summaries
+- Docker Compose defaults that avoid host-port conflicts for local databases while keeping frontend and web ports configurable
 
 ## What Was Added On 2026-04-29
 
@@ -76,7 +79,11 @@ Current behavior:
 - `frontend/app.js` now renders a dashboard home by calling the new read APIs through an Nginx reverse-proxy container
 - dashboard article cards are clickable and open an in-page article detail view through `#article/<article_id>` hash routing
 - the article detail view now supports Chinese, English, and compare modes without leaving the frontend shell
-- Docker Compose now includes a dedicated `frontend` service listening on port `3000`
+- the standalone frontend now includes a document-processing list view plus a document detail page with retry actions
+- article detail can now jump directly to the source document detail page
+- document detail now shows current visible article cards, document identity fields, and a compact latest-error summary
+- `/api/document-processing/<document_key>` now returns a UI-ready detail payload rather than only the raw processing run fields
+- Docker Compose now keeps `db` on the internal Compose network by default while letting `FRONTEND_PORT` and `WEB_PORT` override host bindings
 
 ## Current Test Status
 
@@ -89,7 +96,7 @@ Current command:
 Current result:
 
 ```text
-Ran 37 tests in 1.305s
+Ran 42 tests in 1.166s
 OK
 ```
 
@@ -100,7 +107,7 @@ Primary slice verification:
 ```
 
 ```text
-Ran 37 tests in 1.305s
+Ran 42 tests in 1.166s
 OK
 ```
 
@@ -122,8 +129,7 @@ Completed automatic-processing slices so far:
 
 Still intentionally out of scope:
 
-- frontend article detail route as a dedicated standalone page
-- frontend operator pages for document-processing list and single-document inspection
+- frontend article detail route as a dedicated standalone page outside the current single-shell hash-routing approach
 - article-level parallel enrichment
 - advanced scheduling policies beyond the fixed interval
 - notifications or alerting
@@ -132,4 +138,4 @@ Still intentionally out of scope:
 
 ## Suggested Next Step
 
-The next meaningful product slice is to expand the standalone frontend from the current dashboard and inline article detail into the operator-facing document-processing pages.
+The next meaningful product slice is to polish the operator workflow further by improving document-list scanability and adding clearer action guidance for retryable, running, and succeeded document states.

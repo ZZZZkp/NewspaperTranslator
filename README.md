@@ -276,9 +276,22 @@ Build and start the current Phase 1 runtime skeleton:
 docker compose up --build
 ```
 
-The `web` service exposes `GET /healthz` on port `8000`.
+The `frontend` service is exposed on `${FRONTEND_PORT:-3000}` and the `web` service is exposed on `${WEB_PORT:-8000}`.
 The `worker` service performs startup checks and emits structured JSON logs.
 Both services also expose container healthchecks through `python -m newspaper_translator.manage check`.
+
+To avoid host-port conflicts with other local Docker projects:
+
+- `db` is only available on the internal Compose network by default and no longer binds host port `5432`
+- set `FRONTEND_PORT` and `WEB_PORT` in `.env` when `3000` or `8000` are already in use
+
+Example:
+
+```bash
+FRONTEND_PORT=3300
+WEB_PORT=8100
+docker compose up --build
+```
 
 ## Current scope
 

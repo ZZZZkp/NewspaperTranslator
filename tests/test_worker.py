@@ -3,6 +3,8 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -15,14 +17,18 @@ try:
     from newspaper_translator.worker import (
         build_startup_report,
         build_startup_log_line,
+        build_run_scheduler_tick_from_env,
         run_startup_maintenance,
+        run_worker_loop,
         should_run_catch_up_tick,
     )
 except ImportError:
     build_startup_log_line = None
     build_startup_report = None
+    build_run_scheduler_tick_from_env = None
     run_pending_migrations = None
     run_startup_maintenance = None
+    run_worker_loop = None
     should_run_catch_up_tick = None
 
 
@@ -150,6 +156,127 @@ class WorkerStartupTests(unittest.TestCase):
         self.assertEqual(result["recovered_document_keys"], [])
         self.assertEqual(result["catch_up_triggered"], False)
         self.assertEqual(result["scheduler_run_id"], None)
+
+    def test_build_run_scheduler_tick_from_env_wires_real_import_and_process_document_dependencies(self) -> None:
+        self.assertIsNotNone(build_run_scheduler_tick_from_env)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env = {
+                "APP_ENV": "test",
+                "DATABASE_URL": "sqlite:////tmp/newspaper-translator.db",
+                "STORAGE_ROOT": temp_dir,
+                "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                "MINERU_API_TOKEN": "mineru-token",
+                "MINERU_MODEL_VERSION": "vlm",
+                "GEMINI_TOKEN": "gemini-token",
+                "GEMINI_MODEL": "gemini-2.5-flash",
+            }
+
+            with patch("newspaper_translator.worker.import_from_gmail") as import_from_gmail:
+                with patch("newspaper_translator.worker.process_document") as process_document:
+                    with patch("newspaper_translator.worker.MineruClient") as mineru_client_class:
+                        with patch("newspaper_translator.worker.GeminiContinuationMatcher") as matcher_class:
+                            with patch("newspaper_translator.worker.GeminiArticleTranslator") as translator_class:
+                                with patch("newspaper_translator.worker.GeminiArticleSummarizerTagger") as summarizer_class:
+                                    with patch("newspaper_translator.worker.run_scheduler_tick") as run_scheduler_tick:
+                                        import_from_gmail.return_value = SimpleNamespace(run_id="import-run-1")
+                                        process_document.return_value = SimpleNamespace(status="succeeded")
+                                        mineru_client_class.return_value = SimpleNamespace(name="mineru-client")
+                                        matcher_class.return_value = SimpleNamespace(name="continuation-matcher")
+                                        translator_class.return_value = SimpleNamespace(name="translator")
+                                        summarizer_class.return_value = SimpleNamespace(name="summarizer")
+
+                                        def fake_run_scheduler_tick(**kwargs):
+                                            import_result = kwargs["import_documents"]()
+                                            self.assertEqual(import_result.run_id, "import-run-1")
+                                            process_result = kwargs["process_one_document"](
+                                                document_key="message-1:attachment-1:hash-1",
+                                                scheduler_run_id="scheduler-run-1",
+                                                locked_by="scheduler-worker-1",
+                                            )
+                                            self.assertEqual(process_result.status, "succeeded")
+                                            return SimpleNamespace(scheduler_run_id="scheduler-run-1")
+
+                                        run_scheduler_tick.side_effect = fake_run_scheduler_tick
+
+                                        run_tick = build_run_scheduler_tick_from_env(env)
+                                        scheduler_run_id = run_tick(trigger_type="interval")
+
+        self.assertEqual(scheduler_run_id, "scheduler-run-1")
+        self.assertEqual(import_from_gmail.call_args.kwargs["config_path"], pathlib.Path("/tmp/gmail-config.json"))
+        self.assertEqual(import_from_gmail.call_args.kwargs["storage_root"], pathlib.Path(temp_dir))
+        self.assertEqual(import_from_gmail.call_args.kwargs["database_url"], "sqlite:////tmp/newspaper-translator.db")
+        self.assertEqual(run_scheduler_tick.call_args.kwargs["database_url"], "sqlite:////tmp/newspaper-translator.db")
+        self.assertEqual(run_scheduler_tick.call_args.kwargs["trigger_type"], "interval")
+        self.assertEqual(run_scheduler_tick.call_args.kwargs["document_limit"], 2)
+        self.assertEqual(process_document.call_args.kwargs["database_url"], "sqlite:////tmp/newspaper-translator.db")
+        self.assertEqual(
+            process_document.call_args.kwargs["output_root"],
+            pathlib.Path(temp_dir) / "phase3-output",
+        )
+        self.assertEqual(process_document.call_args.kwargs["provider_name"], "gemini")
+        self.assertEqual(process_document.call_args.kwargs["model_name"], "gemini-2.5-flash")
+        self.assertEqual(process_document.call_args.kwargs["prompt_version"], "article-enrichment-v2")
+        self.assertEqual(process_document.call_args.kwargs["translator"].name, "translator")
+        self.assertEqual(process_document.call_args.kwargs["summarizer_tagger"].name, "summarizer")
+        self.assertEqual(process_document.call_args.kwargs["continuation_matcher"].name, "continuation-matcher")
+
+    def test_worker_loop_runs_periodic_tick_when_scheduler_becomes_overdue(self) -> None:
+        self.assertIsNotNone(run_worker_loop)
+
+        env = {
+            "APP_ENV": "test",
+            "DATABASE_URL": "sqlite:////tmp/newspaper-translator.db",
+            "STORAGE_ROOT": "/tmp/newspaper-translator-data",
+            "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+        }
+        now_values = iter(
+            [
+                "2026-04-28T11:00:00",
+                "2026-04-28T12:31:00",
+            ]
+        )
+        last_started_values = iter(
+            [
+                "2026-04-28T10:30:00",
+                "2026-04-28T10:30:00",
+            ]
+        )
+        calls: list[tuple[str, str | None]] = []
+        sleep_calls: list[int] = []
+
+        def fake_now() -> str:
+            return next(now_values)
+
+        def fake_startup_maintenance(**kwargs):
+            calls.append(("startup", kwargs["last_scheduler_run_started_at"]))
+            return {
+                "recovered_document_keys": [],
+                "catch_up_triggered": False,
+                "scheduler_run_id": None,
+            }
+
+        def fake_get_last_started_at(*, database_url: str) -> str | None:
+            self.assertEqual(database_url, "sqlite:////tmp/newspaper-translator.db")
+            return next(last_started_values)
+
+        def fake_run_tick(*, trigger_type: str) -> str:
+            calls.append(("tick", trigger_type))
+            return "scheduler-run-1"
+
+        run_worker_loop(
+            env=env,
+            now_fn=fake_now,
+            sleep_fn=lambda seconds: sleep_calls.append(seconds),
+            max_loops=1,
+            run_startup_maintenance_fn=fake_startup_maintenance,
+            get_last_scheduler_run_started_at_fn=fake_get_last_started_at,
+            run_scheduler_tick_fn=fake_run_tick,
+            recover_stale_document_runs_fn=lambda: [],
+        )
+
+        self.assertEqual(calls, [("startup", "2026-04-28T10:30:00"), ("tick", "interval")])
+        self.assertEqual(sleep_calls, [60])
 
 
 if __name__ == "__main__":

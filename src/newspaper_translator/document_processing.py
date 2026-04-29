@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 import sqlite3
@@ -6,6 +7,7 @@ import uuid
 from newspaper_translator.article_enrichment import enrich_article
 from newspaper_translator.article_pipeline import persist_document_articles
 from newspaper_translator.article_store import list_latest_document_articles
+from newspaper_translator.logging_utils import format_log_event
 from newspaper_translator.database import sqlite_path_from_database_url
 
 
@@ -136,18 +138,36 @@ def get_scheduler_run(*, database_url: str, scheduler_run_id: str) -> SchedulerR
     if row is None:
         raise LookupError(f"Scheduler run not found: {scheduler_run_id}")
 
-    return SchedulerRun(
-        scheduler_run_id=row[0],
-        trigger_type=row[1],
-        status=row[2],
-        started_at=row[3],
-        finished_at=row[4],
-        import_run_id=row[5],
-        selected_document_count=row[6],
-        completed_document_count=row[7],
-        failed_document_count=row[8],
-        error_message=row[9],
-    )
+    return _row_to_scheduler_run(row)
+
+
+def get_latest_scheduler_run(*, database_url: str) -> SchedulerRun | None:
+    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+    try:
+        row = connection.execute(
+            """
+            SELECT
+                scheduler_run_id,
+                trigger_type,
+                status,
+                started_at,
+                finished_at,
+                import_run_id,
+                selected_document_count,
+                completed_document_count,
+                failed_document_count,
+                error_message
+            FROM scheduler_runs
+            ORDER BY started_at DESC, rowid DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    finally:
+        connection.close()
+
+    if row is None:
+        return None
+    return _row_to_scheduler_run(row)
 
 
 def create_document_processing_run(
@@ -334,24 +354,72 @@ def list_eligible_document_processing_runs(
         connection.close()
 
     return [
-        DocumentProcessingRun(
-            processing_run_id=row[0],
-            scheduler_run_id=row[1],
-            document_key=row[2],
-            status=row[3],
-            current_step=row[4],
-            automatic_failure_count=row[5],
-            last_failure_step=row[6],
-            last_error_message=row[7],
-            last_attempt_started_at=row[8],
-            last_attempt_finished_at=row[9],
-            locked_by=row[10],
-            lock_expires_at=row[11],
-            created_at=row[12],
-            updated_at=row[13],
-        )
+        _row_to_document_processing_run(row)
         for row in rows
     ]
+
+
+def list_document_processing_runs(
+    *,
+    database_url: str,
+    limit: int,
+    status: str | None = None,
+) -> list[DocumentProcessingRun]:
+    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+    try:
+        if status:
+            rows = connection.execute(
+                """
+                SELECT
+                    processing_run_id,
+                    scheduler_run_id,
+                    document_key,
+                    status,
+                    current_step,
+                    automatic_failure_count,
+                    last_failure_step,
+                    last_error_message,
+                    last_attempt_started_at,
+                    last_attempt_finished_at,
+                    locked_by,
+                    lock_expires_at,
+                    created_at,
+                    updated_at
+                FROM document_processing_runs
+                WHERE status = ?
+                ORDER BY updated_at DESC, created_at DESC, rowid DESC
+                LIMIT ?
+                """,
+                (status, limit),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """
+                SELECT
+                    processing_run_id,
+                    scheduler_run_id,
+                    document_key,
+                    status,
+                    current_step,
+                    automatic_failure_count,
+                    last_failure_step,
+                    last_error_message,
+                    last_attempt_started_at,
+                    last_attempt_finished_at,
+                    locked_by,
+                    lock_expires_at,
+                    created_at,
+                    updated_at
+                FROM document_processing_runs
+                ORDER BY updated_at DESC, created_at DESC, rowid DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+    finally:
+        connection.close()
+
+    return [_row_to_document_processing_run(row) for row in rows]
 
 
 def fail_document_processing_run(
@@ -361,6 +429,7 @@ def fail_document_processing_run(
     failed_step: str,
     error_message: str,
     automatic_failure_limit: int = 2,
+    log_event=None,
 ) -> DocumentProcessingRun:
     stored_run = get_document_processing_run(
         database_url=database_url,
@@ -403,16 +472,29 @@ def fail_document_processing_run(
     finally:
         connection.close()
 
-    return get_document_processing_run(
+    updated_run = get_document_processing_run(
         database_url=database_url,
         document_key=document_key,
     )
+    _log_event(
+        log_event,
+        event="document.marked_failed",
+        details={
+            "document_key": document_key,
+            "failed_step": failed_step,
+            "status": updated_run.status,
+            "automatic_failure_count": updated_run.automatic_failure_count,
+            "error_message": error_message,
+        },
+    )
+    return updated_run
 
 
 def request_manual_document_retry(
     *,
     database_url: str,
     document_key: str,
+    log_event=None,
 ) -> DocumentProcessingRun:
     connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
     try:
@@ -432,10 +514,19 @@ def request_manual_document_retry(
     finally:
         connection.close()
 
-    return get_document_processing_run(
+    updated_run = get_document_processing_run(
         database_url=database_url,
         document_key=document_key,
     )
+    _log_event(
+        log_event,
+        event="document.manual_retry_requested",
+        details={
+            "document_key": document_key,
+            "status": updated_run.status,
+        },
+    )
+    return updated_run
 
 
 def succeed_document_processing_run(
@@ -491,6 +582,7 @@ def process_document(
     step_retry_limit: int = 2,
     lock_timeout_seconds: int = 600,
     scheduler_run_id: str | None = None,
+    log_event=None,
 ) -> DocumentProcessingRun:
     create_document_processing_run(
         database_url=database_url,
@@ -508,6 +600,15 @@ def process_document(
             database_url=database_url,
             document_key=document_key,
         )
+    _log_event(
+        log_event,
+        event="document.claimed",
+        details={
+            "document_key": document_key,
+            "scheduler_run_id": scheduler_run_id,
+            "locked_by": locked_by,
+        },
+    )
 
     if parse_persist_document is None:
         parse_persist_document = _build_parse_persist_callback(
@@ -524,15 +625,36 @@ def process_document(
     parse_error = _run_step_with_retry(
         callback=parse_persist_document,
         document_key=document_key,
+        step_name="parse_persist",
         step_retry_limit=step_retry_limit,
+        log_event=log_event,
     )
     if parse_error is not None:
+        _log_event(
+            log_event,
+            event="document.step.finished",
+            details={
+                "document_key": document_key,
+                "step": "parse_persist",
+                "status": "failed",
+            },
+        )
         return fail_document_processing_run(
             database_url=database_url,
             document_key=document_key,
             failed_step="parse_persist",
             error_message=str(parse_error),
+            log_event=log_event,
         )
+    _log_event(
+        log_event,
+        event="document.step.finished",
+        details={
+            "document_key": document_key,
+            "step": "parse_persist",
+            "status": "succeeded",
+        },
+    )
 
     _update_document_processing_current_step(
         database_url=database_url,
@@ -551,15 +673,36 @@ def process_document(
     enrich_error = _run_step_with_retry(
         callback=enrich_document,
         document_key=document_key,
+        step_name="enrich",
         step_retry_limit=step_retry_limit,
+        log_event=log_event,
     )
     if enrich_error is not None:
+        _log_event(
+            log_event,
+            event="document.step.finished",
+            details={
+                "document_key": document_key,
+                "step": "enrich",
+                "status": "failed",
+            },
+        )
         return fail_document_processing_run(
             database_url=database_url,
             document_key=document_key,
             failed_step="enrich",
             error_message=str(enrich_error),
+            log_event=log_event,
         )
+    _log_event(
+        log_event,
+        event="document.step.finished",
+        details={
+            "document_key": document_key,
+            "step": "enrich",
+            "status": "succeeded",
+        },
+    )
 
     return succeed_document_processing_run(
         database_url=database_url,
@@ -567,14 +710,40 @@ def process_document(
     )
 
 
-def _run_step_with_retry(*, callback, document_key: str, step_retry_limit: int):
+def _run_step_with_retry(
+    *,
+    callback,
+    document_key: str,
+    step_name: str,
+    step_retry_limit: int,
+    log_event=None,
+):
     last_error = None
-    for _ in range(step_retry_limit + 1):
+    _log_event(
+        log_event,
+        event="document.step.started",
+        details={
+            "document_key": document_key,
+            "step": step_name,
+        },
+    )
+    for attempt in range(step_retry_limit + 1):
         try:
             callback(document_key=document_key)
             return None
         except Exception as exc:  # noqa: BLE001
             last_error = exc
+            if attempt < step_retry_limit:
+                _log_event(
+                    log_event,
+                    event="document.step.retry_scheduled",
+                    details={
+                        "document_key": document_key,
+                        "step": step_name,
+                        "attempt": attempt + 1,
+                        "error_message": str(exc),
+                    },
+                )
     return last_error
 
 
@@ -700,6 +869,7 @@ def recover_stale_document_runs(
     database_url: str,
     running_timeout_seconds: int,
     automatic_failure_limit: int = 2,
+    log_event=None,
 ) -> list[DocumentProcessingRun]:
     connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
     try:
@@ -733,7 +903,16 @@ def recover_stale_document_runs(
                 failed_step=stale_run.current_step,
                 error_message="stale running timeout during automatic recovery",
                 automatic_failure_limit=automatic_failure_limit,
+                log_event=_noop_log_event,
             )
+        )
+        _log_event(
+            log_event,
+            event="document.recovered_stale",
+            details={
+                "document_key": stale_run.document_key,
+                "failed_step": stale_run.current_step,
+            },
         )
     return recovered_runs
 
@@ -746,14 +925,38 @@ def run_scheduler_tick(
     process_one_document,
     document_limit: int,
     locked_by_prefix: str = "scheduler-worker",
+    log_event=None,
 ) -> SchedulerRun:
     scheduler_run = create_scheduler_run(
         database_url=database_url,
         trigger_type=trigger_type,
     )
+    _log_event(
+        log_event,
+        event="scheduler.tick.started",
+        details={
+            "scheduler_run_id": scheduler_run.scheduler_run_id,
+            "trigger_type": trigger_type,
+        },
+    )
 
+    _log_event(
+        log_event,
+        event="scheduler.import.started",
+        details={
+            "scheduler_run_id": scheduler_run.scheduler_run_id,
+        },
+    )
     import_result = import_documents()
     import_run_id = getattr(import_result, "run_id", None)
+    _log_event(
+        log_event,
+        event="scheduler.import.finished",
+        details={
+            "scheduler_run_id": scheduler_run.scheduler_run_id,
+            "import_run_id": import_run_id,
+        },
+    )
     eligible_runs = list_eligible_document_processing_runs(
         database_url=database_url,
         limit=document_limit,
@@ -762,22 +965,29 @@ def run_scheduler_tick(
     completed_document_count = 0
     failed_document_count = 0
     error_messages: list[str] = []
-    for index, eligible_run in enumerate(eligible_runs, start=1):
-        try:
-            result = process_one_document(
+    max_workers = max(1, len(eligible_runs))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_document_key = {
+            executor.submit(
+                process_one_document,
                 document_key=eligible_run.document_key,
                 scheduler_run_id=scheduler_run.scheduler_run_id,
                 locked_by=f"{locked_by_prefix}-{index}",
-            )
-        except Exception as exc:  # noqa: BLE001
-            failed_document_count += 1
-            error_messages.append(str(exc))
-            continue
+            ): eligible_run.document_key
+            for index, eligible_run in enumerate(eligible_runs, start=1)
+        }
+        for future in as_completed(future_to_document_key):
+            try:
+                result = future.result()
+            except Exception as exc:  # noqa: BLE001
+                failed_document_count += 1
+                error_messages.append(str(exc))
+                continue
 
-        if getattr(result, "status", "") == "succeeded":
-            completed_document_count += 1
-        else:
-            failed_document_count += 1
+            if getattr(result, "status", "") == "succeeded":
+                completed_document_count += 1
+            else:
+                failed_document_count += 1
 
     final_status = "succeeded"
     if failed_document_count and completed_document_count:
@@ -795,7 +1005,72 @@ def run_scheduler_tick(
         failed_document_count=failed_document_count,
         error_message="; ".join(error_messages) if error_messages else None,
     )
-    return get_scheduler_run(
+    finalized_run = get_scheduler_run(
         database_url=database_url,
         scheduler_run_id=scheduler_run.scheduler_run_id,
     )
+    _log_event(
+        log_event,
+        event="scheduler.tick.finished",
+        details={
+            "scheduler_run_id": finalized_run.scheduler_run_id,
+            "status": finalized_run.status,
+            "selected_document_count": finalized_run.selected_document_count,
+            "completed_document_count": finalized_run.completed_document_count,
+            "failed_document_count": finalized_run.failed_document_count,
+        },
+    )
+    return finalized_run
+
+
+def _row_to_scheduler_run(row) -> SchedulerRun:
+    return SchedulerRun(
+        scheduler_run_id=row[0],
+        trigger_type=row[1],
+        status=row[2],
+        started_at=row[3],
+        finished_at=row[4],
+        import_run_id=row[5],
+        selected_document_count=row[6],
+        completed_document_count=row[7],
+        failed_document_count=row[8],
+        error_message=row[9],
+    )
+
+
+def _row_to_document_processing_run(row) -> DocumentProcessingRun:
+    return DocumentProcessingRun(
+        processing_run_id=row[0],
+        scheduler_run_id=row[1],
+        document_key=row[2],
+        status=row[3],
+        current_step=row[4],
+        automatic_failure_count=row[5],
+        last_failure_step=row[6],
+        last_error_message=row[7],
+        last_attempt_started_at=row[8],
+        last_attempt_finished_at=row[9],
+        locked_by=row[10],
+        lock_expires_at=row[11],
+        created_at=row[12],
+        updated_at=row[13],
+    )
+
+
+def _log_event(log_event, *, event: str, details: dict[str, object]) -> None:
+    if log_event is not None:
+        log_event(event=event, details=details)
+        return
+    print(
+        format_log_event(
+            level="INFO",
+            event=event,
+            service="worker",
+            details=details,
+        ),
+        flush=True,
+    )
+
+
+def _noop_log_event(*, event: str, details: dict[str, object]) -> None:
+    return None

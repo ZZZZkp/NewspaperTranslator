@@ -24,7 +24,7 @@ This plan turns the approved automatic-processing design into a staged delivery 
 
 ## Execution Status
 
-Status on 2026-04-28: in progress.
+Status on 2026-04-29: completed for the intended backend automatic-processing milestone.
 
 Completed so far in the repository:
 
@@ -46,17 +46,17 @@ Completed so far in the repository:
   - records import run linkage
   - continues retryable documents even when Gmail import finds nothing new
   - keeps processing later documents when one document fails
+- integrated the full long-running worker scheduler loop in `main()`
+- wired real Gmail import and real document processing into the shared scheduler tick runtime path
+- added document-level parallel processing inside one scheduler tick
+- added CLI entrypoints for manual scheduler run, pending-document processing, retry, and status inspection
+- added backend-only document-processing read and retry surfaces for future dashboard integration
+- added structured scheduler, document-lifecycle, and retry-lifecycle logging hooks aligned with the repository's JSON logging style
 - added worker-side pure catch-up scheduling logic for overdue tick detection
 - added worker-side startup maintenance orchestration for recovery plus catch-up decision
-- added targeted TDD coverage for the new migration and persistence helpers
+- added targeted TDD coverage for persistence, worker, CLI, web, concurrency, and logging behavior
 
-Not implemented yet:
-
-- full long-running worker scheduler loop integration in `main()`
-- real Gmail import wiring inside `run_scheduler_tick(...)`
-- document-level parallel processing inside one scheduler tick
-- CLI entrypoints for scheduler run, retry, and status inspection
-- backend read/write surfaces for future web endpoints
+No remaining in-scope implementation gaps remain for this milestone inside the repository.
 
 The repository already has the main building blocks needed for this slice:
 
@@ -126,7 +126,7 @@ Current status on 2026-04-28:
 - worker catch-up tick decision logic: done
 - startup maintenance orchestration: done
 - minimal scheduler tick helper: done
-- scheduler loop integration in `main()`: not started
+- scheduler loop integration in `main()`: done
 
 ### Slice 2: Document Processing Orchestration Service
 
@@ -208,9 +208,9 @@ Current status on 2026-04-28:
 
 - overdue catch-up decision helper: done
 - startup maintenance entrypoint for recovery plus catch-up: done
-- shared scheduler tick helper: partially done
-- real worker loop and timer-driven execution: not started
-- real Gmail import and real document processing wiring inside scheduler tick: not started
+- shared scheduler tick helper: done
+- real worker loop and timer-driven execution: done
+- real Gmail import and real document processing wiring inside scheduler tick: done
 
 ### Slice 5: Document-Level Parallelism And Safe Claiming
 
@@ -334,8 +334,7 @@ Recommended first tests in order:
 
 Current completion against the TDD queue on 2026-04-28:
 
-- 1 through 11: done
-- 12 through 14: not started
+- 1 through 14: done
 
 ## Success Criteria
 
@@ -349,6 +348,8 @@ We should consider this automatic-processing milestone complete when the reposit
 - parse and enrich documents end to end without manual per-document commands
 - stop automatic retries after the second failed automatic attempt
 - expose manual retry and status inspection through backend interfaces
+
+Status on 2026-04-29 against these criteria: achieved in the repository for the intended backend-only slice.
 
 ## What We Are Not Doing Yet
 

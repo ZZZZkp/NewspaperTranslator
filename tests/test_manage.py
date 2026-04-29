@@ -445,6 +445,161 @@ class ManagementCommandTests(unittest.TestCase):
         self.assertIn('"status": "partial"', output)
         self.assertIn('"translated_title_zh": "\\u5927\\u578b\\u77f3\\u6cb9\\u516c\\u53f8\\u8fdc\\u8d74\\u4ed6\\u5904\\u907f\\u5f00\\u4e2d\\u4e1c\\u52a8\\u8361"', output)
 
+    def test_scheduler_run_once_command_runs_one_manual_scheduler_tick(self) -> None:
+        self.assertIsNotNone(
+            run_cli,
+            "run_cli should be importable from newspaper_translator.manage",
+        )
+
+        with patch.dict(
+            "os.environ",
+            {
+                "APP_ENV": "test",
+                "DATABASE_URL": "sqlite:////tmp/newspaper-translator.db",
+                "STORAGE_ROOT": "/tmp/newspaper-translator-data",
+                "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                "MINERU_API_TOKEN": "mineru-token",
+                "GEMINI_TOKEN": "gemini-token",
+            },
+            clear=False,
+        ):
+            with patch("newspaper_translator.manage.build_run_scheduler_tick_from_env") as build_run_scheduler_tick_from_env:
+                run_tick_calls: list[str] = []
+
+                def run_tick(*, trigger_type: str) -> str:
+                    run_tick_calls.append(trigger_type)
+                    return "scheduler-run-1"
+
+                build_run_scheduler_tick_from_env.return_value = run_tick
+
+                exit_code, output = run_cli(
+                    [
+                        "scheduler-run-once",
+                    ]
+                )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(run_tick_calls, ["manual"])
+        self.assertEqual(build_run_scheduler_tick_from_env.call_count, 1)
+        self.assertIn('"scheduler_run_id": "scheduler-run-1"', output)
+        self.assertIn('"trigger_type": "manual"', output)
+
+    def test_process_pending_documents_command_runs_manual_document_batch_without_gmail_import(self) -> None:
+        self.assertIsNotNone(
+            run_cli,
+            "run_cli should be importable from newspaper_translator.manage",
+        )
+
+        with patch.dict(
+            "os.environ",
+            {
+                "APP_ENV": "test",
+                "DATABASE_URL": "sqlite:////tmp/newspaper-translator.db",
+                "STORAGE_ROOT": "/tmp/newspaper-translator-data",
+                "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                "MINERU_API_TOKEN": "mineru-token",
+                "GEMINI_TOKEN": "gemini-token",
+            },
+            clear=False,
+        ):
+            with patch("newspaper_translator.manage.run_process_pending_documents_from_env") as run_process_pending_documents_from_env:
+                run_process_pending_documents_from_env.return_value = SimpleNamespace(
+                    scheduler_run_id="scheduler-run-2",
+                    trigger_type="manual",
+                    selected_document_count=2,
+                    completed_document_count=2,
+                    failed_document_count=0,
+                    status="succeeded",
+                    import_run_id=None,
+                    error_message=None,
+                )
+
+                exit_code, output = run_cli(
+                    [
+                        "process-pending-documents",
+                    ]
+                )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(run_process_pending_documents_from_env.call_count, 1)
+        self.assertIn('"scheduler_run_id": "scheduler-run-2"', output)
+        self.assertIn('"selected_document_count": 2', output)
+        self.assertIn('"import_run_id": null', output)
+
+    def test_retry_document_command_requests_manual_retry_for_document(self) -> None:
+        self.assertIsNotNone(
+            run_cli,
+            "run_cli should be importable from newspaper_translator.manage",
+        )
+
+        with patch("newspaper_translator.manage.request_manual_document_retry") as request_manual_document_retry:
+            request_manual_document_retry.return_value = SimpleNamespace(
+                processing_run_id="processing-run-1",
+                scheduler_run_id="scheduler-run-1",
+                document_key="message-1:attachment-1:hash-1",
+                status="manual_retry_requested",
+                current_step="enrich",
+                automatic_failure_count=2,
+                last_failure_step="enrich",
+                last_error_message="gemini timeout",
+            )
+
+            exit_code, output = run_cli(
+                [
+                    "retry-document",
+                    "--database-url",
+                    "sqlite:////tmp/newspaper-translator.db",
+                    "--document-key",
+                    "message-1:attachment-1:hash-1",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(request_manual_document_retry.call_count, 1)
+        self.assertEqual(
+            request_manual_document_retry.call_args.kwargs["document_key"],
+            "message-1:attachment-1:hash-1",
+        )
+        self.assertIn('"status": "manual_retry_requested"', output)
+        self.assertIn('"automatic_failure_count": 2', output)
+
+    def test_document_processing_status_command_returns_current_document_state(self) -> None:
+        self.assertIsNotNone(
+            run_cli,
+            "run_cli should be importable from newspaper_translator.manage",
+        )
+
+        with patch("newspaper_translator.manage.get_document_processing_run") as get_document_processing_run:
+            get_document_processing_run.return_value = SimpleNamespace(
+                processing_run_id="processing-run-1",
+                scheduler_run_id="scheduler-run-1",
+                document_key="message-1:attachment-1:hash-1",
+                status="failed_retryable",
+                current_step="parse_persist",
+                automatic_failure_count=1,
+                last_failure_step="parse_persist",
+                last_error_message="mineru timeout",
+            )
+
+            exit_code, output = run_cli(
+                [
+                    "document-processing-status",
+                    "--database-url",
+                    "sqlite:////tmp/newspaper-translator.db",
+                    "--document-key",
+                    "message-1:attachment-1:hash-1",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(get_document_processing_run.call_count, 1)
+        self.assertEqual(
+            get_document_processing_run.call_args.kwargs["document_key"],
+            "message-1:attachment-1:hash-1",
+        )
+        self.assertIn('"status": "failed_retryable"', output)
+        self.assertIn('"last_error_message": "mineru timeout"', output)
+
     def test_check_command_can_read_runtime_settings_from_environment(self) -> None:
         self.assertIsNotNone(
             run_cli,

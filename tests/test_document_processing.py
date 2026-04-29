@@ -2,6 +2,7 @@ import pathlib
 import sqlite3
 import sys
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
 
@@ -56,6 +57,7 @@ try:
         enrich_document_articles,
         fail_document_processing_run,
         get_document_processing_run,
+        get_latest_scheduler_run,
         finalize_scheduler_run,
         get_scheduler_run,
         list_eligible_document_processing_runs,
@@ -72,6 +74,7 @@ except ImportError:
     fail_document_processing_run = None
     finalize_scheduler_run = None
     get_document_processing_run = None
+    get_latest_scheduler_run = None
     get_scheduler_run = None
     list_eligible_document_processing_runs = None
     process_document = None
@@ -165,6 +168,41 @@ class SchedulerRunStoreTests(unittest.TestCase):
         self.assertIsNone(second_claim)
         self.assertEqual(stored_run.status, "running")
         self.assertEqual(stored_run.locked_by, "worker-1")
+
+    def test_gets_the_latest_scheduler_run_by_started_at(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_scheduler_run)
+        self.assertIsNotNone(get_latest_scheduler_run)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            first_run = create_scheduler_run(
+                database_url=database_url,
+                trigger_type="interval",
+            )
+            second_run = create_scheduler_run(
+                database_url=database_url,
+                trigger_type="manual",
+            )
+            self._set_scheduler_run_started_at(
+                database_path=database_path,
+                scheduler_run_id=first_run.scheduler_run_id,
+                started_at="2026-04-28 08:00:00",
+            )
+            self._set_scheduler_run_started_at(
+                database_path=database_path,
+                scheduler_run_id=second_run.scheduler_run_id,
+                started_at="2026-04-28 10:00:00",
+            )
+
+            latest_run = get_latest_scheduler_run(database_url=database_url)
+
+        self.assertIsNotNone(latest_run)
+        self.assertEqual(latest_run.scheduler_run_id, second_run.scheduler_run_id)
+        self.assertEqual(latest_run.trigger_type, "manual")
 
     def test_create_document_processing_run_is_idempotent_for_same_document(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
@@ -289,6 +327,43 @@ class SchedulerRunStoreTests(unittest.TestCase):
         self.assertIsNone(stored_run.lock_expires_at)
         self.assertIsNotNone(stored_run.last_attempt_finished_at)
 
+    def test_marks_document_failed_retryable_and_emits_failure_log(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_document_processing_run)
+        self.assertIsNotNone(claim_document_processing_run)
+        self.assertIsNotNone(fail_document_processing_run)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            create_document_processing_run(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            claim_document_processing_run(
+                database_url=database_url,
+                document_key=document_key,
+                locked_by="worker-1",
+                lock_timeout_seconds=600,
+            )
+            log_events: list[str] = []
+
+            stored_run = fail_document_processing_run(
+                database_url=database_url,
+                document_key=document_key,
+                failed_step="parse_persist",
+                error_message="mineru timeout",
+                log_event=lambda *, event, details: log_events.append(f"{event}:{details['status']}"),
+            )
+
+        self.assertEqual(stored_run.status, "failed_retryable")
+        self.assertEqual(log_events, ["document.marked_failed:failed_retryable"])
+
     def test_marks_document_failed_terminal_after_second_automatic_failure(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
         self.assertIsNotNone(create_document_processing_run)
@@ -404,6 +479,34 @@ class SchedulerRunStoreTests(unittest.TestCase):
         self.assertIsNone(stored_run.locked_by)
         self.assertIsNone(stored_run.lock_expires_at)
 
+    def test_manual_retry_emits_log_event(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_document_processing_run)
+        self.assertIsNotNone(request_manual_document_retry)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            create_document_processing_run(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            log_events: list[str] = []
+
+            stored_run = request_manual_document_retry(
+                database_url=database_url,
+                document_key=document_key,
+                log_event=lambda *, event, details: log_events.append(f"{event}:{details['document_key']}"),
+            )
+
+        self.assertEqual(stored_run.status, "manual_retry_requested")
+        self.assertEqual(log_events, [f"document.manual_retry_requested:{document_key}"])
+
     def test_process_document_retries_a_transient_parse_failure_without_counting_automatic_failure(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
         self.assertIsNotNone(process_document)
@@ -486,6 +589,47 @@ class SchedulerRunStoreTests(unittest.TestCase):
         self.assertEqual(stored_run.automatic_failure_count, 1)
         self.assertEqual(stored_run.last_failure_step, "parse_persist")
         self.assertEqual(stored_run.last_error_message, "mineru timeout")
+
+    def test_process_document_emits_step_retry_and_failure_lifecycle_logs(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(process_document)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+
+            log_events: list[str] = []
+
+            def failing_parse(*, document_key: str) -> None:
+                raise RuntimeError("mineru timeout")
+
+            stored_run = process_document(
+                database_url=database_url,
+                document_key=document_key,
+                locked_by="worker-1",
+                parse_persist_document=failing_parse,
+                enrich_document=lambda **kwargs: None,
+                step_retry_limit=1,
+                lock_timeout_seconds=600,
+                log_event=lambda *, event, details: log_events.append(event),
+            )
+
+        self.assertEqual(stored_run.status, "failed_retryable")
+        self.assertEqual(
+            log_events,
+            [
+                "document.claimed",
+                "document.step.started",
+                "document.step.retry_scheduled",
+                "document.step.finished",
+                "document.marked_failed",
+            ],
+        )
 
     def test_enrich_document_articles_enriches_latest_visible_articles_for_one_document(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
@@ -769,6 +913,45 @@ class SchedulerRunStoreTests(unittest.TestCase):
         self.assertEqual(terminal_run.automatic_failure_count, 2)
         self.assertEqual(fresh_run.status, "running")
 
+    def test_recover_stale_document_runs_emits_recovery_log_event(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_document_processing_run)
+        self.assertIsNotNone(claim_document_processing_run)
+        self.assertIsNotNone(recover_stale_document_runs)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            create_document_processing_run(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            claim_document_processing_run(
+                database_url=database_url,
+                document_key=document_key,
+                locked_by="worker-1",
+                lock_timeout_seconds=600,
+            )
+            self._set_document_processing_attempt_age_seconds(
+                database_path=database_path,
+                document_key=document_key,
+                age_seconds=7200,
+            )
+            log_events: list[str] = []
+
+            recover_stale_document_runs(
+                database_url=database_url,
+                running_timeout_seconds=3600,
+                log_event=lambda *, event, details: log_events.append(f"{event}:{details['document_key']}"),
+            )
+
+        self.assertEqual(log_events, [f"document.recovered_stale:{document_key}"])
+
     def test_scheduler_tick_can_continue_retryable_documents_when_gmail_import_finds_nothing_new(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
         self.assertIsNotNone(create_document_processing_run)
@@ -885,6 +1068,118 @@ class SchedulerRunStoreTests(unittest.TestCase):
         self.assertEqual(stored_scheduler_run.failed_document_count, 1)
         self.assertEqual(stored_scheduler_run.status, "partial")
         self.assertIn("parse timeout", stored_scheduler_run.error_message)
+
+    def test_scheduler_tick_processes_multiple_documents_concurrently(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_document_processing_run)
+        self.assertIsNotNone(run_scheduler_tick)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            first_document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            second_document_key = self._insert_document(
+                database_path,
+                "message-2:attachment-1:hash-2",
+            )
+            create_document_processing_run(
+                database_url=database_url,
+                document_key=first_document_key,
+            )
+            create_document_processing_run(
+                database_url=database_url,
+                document_key=second_document_key,
+            )
+
+            active_count = 0
+            max_active_count = 0
+            active_lock = threading.Lock()
+            concurrent_start = threading.Event()
+
+            def import_documents():
+                return SimpleNamespace(run_id="import-run-1", created_document_count=0)
+
+            def process_one_document(*, document_key: str, scheduler_run_id: str, locked_by: str):
+                nonlocal active_count, max_active_count
+                with active_lock:
+                    active_count += 1
+                    max_active_count = max(max_active_count, active_count)
+                    if active_count == 2:
+                        concurrent_start.set()
+
+                try:
+                    if not concurrent_start.wait(timeout=1):
+                        raise RuntimeError(f"document did not start concurrently: {document_key}")
+                    return SimpleNamespace(
+                        document_key=document_key,
+                        status="succeeded",
+                        scheduler_run_id=scheduler_run_id,
+                        locked_by=locked_by,
+                    )
+                finally:
+                    with active_lock:
+                        active_count -= 1
+
+            scheduler_run = run_scheduler_tick(
+                database_url=database_url,
+                trigger_type="interval",
+                import_documents=import_documents,
+                process_one_document=process_one_document,
+                document_limit=2,
+            )
+            stored_scheduler_run = get_scheduler_run(
+                database_url=database_url,
+                scheduler_run_id=scheduler_run.scheduler_run_id,
+            )
+
+        self.assertEqual(max_active_count, 2)
+        self.assertEqual(stored_scheduler_run.selected_document_count, 2)
+        self.assertEqual(stored_scheduler_run.completed_document_count, 2)
+        self.assertEqual(stored_scheduler_run.failed_document_count, 0)
+        self.assertEqual(stored_scheduler_run.status, "succeeded")
+
+    def test_scheduler_tick_emits_scheduler_and_import_lifecycle_logs(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_document_processing_run)
+        self.assertIsNotNone(run_scheduler_tick)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            create_document_processing_run(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            log_events: list[str] = []
+
+            scheduler_run = run_scheduler_tick(
+                database_url=database_url,
+                trigger_type="interval",
+                import_documents=lambda: SimpleNamespace(run_id="import-run-1"),
+                process_one_document=lambda **kwargs: SimpleNamespace(status="succeeded"),
+                document_limit=1,
+                log_event=lambda *, event, details: log_events.append(event),
+            )
+
+        self.assertEqual(scheduler_run.status, "succeeded")
+        self.assertEqual(
+            log_events,
+            [
+                "scheduler.tick.started",
+                "scheduler.import.started",
+                "scheduler.import.finished",
+                "scheduler.tick.finished",
+            ],
+        )
 
     def _insert_document(
         self,
@@ -1011,6 +1306,27 @@ class SchedulerRunStoreTests(unittest.TestCase):
                     """,
                     (age_seconds, automatic_failure_count, document_key),
                 )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def _set_scheduler_run_started_at(
+        self,
+        *,
+        database_path: pathlib.Path,
+        scheduler_run_id: str,
+        started_at: str,
+    ) -> None:
+        connection = sqlite3.connect(database_path)
+        try:
+            connection.execute(
+                """
+                UPDATE scheduler_runs
+                SET started_at = ?
+                WHERE scheduler_run_id = ?
+                """,
+                (started_at, scheduler_run_id),
+            )
             connection.commit()
         finally:
             connection.close()

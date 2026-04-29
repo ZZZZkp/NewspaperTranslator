@@ -5,6 +5,11 @@ from typing import Mapping
 from urllib.parse import parse_qs
 from wsgiref.simple_server import make_server
 
+from newspaper_translator.document_processing import (
+    get_document_processing_run,
+    list_document_processing_runs,
+    request_manual_document_retry,
+)
 from newspaper_translator.import_audit import (
     get_import_run,
     list_import_items,
@@ -51,6 +56,42 @@ def create_app(env: Mapping[str, str]):
                         limit=_query_int(query, "limit", default=50),
                         status=_query_value(query, "status"),
                         item_type=_query_value(query, "item_type"),
+                    )
+                )
+            }
+            return _json_response(start_response, "200 OK", payload)
+
+        if path == "/document-processing":
+            payload = {
+                "runs": _to_jsonable(
+                    list_document_processing_runs(
+                        database_url=database_url,
+                        limit=_query_int(query, "limit", default=50),
+                        status=_query_value(query, "status"),
+                    )
+                )
+            }
+            return _json_response(start_response, "200 OK", payload)
+
+        if path.startswith("/document-processing/"):
+            suffix = path.removeprefix("/document-processing/")
+            if suffix.endswith("/retry"):
+                document_key = suffix.removesuffix("/retry").rstrip("/")
+                payload = {
+                    "run": _to_jsonable(
+                        request_manual_document_retry(
+                            database_url=database_url,
+                            document_key=document_key,
+                        )
+                    )
+                }
+                return _json_response(start_response, "200 OK", payload)
+
+            payload = {
+                "run": _to_jsonable(
+                    get_document_processing_run(
+                        database_url=database_url,
+                        document_key=suffix,
                     )
                 )
             }

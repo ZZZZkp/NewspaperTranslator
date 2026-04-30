@@ -1,5 +1,7 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from pathlib import Path
+import re
 import sqlite3
 import uuid
 
@@ -31,6 +33,7 @@ class StoredArticleFragment:
     fragment_id: str
     parse_run_id: str
     source_order: int
+    page_number: int
     title: str
     body_text: str
     continued_to_page: str
@@ -64,6 +67,8 @@ class StoredFinalArticle:
     title_en: str
     body_text_en: str
     created_at: str
+    source_page_numbers: list[int] = field(default_factory=list)
+    article_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -208,17 +213,19 @@ def record_parse_run_result(
                     fragment_id,
                     parse_run_id,
                     source_order,
+                    page_number,
                     title,
                     body_text,
                     continued_to_page,
                     continued_from_page,
                     is_continuation_candidate
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     fragment_id,
                     parse_run_id,
                     fragment.source_order,
+                    getattr(fragment, "page_number", 0),
                     fragment.title,
                     fragment.body_text,
                     fragment.continued_to_page,
@@ -256,6 +263,17 @@ def record_parse_run_result(
 
         for article in parse_result.articles:
             article_id = str(uuid.uuid4())
+            article_key = _resolve_article_key(
+                connection=connection,
+                parse_run_id=parse_run_id,
+                document_key=document_key,
+                title_en=article.title,
+                body_text_en=article.body_text,
+                source_page_numbers=[
+                    getattr(parse_result.fragments[source_fragment.source_order - 1], "page_number", 0)
+                    for source_fragment in article.source_fragments
+                ],
+            )
             image_paths, cleaned_body_text = extract_local_image_paths_and_clean_text(
                 article.body_text,
                 base_dir=markdown_base_dir,
@@ -264,6 +282,7 @@ def record_parse_run_result(
                 """
                 INSERT INTO final_articles (
                     article_id,
+                    article_key,
                     parse_run_id,
                     document_key,
                     publication_date,
@@ -272,10 +291,11 @@ def record_parse_run_result(
                     source_fragment_count,
                     title_en,
                     body_text_en
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     article_id,
+                    article_key,
                     parse_run_id,
                     document_key,
                     publication_date,
@@ -399,6 +419,7 @@ def list_parse_run_fragments(
                 fragment_id,
                 parse_run_id,
                 source_order,
+                page_number,
                 title,
                 body_text,
                 continued_to_page,
@@ -418,12 +439,13 @@ def list_parse_run_fragments(
             fragment_id=row[0],
             parse_run_id=row[1],
             source_order=row[2],
-            title=row[3],
-            body_text=row[4],
-            continued_to_page=row[5],
-            continued_from_page=row[6],
-            is_continuation_candidate=bool(row[7]),
-            created_at=row[8],
+            page_number=row[3],
+            title=row[4],
+            body_text=row[5],
+            continued_to_page=row[6],
+            continued_from_page=row[7],
+            is_continuation_candidate=bool(row[8]),
+            created_at=row[9],
         )
         for row in rows
     ]
@@ -483,6 +505,7 @@ def list_parse_run_final_articles(
             """
             SELECT
                 article_id,
+                article_key,
                 parse_run_id,
                 document_key,
                 publication_date,
@@ -498,9 +521,19 @@ def list_parse_run_final_articles(
             """,
             (parse_run_id,),
         ).fetchall()
+        articles = [
+            _final_article_from_row(
+                row,
+                source_page_numbers=_list_article_source_page_numbers(
+                    connection=connection,
+                    article_id=row[0],
+                ),
+            )
+            for row in rows
+        ]
     finally:
         connection.close()
-    return [_final_article_from_row(row) for row in rows]
+    return articles
 
 
 def list_latest_document_articles(
@@ -542,6 +575,7 @@ def get_final_article(
             """
             SELECT
                 article_id,
+                article_key,
                 parse_run_id,
                 document_key,
                 publication_date,
@@ -556,12 +590,22 @@ def get_final_article(
             """,
             (article_id,),
         ).fetchone()
+        if row is None:
+            article = None
+        else:
+            article = _final_article_from_row(
+                row,
+                source_page_numbers=_list_article_source_page_numbers(
+                    connection=connection,
+                    article_id=article_id,
+                ),
+            )
     finally:
         connection.close()
 
-    if row is None:
+    if article is None:
         raise LookupError(f"Final article not found: {article_id}")
-    return _final_article_from_row(row)
+    return article
 
 
 def list_article_images(
@@ -912,16 +956,100 @@ def _parse_run_from_row(row) -> ParseRun:
     )
 
 
-def _final_article_from_row(row) -> StoredFinalArticle:
+def _list_article_source_page_numbers(*, connection, article_id: str) -> list[int]:
+    rows = connection.execute(
+        """
+        SELECT DISTINCT f.page_number
+        FROM final_article_fragments faf
+        JOIN article_fragments f
+            ON f.fragment_id = faf.fragment_id
+        WHERE faf.article_id = ?
+        ORDER BY f.page_number ASC, faf.sequence_index ASC
+        """,
+        (article_id,),
+    ).fetchall()
+    return [row[0] for row in rows]
+
+
+def _resolve_article_key(
+    *,
+    connection,
+    parse_run_id: str,
+    document_key: str,
+    title_en: str,
+    body_text_en: str,
+    source_page_numbers: list[int],
+) -> str:
+    candidate_rows = connection.execute(
+        """
+        SELECT article_id, article_key, title_en, body_text_en
+        FROM final_articles
+        WHERE document_key = ?
+          AND parse_run_id <> ?
+        ORDER BY created_at DESC, rowid DESC
+        """,
+        (document_key, parse_run_id),
+    ).fetchall()
+    normalized_title = _normalize_identity_text(title_en)
+    normalized_opening = _normalize_identity_text(_article_opening(body_text_en))
+    source_page_number_set = {page for page in source_page_numbers if page > 0}
+
+    best_match_key = ""
+    best_match_score = 0.0
+    for candidate_row in candidate_rows:
+        candidate_pages = set(
+            _list_article_source_page_numbers(
+                connection=connection,
+                article_id=candidate_row[0],
+            )
+        )
+        if source_page_number_set and not candidate_pages.intersection(source_page_number_set):
+            continue
+
+        title_similarity = _normalized_similarity(
+            normalized_title,
+            _normalize_identity_text(candidate_row[2]),
+        )
+        opening_similarity = _normalized_similarity(
+            normalized_opening,
+            _normalize_identity_text(_article_opening(candidate_row[3])),
+        )
+        match_score = max(title_similarity, opening_similarity)
+        if match_score >= 0.9 and match_score > best_match_score:
+            best_match_key = candidate_row[1]
+            best_match_score = match_score
+
+    if best_match_key:
+        return best_match_key
+    return str(uuid.uuid4())
+
+
+def _normalize_identity_text(value: str) -> str:
+    return re.sub(r"\s+", "", value.casefold()).strip()
+
+
+def _normalized_similarity(left: str, right: str) -> float:
+    if not left or not right:
+        return 0.0
+    return SequenceMatcher(a=left, b=right).ratio()
+
+
+def _article_opening(body_text: str, *, max_chars: int = 160) -> str:
+    return body_text[:max_chars]
+
+
+def _final_article_from_row(row, *, source_page_numbers: list[int]) -> StoredFinalArticle:
     return StoredFinalArticle(
         article_id=row[0],
-        parse_run_id=row[1],
-        document_key=row[2],
-        publication_date=row[3],
-        article_order=row[4],
-        primary_source_order=row[5],
-        source_fragment_count=row[6],
-        title_en=row[7],
-        body_text_en=row[8],
-        created_at=row[9],
+        article_key=row[1],
+        parse_run_id=row[2],
+        document_key=row[3],
+        publication_date=row[4],
+        article_order=row[5],
+        primary_source_order=row[6],
+        source_fragment_count=row[7],
+        title_en=row[8],
+        body_text_en=row[9],
+        source_page_numbers=source_page_numbers,
+        created_at=row[10],
     )

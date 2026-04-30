@@ -154,6 +154,10 @@ class DatabaseMigrationTests(unittest.TestCase):
                 "0004_import_run_retry_summary",
                 "0005_article_persistence_enrichment",
                 "0006_scheduled_automatic_document_processing",
+                "0007_article_images",
+                "0008_article_fragment_page_numbers",
+                "0009_final_articles_article_key",
+                "0010_article_processing_runs",
             ],
         )
 
@@ -187,6 +191,12 @@ class DatabaseMigrationTests(unittest.TestCase):
                         "PRAGMA table_info(document_processing_runs)"
                     )
                 }
+                article_processing_runs_columns = {
+                    row[1]
+                    for row in connection.execute(
+                        "PRAGMA table_info(article_processing_runs)"
+                    )
+                }
                 recorded_versions = [
                     row[0]
                     for row in connection.execute(
@@ -199,11 +209,15 @@ class DatabaseMigrationTests(unittest.TestCase):
         self.assertIn("0006_scheduled_automatic_document_processing", applied_versions)
         self.assertIn("scheduler_runs", table_names)
         self.assertIn("document_processing_runs", table_names)
+        self.assertIn("article_processing_runs", table_names)
         self.assertIn("scheduler_run_id", scheduler_runs_columns)
         self.assertIn("trigger_type", scheduler_runs_columns)
         self.assertIn("document_key", document_processing_runs_columns)
         self.assertIn("automatic_failure_count", document_processing_runs_columns)
         self.assertIn("locked_by", document_processing_runs_columns)
+        self.assertIn("article_key", article_processing_runs_columns)
+        self.assertIn("article_id", article_processing_runs_columns)
+        self.assertIn("current_step", article_processing_runs_columns)
         self.assertIn("0006_scheduled_automatic_document_processing", recorded_versions)
 
     def test_applies_article_persistence_and_enrichment_schema_migration(self) -> None:
@@ -229,6 +243,10 @@ class DatabaseMigrationTests(unittest.TestCase):
                 parse_runs_columns = {
                     row[1]
                     for row in connection.execute("PRAGMA table_info(parse_runs)")
+                }
+                article_fragments_columns = {
+                    row[1]
+                    for row in connection.execute("PRAGMA table_info(article_fragments)")
                 }
                 final_articles_columns = {
                     row[1]
@@ -267,7 +285,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             finally:
                 connection.close()
 
-        self.assertIn("0005_article_persistence_enrichment", applied_versions)
+        self.assertIn("0009_final_articles_article_key", applied_versions)
         self.assertIn("parse_runs", table_names)
         self.assertIn("article_fragments", table_names)
         self.assertIn("continuation_matches", table_names)
@@ -278,6 +296,8 @@ class DatabaseMigrationTests(unittest.TestCase):
         self.assertIn("article_tags", table_names)
         self.assertIn("publication_date", parse_runs_columns)
         self.assertIn("document_key", parse_runs_columns)
+        self.assertIn("page_number", article_fragments_columns)
+        self.assertIn("article_key", final_articles_columns)
         self.assertIn("title_en", final_articles_columns)
         self.assertIn("body_text_en", final_articles_columns)
         self.assertIn("input_hash", enrichment_runs_columns)
@@ -296,6 +316,10 @@ class DatabaseMigrationTests(unittest.TestCase):
                 "0004_import_run_retry_summary",
                 "0005_article_persistence_enrichment",
                 "0006_scheduled_automatic_document_processing",
+                "0007_article_images",
+                "0008_article_fragment_page_numbers",
+                "0009_final_articles_article_key",
+                "0010_article_processing_runs",
             ],
         )
 

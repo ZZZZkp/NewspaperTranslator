@@ -51,35 +51,49 @@ except ImportError:
 
 try:
     from newspaper_translator.document_processing import (
+        claim_article_processing_run,
         claim_document_processing_run,
+        create_article_processing_run,
         create_document_processing_run,
         create_scheduler_run,
         enrich_document_articles,
+        fail_article_processing_run,
         fail_document_processing_run,
+        get_article_processing_run,
         get_document_processing_run,
         get_latest_scheduler_run,
         finalize_scheduler_run,
         get_scheduler_run,
+        list_eligible_article_processing_runs,
         list_eligible_document_processing_runs,
         process_document,
         recover_stale_document_runs,
+        request_manual_article_retry,
         run_scheduler_tick,
+        succeed_article_processing_run,
         request_manual_document_retry,
     )
 except ImportError:
+    claim_article_processing_run = None
     claim_document_processing_run = None
+    create_article_processing_run = None
     create_document_processing_run = None
     create_scheduler_run = None
     enrich_document_articles = None
+    fail_article_processing_run = None
     fail_document_processing_run = None
     finalize_scheduler_run = None
+    get_article_processing_run = None
     get_document_processing_run = None
     get_latest_scheduler_run = None
     get_scheduler_run = None
+    list_eligible_article_processing_runs = None
     list_eligible_document_processing_runs = None
     process_document = None
     recover_stale_document_runs = None
+    request_manual_article_retry = None
     run_scheduler_tick = None
+    succeed_article_processing_run = None
     request_manual_document_retry = None
 
 
@@ -507,6 +521,153 @@ class SchedulerRunStoreTests(unittest.TestCase):
         self.assertEqual(stored_run.status, "manual_retry_requested")
         self.assertEqual(log_events, [f"document.manual_retry_requested:{document_key}"])
 
+    def test_claims_one_eligible_article_processing_run_without_double_claim(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_article_processing_run)
+        self.assertIsNotNone(claim_article_processing_run)
+        self.assertIsNotNone(get_article_processing_run)
+        self.assertIsNotNone(list_latest_document_articles)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            self._persist_parsed_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            article = list_latest_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )[0]
+
+            created_run = create_article_processing_run(
+                database_url=database_url,
+                article_id=article.article_id,
+            )
+            claimed_run = claim_article_processing_run(
+                database_url=database_url,
+                article_key=article.article_key,
+                locked_by="worker-1",
+                lock_timeout_seconds=600,
+            )
+            second_claim = claim_article_processing_run(
+                database_url=database_url,
+                article_key=article.article_key,
+                locked_by="worker-2",
+                lock_timeout_seconds=600,
+            )
+            stored_run = get_article_processing_run(
+                database_url=database_url,
+                article_key=article.article_key,
+            )
+
+        self.assertEqual(created_run.status, "pending")
+        self.assertEqual(created_run.current_step, "enrich")
+        self.assertIsNotNone(claimed_run)
+        self.assertEqual(claimed_run.status, "running")
+        self.assertEqual(claimed_run.locked_by, "worker-1")
+        self.assertIsNone(second_claim)
+        self.assertEqual(stored_run.status, "running")
+        self.assertEqual(stored_run.locked_by, "worker-1")
+
+    def test_lists_eligible_article_processing_runs_with_manual_retry_priority(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_article_processing_run)
+        self.assertIsNotNone(list_eligible_article_processing_runs)
+        self.assertIsNotNone(request_manual_article_retry)
+        self.assertIsNotNone(fail_article_processing_run)
+        self.assertIsNotNone(claim_article_processing_run)
+        self.assertIsNotNone(succeed_article_processing_run)
+        self.assertIsNotNone(list_latest_document_articles)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            manual_retry_key = self._insert_document(database_path, "message-1:attachment-1:hash-1")
+            pending_key = self._insert_document(database_path, "message-2:attachment-1:hash-2")
+            retryable_key = self._insert_document(database_path, "message-3:attachment-1:hash-3")
+            running_key = self._insert_document(database_path, "message-4:attachment-1:hash-4")
+            succeeded_key = self._insert_document(database_path, "message-5:attachment-1:hash-5")
+
+            for document_key in [
+                manual_retry_key,
+                pending_key,
+                retryable_key,
+                running_key,
+                succeeded_key,
+            ]:
+                self._persist_parsed_document_articles(
+                    database_url=database_url,
+                    document_key=document_key,
+                )
+
+            manual_retry_article = list_latest_document_articles(database_url=database_url, document_key=manual_retry_key)[0]
+            pending_article = list_latest_document_articles(database_url=database_url, document_key=pending_key)[0]
+            retryable_article = list_latest_document_articles(database_url=database_url, document_key=retryable_key)[0]
+            running_article = list_latest_document_articles(database_url=database_url, document_key=running_key)[0]
+            succeeded_article = list_latest_document_articles(database_url=database_url, document_key=succeeded_key)[0]
+
+            for article in [
+                manual_retry_article,
+                pending_article,
+                retryable_article,
+                running_article,
+                succeeded_article,
+            ]:
+                create_article_processing_run(
+                    database_url=database_url,
+                    article_id=article.article_id,
+                )
+
+            request_manual_article_retry(
+                database_url=database_url,
+                article_key=manual_retry_article.article_key,
+            )
+            claim_article_processing_run(
+                database_url=database_url,
+                article_key=retryable_article.article_key,
+                locked_by="worker-1",
+                lock_timeout_seconds=600,
+            )
+            fail_article_processing_run(
+                database_url=database_url,
+                article_key=retryable_article.article_key,
+                failed_step="enrich",
+                error_message="gemini timeout",
+            )
+            claim_article_processing_run(
+                database_url=database_url,
+                article_key=running_article.article_key,
+                locked_by="worker-1",
+                lock_timeout_seconds=600,
+            )
+            succeed_article_processing_run(
+                database_url=database_url,
+                article_key=succeeded_article.article_key,
+                last_success_input_hash="hash-1",
+            )
+
+            eligible_runs = list_eligible_article_processing_runs(
+                database_url=database_url,
+                limit=10,
+            )
+
+        self.assertEqual(
+            [run.article_key for run in eligible_runs],
+            [
+                manual_retry_article.article_key,
+                pending_article.article_key,
+                retryable_article.article_key,
+            ],
+        )
+
     def test_process_document_retries_a_transient_parse_failure_without_counting_automatic_failure(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
         self.assertIsNotNone(process_document)
@@ -718,10 +879,11 @@ class SchedulerRunStoreTests(unittest.TestCase):
 
         self.assertEqual(second_article_enrichment.status, "succeeded")
 
-    def test_process_document_continues_enriching_later_articles_before_marking_document_retryable(self) -> None:
+    def test_process_document_enqueues_article_processing_for_all_articles_without_failing_document(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
         self.assertIsNotNone(process_document)
-        self.assertIsNotNone(get_latest_article_enrichment)
+        self.assertIsNotNone(get_article_processing_run)
+        self.assertIsNotNone(list_latest_document_articles)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = pathlib.Path(temp_dir) / "app.db"
@@ -743,36 +905,34 @@ class SchedulerRunStoreTests(unittest.TestCase):
                 document_key=document_key,
                 locked_by="worker-1",
                 parse_persist_document=persist_parse_result,
-                translator=_SelectiveFailingTranslator(
-                    failing_titles={"First article title"},
-                ),
-                summarizer_tagger=_FakeSummarizerTagger(),
-                provider_name="gemini",
-                model_name="gemini-2.5-flash",
-                prompt_version="article-enrichment-v1",
                 step_retry_limit=0,
                 lock_timeout_seconds=600,
             )
-            article_ids = [
-                article.article_id
+            latest_articles = list_latest_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            article_runs = [
+                get_article_processing_run(
+                    database_url=database_url,
+                    article_key=article.article_key,
+                )
                 for article in list_latest_document_articles(
                     database_url=database_url,
                     document_key=document_key,
                 )
             ]
-            second_article_enrichment = get_latest_article_enrichment(
-                database_url=database_url,
-                article_id=article_ids[1],
-            )
 
-        self.assertEqual(stored_run.status, "failed_retryable")
-        self.assertEqual(stored_run.current_step, "enrich")
-        self.assertEqual(second_article_enrichment.status, "succeeded")
+        self.assertEqual(stored_run.status, "succeeded")
+        self.assertEqual(stored_run.current_step, "completed")
+        self.assertEqual([run.article_id for run in article_runs], [article.article_id for article in latest_articles])
+        self.assertEqual([run.status for run in article_runs], ["pending", "pending"])
 
-    def test_process_document_can_use_real_document_level_enrichment_wiring(self) -> None:
+    def test_process_document_can_enqueue_article_processing_from_real_parse_wiring(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
         self.assertIsNotNone(process_document)
-        self.assertIsNotNone(get_latest_article_enrichment)
+        self.assertIsNotNone(get_article_processing_run)
+        self.assertIsNotNone(list_latest_document_articles)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = pathlib.Path(temp_dir) / "app.db"
@@ -794,31 +954,32 @@ class SchedulerRunStoreTests(unittest.TestCase):
                 document_key=document_key,
                 locked_by="worker-1",
                 parse_persist_document=persist_parse_result,
-                translator=_FakeTranslator(),
-                summarizer_tagger=_FakeSummarizerTagger(),
-                provider_name="gemini",
-                model_name="gemini-2.5-flash",
-                prompt_version="article-enrichment-v1",
                 step_retry_limit=2,
                 lock_timeout_seconds=600,
             )
-            article_id = list_latest_document_articles(
+            article = list_latest_document_articles(
                 database_url=database_url,
                 document_key=document_key,
             )[0].article_id
-            latest_enrichment = get_latest_article_enrichment(
+            article_key = list_latest_document_articles(
                 database_url=database_url,
-                article_id=article_id,
+                document_key=document_key,
+            )[0].article_key
+            article_processing_run = get_article_processing_run(
+                database_url=database_url,
+                article_key=article_key,
             )
 
         self.assertEqual(stored_run.status, "succeeded")
         self.assertEqual(stored_run.current_step, "completed")
-        self.assertEqual(latest_enrichment.status, "succeeded")
+        self.assertEqual(article_processing_run.article_id, article)
+        self.assertEqual(article_processing_run.status, "pending")
 
-    def test_process_document_marks_failed_retryable_when_document_level_enrichment_never_succeeds(self) -> None:
+    def test_process_document_keeps_document_succeeded_when_article_enrichment_would_fail_later(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
         self.assertIsNotNone(process_document)
-        self.assertIsNotNone(get_latest_article_enrichment)
+        self.assertIsNotNone(get_article_processing_run)
+        self.assertIsNotNone(list_latest_document_articles)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = pathlib.Path(temp_dir) / "app.db"
@@ -840,34 +1001,28 @@ class SchedulerRunStoreTests(unittest.TestCase):
                 document_key=document_key,
                 locked_by="worker-1",
                 parse_persist_document=persist_parse_result,
-                translator=_FakeTranslator(),
-                summarizer_tagger=_FailingSummarizerTagger("summary timeout"),
-                provider_name="gemini",
-                model_name="gemini-2.5-flash",
-                prompt_version="article-enrichment-v1",
                 step_retry_limit=2,
                 lock_timeout_seconds=600,
             )
-            article_id = list_latest_document_articles(
+            article = list_latest_document_articles(
                 database_url=database_url,
                 document_key=document_key,
-            )[0].article_id
-            latest_enrichment = get_latest_article_enrichment(
+            )[0]
+            article_processing_run = get_article_processing_run(
                 database_url=database_url,
-                article_id=article_id,
+                article_key=article.article_key,
             )
 
-        self.assertEqual(stored_run.status, "failed_retryable")
-        self.assertEqual(stored_run.current_step, "enrich")
-        self.assertEqual(stored_run.automatic_failure_count, 1)
-        self.assertEqual(stored_run.last_failure_step, "enrich")
-        self.assertIn("did not succeed", stored_run.last_error_message)
-        self.assertEqual(latest_enrichment.status, "partial")
+        self.assertEqual(stored_run.status, "succeeded")
+        self.assertEqual(stored_run.current_step, "completed")
+        self.assertEqual(stored_run.automatic_failure_count, 0)
+        self.assertEqual(article_processing_run.article_id, article.article_id)
+        self.assertEqual(article_processing_run.status, "pending")
 
-    def test_process_document_can_use_real_parse_and_enrichment_wiring(self) -> None:
+    def test_process_document_can_use_real_parse_and_enqueue_article_processing_wiring(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
         self.assertIsNotNone(process_document)
-        self.assertIsNotNone(get_latest_article_enrichment)
+        self.assertIsNotNone(get_article_processing_run)
         self.assertIsNotNone(MineruParsedDocument)
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -911,26 +1066,22 @@ class SchedulerRunStoreTests(unittest.TestCase):
                 parser_version="vlm",
                 continuation_matcher_name="",
                 continuation_matcher_version="",
-                translator=_FakeTranslator(),
-                summarizer_tagger=_FakeSummarizerTagger(),
-                provider_name="gemini",
-                model_name="gemini-2.5-flash",
-                prompt_version="article-enrichment-v1",
                 step_retry_limit=2,
                 lock_timeout_seconds=600,
             )
-            article_id = list_latest_document_articles(
+            article = list_latest_document_articles(
                 database_url=database_url,
                 document_key=document_key,
-            )[0].article_id
-            latest_enrichment = get_latest_article_enrichment(
+            )[0]
+            article_processing_run = get_article_processing_run(
                 database_url=database_url,
-                article_id=article_id,
+                article_key=article.article_key,
             )
 
         self.assertEqual(stored_run.status, "succeeded")
         self.assertEqual(stored_run.current_step, "completed")
-        self.assertEqual(latest_enrichment.status, "succeeded")
+        self.assertEqual(article_processing_run.article_id, article.article_id)
+        self.assertEqual(article_processing_run.status, "pending")
 
     def test_recover_stale_document_runs_marks_stale_running_documents_retryable_or_terminal(self) -> None:
         self.assertIsNotNone(run_pending_migrations)

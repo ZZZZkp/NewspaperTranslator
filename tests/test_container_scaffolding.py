@@ -50,6 +50,21 @@ class ContainerScaffoldingTests(unittest.TestCase):
         self.assertIn("HTTP_PROXY:", compose_text)
         self.assertIn("HTTPS_PROXY:", compose_text)
         self.assertIn("ALL_PROXY:", compose_text)
+        self.assertIn("HTTP_PROXY: ${HTTP_PROXY:-http://host.docker.internal:7897}", compose_text)
+        self.assertIn("HTTPS_PROXY: ${HTTPS_PROXY:-http://host.docker.internal:7897}", compose_text)
+        self.assertIn("ALL_PROXY: ${ALL_PROXY:-socks5://host.docker.internal:7897}", compose_text)
+
+    def test_compose_passes_proxy_settings_into_image_builds(self) -> None:
+        compose_path = PROJECT_ROOT / "docker-compose.yml"
+        self.assertTrue(compose_path.exists(), "docker-compose.yml should exist at the project root")
+
+        compose_text = compose_path.read_text()
+
+        self.assertIn("args:", compose_text)
+        self.assertIn("HTTP_PROXY: ${HTTP_PROXY:-http://host.docker.internal:7897}", compose_text)
+        self.assertIn("HTTPS_PROXY: ${HTTPS_PROXY:-http://host.docker.internal:7897}", compose_text)
+        self.assertIn("ALL_PROXY: ${ALL_PROXY:-socks5://host.docker.internal:7897}", compose_text)
+        self.assertIn("NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,db}", compose_text)
 
     def test_compose_mounts_local_gmail_config_and_secrets_into_web_and_worker(self) -> None:
         compose_path = PROJECT_ROOT / "docker-compose.yml"
@@ -123,6 +138,21 @@ class ContainerScaffoldingTests(unittest.TestCase):
         self.assertIn("google-api-python-client", requirements_text)
         self.assertIn("google-auth-oauthlib", requirements_text)
         self.assertIn("google-auth-httplib2", requirements_text)
+
+    def test_dockerfiles_accept_proxy_build_arguments(self) -> None:
+        backend_dockerfile_path = PROJECT_ROOT / "Dockerfile"
+        frontend_dockerfile_path = PROJECT_ROOT / "frontend" / "Dockerfile"
+        self.assertTrue(backend_dockerfile_path.exists(), "Dockerfile should exist at the project root")
+        self.assertTrue(frontend_dockerfile_path.exists(), "frontend/Dockerfile should exist")
+
+        backend_text = backend_dockerfile_path.read_text()
+        frontend_text = frontend_dockerfile_path.read_text()
+
+        for dockerfile_text in (backend_text, frontend_text):
+            self.assertIn("ARG HTTP_PROXY", dockerfile_text)
+            self.assertIn("ARG HTTPS_PROXY", dockerfile_text)
+            self.assertIn("ARG ALL_PROXY", dockerfile_text)
+            self.assertIn("ARG NO_PROXY", dockerfile_text)
 
     def test_docker_compose_configuration_is_valid(self) -> None:
         compose_path = PROJECT_ROOT / "docker-compose.yml"

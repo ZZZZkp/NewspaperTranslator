@@ -3,6 +3,11 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-http://host.docker.internal:7897}
+        HTTPS_PROXY: ${HTTPS_PROXY:-http://host.docker.internal:7897}
+        ALL_PROXY: ${ALL_PROXY:-socks5://host.docker.internal:7897}
+        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,db}
     ports:
       - "${FRONTEND_PORT:-3000}:3000"
     depends_on:
@@ -13,6 +18,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-http://host.docker.internal:7897}
+        HTTPS_PROXY: ${HTTPS_PROXY:-http://host.docker.internal:7897}
+        ALL_PROXY: ${ALL_PROXY:-socks5://host.docker.internal:7897}
+        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,db}
     command: ["python", "-m", "newspaper_translator.web"]
     environment:
       APP_ENV: ${APP_ENV:-development}
@@ -32,9 +42,9 @@ services:
       GEMINI_TOKEN: ${GEMINI_TOKEN:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
       GEMINI_TIMEOUT_SECONDS: ${GEMINI_TIMEOUT_SECONDS:-120}
-      HTTP_PROXY: ${HTTP_PROXY:-}
-      HTTPS_PROXY: ${HTTPS_PROXY:-}
-      ALL_PROXY: ${ALL_PROXY:-}
+      HTTP_PROXY: ${HTTP_PROXY:-http://host.docker.internal:7897}
+      HTTPS_PROXY: ${HTTPS_PROXY:-http://host.docker.internal:7897}
+      ALL_PROXY: ${ALL_PROXY:-socks5://host.docker.internal:7897}
       NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,db}
     ports:
       - "${WEB_PORT:-8000}:8000"
@@ -55,6 +65,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-http://host.docker.internal:7897}
+        HTTPS_PROXY: ${HTTPS_PROXY:-http://host.docker.internal:7897}
+        ALL_PROXY: ${ALL_PROXY:-socks5://host.docker.internal:7897}
+        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,db}
     command: ["python", "-m", "newspaper_translator.worker"]
     environment:
       APP_ENV: ${APP_ENV:-development}
@@ -74,9 +89,9 @@ services:
       GEMINI_TOKEN: ${GEMINI_TOKEN:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
       GEMINI_TIMEOUT_SECONDS: ${GEMINI_TIMEOUT_SECONDS:-120}
-      HTTP_PROXY: ${HTTP_PROXY:-}
-      HTTPS_PROXY: ${HTTPS_PROXY:-}
-      ALL_PROXY: ${ALL_PROXY:-}
+      HTTP_PROXY: ${HTTP_PROXY:-http://host.docker.internal:7897}
+      HTTPS_PROXY: ${HTTPS_PROXY:-http://host.docker.internal:7897}
+      ALL_PROXY: ${ALL_PROXY:-socks5://host.docker.internal:7897}
       NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,db}
     volumes:
       - app-data:/data

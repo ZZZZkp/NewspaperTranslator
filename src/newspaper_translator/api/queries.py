@@ -1,9 +1,11 @@
 from dataclasses import dataclass
 import sqlite3
 
+from newspaper_translator.article_content import extract_local_image_paths_and_clean_text
 from newspaper_translator.article_store import (
     get_final_article,
     get_latest_article_enrichment,
+    list_article_images,
     list_latest_document_articles,
 )
 from newspaper_translator.database import sqlite_path_from_database_url
@@ -31,6 +33,7 @@ class ArticleCardView:
 class OverviewView:
     imported_document_count: int
     article_count: int
+    pending_article_count: int
     processing_document_count: int
     pending_exception_count: int
 
@@ -48,6 +51,7 @@ class ArticleDetailView:
     tags: list[str]
     body_text_en: str
     body_text_zh: str | None
+    images: list[str]
     hero_image_url: str | None
     quality: dict[str, object]
     processing: dict[str, object]
@@ -117,6 +121,31 @@ def get_overview_view(*, database_url: str) -> OverviewView:
             )
             """
         ).fetchone()[0]
+        pending_article_count = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM final_articles a
+            WHERE a.parse_run_id IN (
+                SELECT p.parse_run_id
+                FROM parse_runs p
+                WHERE p.status = 'succeeded'
+                  AND p.parse_run_id = (
+                        SELECT p2.parse_run_id
+                        FROM parse_runs p2
+                        WHERE p2.document_key = a.document_key
+                          AND p2.status = 'succeeded'
+                        ORDER BY p2.finished_at DESC, p2.rowid DESC
+                        LIMIT 1
+                  )
+            )
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM article_enrichment_runs r
+                    WHERE r.article_id = a.article_id
+                      AND r.status = 'succeeded'
+              )
+            """
+        ).fetchone()[0]
         processing_document_count = connection.execute(
             """
             SELECT COUNT(*)
@@ -137,6 +166,7 @@ def get_overview_view(*, database_url: str) -> OverviewView:
     return OverviewView(
         imported_document_count=imported_document_count,
         article_count=article_count,
+        pending_article_count=pending_article_count,
         processing_document_count=processing_document_count,
         pending_exception_count=pending_exception_count,
     )
@@ -226,6 +256,16 @@ def get_article_detail_view(*, database_url: str, article_id: str) -> ArticleDet
         body_text_zh = enrichment.translated_body_zh
         tags = enrichment.tags
         enrichment_status = enrichment.status
+    if body_text_zh is not None:
+        _, body_text_zh = extract_local_image_paths_and_clean_text(body_text_zh)
+
+    images = [
+        image.image_path
+        for image in list_article_images(
+            database_url=database_url,
+            article_id=article.article_id,
+        )
+    ]
 
     return ArticleDetailView(
         article_id=article.article_id,
@@ -239,7 +279,8 @@ def get_article_detail_view(*, database_url: str, article_id: str) -> ArticleDet
         tags=tags,
         body_text_en=article.body_text_en,
         body_text_zh=body_text_zh,
-        hero_image_url=None,
+        images=images,
+        hero_image_url=images[0] if images else None,
         quality={
             "confidence": "high",
             "flags": [],

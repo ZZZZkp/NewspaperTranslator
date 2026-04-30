@@ -254,6 +254,7 @@ class ArticleQueryTests(unittest.TestCase):
         self.assertEqual(import_run_id is not None, True)
         self.assertEqual(overview.imported_document_count, 2)
         self.assertEqual(overview.article_count, 1)
+        self.assertEqual(overview.pending_article_count, 1)
         self.assertEqual(overview.processing_document_count, 1)
         self.assertEqual(overview.pending_exception_count, 2)
 
@@ -553,6 +554,69 @@ class ArticleQueryTests(unittest.TestCase):
         self.assertEqual(detail.processing["document_status"], "succeeded")
         self.assertEqual(detail.processing["latest_parse_status"], "succeeded")
         self.assertEqual(detail.processing["latest_enrichment_status"], "succeeded")
+
+    def test_article_detail_returns_local_images_and_clean_body(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(get_article_detail_view)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                original_filename="ft-2026-04-22.pdf",
+                source_name="Financial Times",
+            )
+
+            parse_run = create_parse_run(
+                database_url=database_url,
+                document_key=document_key,
+                parser_name="mineru",
+                parser_version="vlm",
+                publication_date="2026-04-22",
+                continuation_matcher_name="gemini",
+                continuation_matcher_version="2.5-flash",
+            )
+            record_parse_run_result(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                parse_result=self._build_parse_result(
+                    title="Chipmakers prepare for a new subsidy dispute",
+                    body_suffix=(
+                        "Subsidy pressure is spreading across Asia and Europe.\n"
+                        "![](/tmp/mineru-output/images/chips.jpg)\n"
+                        "/tmp/mineru-output/images/factory.webp"
+                    ),
+                ),
+                document_key=document_key,
+                publication_date="2026-04-22",
+            )
+            finalize_parse_run(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                status="succeeded",
+            )
+            article = list_parse_run_final_articles(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+            )[0]
+
+            detail = get_article_detail_view(
+                database_url=database_url,
+                article_id=article.article_id,
+            )
+
+        self.assertEqual(
+            detail.images,
+            [
+                "/tmp/mineru-output/images/chips.jpg",
+                "/tmp/mineru-output/images/factory.webp",
+            ],
+        )
+        self.assertIn("Subsidy pressure is spreading across Asia and Europe.", detail.body_text_en)
+        self.assertNotIn("chips.jpg", detail.body_text_en)
+        self.assertNotIn("factory.webp", detail.body_text_en)
 
     def test_document_processing_detail_includes_current_visible_articles(self) -> None:
         self.assertIsNotNone(run_pending_migrations)

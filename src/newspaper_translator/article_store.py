@@ -1,7 +1,9 @@
 from dataclasses import dataclass
+from pathlib import Path
 import sqlite3
 import uuid
 
+from newspaper_translator.article_content import extract_local_image_paths_and_clean_text
 from newspaper_translator.database import sqlite_path_from_database_url
 from newspaper_translator.pdf import ParseResult
 
@@ -62,6 +64,13 @@ class StoredFinalArticle:
     title_en: str
     body_text_en: str
     created_at: str
+
+
+@dataclass(frozen=True)
+class StoredArticleImage:
+    article_id: str
+    image_path: str
+    image_order: int
 
 
 @dataclass(frozen=True)
@@ -184,6 +193,11 @@ def record_parse_run_result(
 ) -> None:
     connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
     try:
+        parse_run = _get_parse_run(database_url=database_url, parse_run_id=parse_run_id)
+        markdown_base_dir = None
+        if parse_run.markdown_path:
+            markdown_base_dir = Path(parse_run.markdown_path).resolve().parent
+
         fragment_ids_by_source_order: dict[int, str] = {}
         for fragment in parse_result.fragments:
             fragment_id = str(uuid.uuid4())
@@ -213,7 +227,7 @@ def record_parse_run_result(
                 ),
             )
 
-        matcher_name = _get_parse_run(database_url=database_url, parse_run_id=parse_run_id).continuation_matcher_name
+        matcher_name = parse_run.continuation_matcher_name
         for decision in parse_result.match_decisions:
             connection.execute(
                 """
@@ -242,6 +256,10 @@ def record_parse_run_result(
 
         for article in parse_result.articles:
             article_id = str(uuid.uuid4())
+            image_paths, cleaned_body_text = extract_local_image_paths_and_clean_text(
+                article.body_text,
+                base_dir=markdown_base_dir,
+            )
             connection.execute(
                 """
                 INSERT INTO final_articles (
@@ -265,9 +283,26 @@ def record_parse_run_result(
                     article.primary_source_order,
                     article.source_fragment_count,
                     article.title,
-                    article.body_text,
+                    cleaned_body_text,
                 ),
             )
+            for image_order, image_path in enumerate(image_paths, start=1):
+                connection.execute(
+                    """
+                    INSERT INTO article_images (
+                        article_image_id,
+                        article_id,
+                        image_path,
+                        image_order
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        str(uuid.uuid4()),
+                        article_id,
+                        image_path,
+                        image_order,
+                    ),
+                )
             for source_fragment in article.source_fragments:
                 connection.execute(
                     """
@@ -527,6 +562,35 @@ def get_final_article(
     if row is None:
         raise LookupError(f"Final article not found: {article_id}")
     return _final_article_from_row(row)
+
+
+def list_article_images(
+    *,
+    database_url: str,
+    article_id: str,
+) -> list[StoredArticleImage]:
+    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+    try:
+        rows = connection.execute(
+            """
+            SELECT article_id, image_path, image_order
+            FROM article_images
+            WHERE article_id = ?
+            ORDER BY image_order ASC
+            """,
+            (article_id,),
+        ).fetchall()
+    finally:
+        connection.close()
+
+    return [
+        StoredArticleImage(
+            article_id=row[0],
+            image_path=row[1],
+            image_order=row[2],
+        )
+        for row in rows
+    ]
 
 
 def create_article_enrichment_run(

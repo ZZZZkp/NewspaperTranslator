@@ -1,6 +1,8 @@
 from dataclasses import asdict, is_dataclass
 import json
+import mimetypes
 import os
+from pathlib import Path
 from typing import Mapping
 from urllib.parse import parse_qs
 from wsgiref.simple_server import make_server
@@ -40,6 +42,23 @@ def create_app(env: Mapping[str, str]):
             body = json.dumps(payload).encode("utf-8")
             headers = [
                 ("Content-Type", "application/json"),
+                ("Content-Length", str(len(body))),
+            ]
+            start_response("200 OK", headers)
+            return [body]
+
+        if path == "/api/local-image":
+            image_path = _query_value(query, "path")
+            if not image_path:
+                return _json_response(start_response, "400 Bad Request", {"status": "missing_path"})
+            file_path = Path(image_path)
+            if not file_path.is_absolute() or not file_path.exists() or not file_path.is_file():
+                return _json_response(start_response, "404 Not Found", {"status": "image_not_found"})
+
+            mime_type, _ = mimetypes.guess_type(str(file_path))
+            body = file_path.read_bytes()
+            headers = [
+                ("Content-Type", mime_type or "application/octet-stream"),
                 ("Content-Length", str(len(body))),
             ]
             start_response("200 OK", headers)

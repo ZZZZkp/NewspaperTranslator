@@ -674,6 +674,101 @@ class SchedulerRunStoreTests(unittest.TestCase):
         self.assertEqual(latest_enrichment.summary_status, "succeeded")
         self.assertEqual(latest_enrichment.tagging_status, "succeeded")
 
+    def test_enrich_document_articles_continues_after_one_article_failure(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(enrich_document_articles)
+        self.assertIsNotNone(list_latest_document_articles)
+        self.assertIsNotNone(get_latest_article_enrichment)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            self._persist_multi_article_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )
+
+            latest_articles = list_latest_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "did not succeed"):
+                enrich_document_articles(
+                    database_url=database_url,
+                    document_key=document_key,
+                    translator=_SelectiveFailingTranslator(
+                        failing_titles={"First article title"},
+                    ),
+                    summarizer_tagger=_FakeSummarizerTagger(),
+                    provider_name="gemini",
+                    model_name="gemini-2.5-flash",
+                    prompt_version="article-enrichment-v1",
+                )
+
+            second_article_enrichment = get_latest_article_enrichment(
+                database_url=database_url,
+                article_id=latest_articles[1].article_id,
+            )
+
+        self.assertEqual(second_article_enrichment.status, "succeeded")
+
+    def test_process_document_continues_enriching_later_articles_before_marking_document_retryable(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(process_document)
+        self.assertIsNotNone(get_latest_article_enrichment)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+
+            def persist_parse_result(*, document_key: str) -> None:
+                self._persist_multi_article_document_articles(
+                    database_url=database_url,
+                    document_key=document_key,
+                )
+
+            stored_run = process_document(
+                database_url=database_url,
+                document_key=document_key,
+                locked_by="worker-1",
+                parse_persist_document=persist_parse_result,
+                translator=_SelectiveFailingTranslator(
+                    failing_titles={"First article title"},
+                ),
+                summarizer_tagger=_FakeSummarizerTagger(),
+                provider_name="gemini",
+                model_name="gemini-2.5-flash",
+                prompt_version="article-enrichment-v1",
+                step_retry_limit=0,
+                lock_timeout_seconds=600,
+            )
+            article_ids = [
+                article.article_id
+                for article in list_latest_document_articles(
+                    database_url=database_url,
+                    document_key=document_key,
+                )
+            ]
+            second_article_enrichment = get_latest_article_enrichment(
+                database_url=database_url,
+                article_id=article_ids[1],
+            )
+
+        self.assertEqual(stored_run.status, "failed_retryable")
+        self.assertEqual(stored_run.current_step, "enrich")
+        self.assertEqual(second_article_enrichment.status, "succeeded")
+
     def test_process_document_can_use_real_document_level_enrichment_wiring(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
         self.assertIsNotNone(process_document)
@@ -1250,6 +1345,34 @@ class SchedulerRunStoreTests(unittest.TestCase):
             status="succeeded",
         )
 
+    def _persist_multi_article_document_articles(
+        self,
+        *,
+        database_url: str,
+        document_key: str,
+    ) -> None:
+        parse_run = create_parse_run(
+            database_url=database_url,
+            document_key=document_key,
+            parser_name="mineru",
+            parser_version="vlm",
+            publication_date="2026-04-20",
+            continuation_matcher_name="gemini",
+            continuation_matcher_version="2.5-flash",
+        )
+        record_parse_run_result(
+            database_url=database_url,
+            parse_run_id=parse_run.parse_run_id,
+            parse_result=self._build_multi_article_parse_result(),
+            document_key=document_key,
+            publication_date="2026-04-20",
+        )
+        finalize_parse_run(
+            database_url=database_url,
+            parse_run_id=parse_run.parse_run_id,
+            status="succeeded",
+        )
+
     def _set_document_processing_status(
         self,
         *,
@@ -1369,12 +1492,76 @@ class SchedulerRunStoreTests(unittest.TestCase):
             ],
         )
 
+    def _build_multi_article_parse_result(self) -> ParseResult:
+        return ParseResult(
+            fragments=[
+                ArticleFragment(
+                    title="First article title",
+                    body_text="First article body.",
+                    source_order=1,
+                    continued_to_page="",
+                    continued_from_page="",
+                ),
+                ArticleFragment(
+                    title="Second article title",
+                    body_text="Second article body.",
+                    source_order=2,
+                    continued_to_page="",
+                    continued_from_page="",
+                ),
+            ],
+            match_decisions=[],
+            articles=[
+                ParsedArticle(
+                    article_order=1,
+                    primary_source_order=1,
+                    source_fragment_count=1,
+                    title="First article title",
+                    body_text="First article body.",
+                    source_fragments=[
+                        ArticleSource(
+                            source_order=1,
+                            fragment_role="single",
+                            sequence_index=1,
+                        )
+                    ],
+                ),
+                ParsedArticle(
+                    article_order=2,
+                    primary_source_order=2,
+                    source_fragment_count=1,
+                    title="Second article title",
+                    body_text="Second article body.",
+                    source_fragments=[
+                        ArticleSource(
+                            source_order=2,
+                            fragment_role="single",
+                            sequence_index=1,
+                        )
+                    ],
+                ),
+            ],
+        )
+
 
 class _FakeTranslator:
     def __call__(self, article):
         return ArticleTranslationResult(
             translated_title_zh="大型石油公司远赴他处避开中东动荡",
             translated_body_zh="多家能源企业正加速在非洲和南美寻找新机会。",
+        )
+
+
+class _SelectiveFailingTranslator:
+    def __init__(self, *, failing_titles: set[str]) -> None:
+        self._failing_titles = failing_titles
+
+    def __call__(self, article):
+        if article.title_en in self._failing_titles:
+            raise RuntimeError("translation timeout")
+        return ArticleTranslationResult(
+            translated_title_zh=f"{article.title_en} 中文",
+            translated_body_zh=f"{article.body_text_en} 中文",
         )
 
 

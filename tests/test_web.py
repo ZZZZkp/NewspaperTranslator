@@ -649,6 +649,7 @@ class WebHealthEndpointTests(unittest.TestCase):
         self.assertEqual(status, "200 OK")
         self.assertEqual(payload["overview"]["imported_document_count"], 2)
         self.assertEqual(payload["overview"]["article_count"], 1)
+        self.assertEqual(payload["overview"]["pending_article_count"], 1)
         self.assertEqual(payload["overview"]["processing_document_count"], 1)
         self.assertEqual(payload["overview"]["pending_exception_count"], 1)
 

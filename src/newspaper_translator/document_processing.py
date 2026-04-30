@@ -791,6 +791,7 @@ def enrich_document_articles(
         raise LookupError(f"No latest document articles found for: {document_key}")
 
     runs = []
+    failed_runs = []
     for article in articles:
         run = enrich_article(
             database_url=database_url,
@@ -803,9 +804,15 @@ def enrich_document_articles(
         )
         runs.append(run)
         if run.status != "succeeded":
-            raise RuntimeError(
-                f"Article enrichment did not succeed for {article.article_id}: {run.status}"
-            )
+            failed_runs.append((article.article_id, run.status))
+
+    if failed_runs:
+        failure_details = ", ".join(
+            f"{article_id}: {status}" for article_id, status in failed_runs
+        )
+        raise RuntimeError(
+            f"Article enrichment did not succeed for {failure_details}"
+        )
     return runs
 
 

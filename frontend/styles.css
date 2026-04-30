@@ -308,6 +308,21 @@ body {
   gap: 14px;
 }
 
+.detail-image-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.detail-image {
+  width: 100%;
+  display: block;
+  border-radius: 18px;
+  background: var(--surface-strong);
+  border: 1px solid rgba(221, 209, 189, 0.8);
+  object-fit: cover;
+}
+
 .detail-block,
 .detail-pane {
   padding: 18px;

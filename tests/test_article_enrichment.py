@@ -46,6 +46,68 @@ except ImportError:
 
 
 class ArticleEnrichmentTests(unittest.TestCase):
+    def test_translator_receives_article_body_without_local_image_links(self) -> None:
+        self.assertIsNotNone(enrich_article)
+        self.assertIsNotNone(run_pending_migrations)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                original_filename="wsj-2026-04-20.pdf",
+            )
+
+            parse_run = create_parse_run(
+                database_url=database_url,
+                document_key=document_key,
+                parser_name="mineru",
+                parser_version="vlm",
+                publication_date="2026-04-20",
+                continuation_matcher_name="gemini",
+                continuation_matcher_version="2.5-flash",
+            )
+            record_parse_run_result(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                parse_result=self._build_parse_result(
+                    title="Big Oil Explores Farther Afield To Dodge Middle East Turmoil",
+                    body_suffix=(
+                        "The oil companies want to maximize their production.\n"
+                        "![](/tmp/mineru-output/images/oil-map.jpg)\n"
+                        "/tmp/mineru-output/images/oil-chart.png"
+                    ),
+                ),
+                document_key=document_key,
+                publication_date="2026-04-20",
+            )
+            finalize_parse_run(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                status="succeeded",
+            )
+            article = list_parse_run_final_articles(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+            )[0]
+            translator = _CapturingTranslator()
+
+            enrich_article(
+                database_url=database_url,
+                article_id=article.article_id,
+                translator=translator,
+                summarizer_tagger=_FakeSummarizerTagger(),
+                provider_name="gemini",
+                model_name="gemini-2.5-flash",
+                prompt_version="article-enrichment-v1",
+            )
+
+        self.assertIsNotNone(translator.article)
+        self.assertNotIn("oil-map.jpg", translator.article.body_text_en)
+        self.assertNotIn("oil-chart.png", translator.article.body_text_en)
+        self.assertIn("The oil companies want to maximize their production.", translator.article.body_text_en)
+
     def test_persists_a_succeeded_enrichment_run(self) -> None:
         self.assertIsNotNone(enrich_article)
         self.assertIsNotNone(run_pending_migrations)
@@ -344,6 +406,18 @@ class ArticleEnrichmentTests(unittest.TestCase):
 
 class _FakeTranslator:
     def __call__(self, article):
+        return ArticleTranslationResult(
+            translated_title_zh="大型石油公司远赴他处避开中东动荡",
+            translated_body_zh="多家能源企业正加速在非洲和南美寻找新机会。",
+        )
+
+
+class _CapturingTranslator:
+    def __init__(self) -> None:
+        self.article = None
+
+    def __call__(self, article):
+        self.article = article
         return ArticleTranslationResult(
             translated_title_zh="大型石油公司远赴他处避开中东动荡",
             translated_body_zh="多家能源企业正加速在非洲和南美寻找新机会。",

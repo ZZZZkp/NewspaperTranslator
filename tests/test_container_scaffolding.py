@@ -37,6 +37,29 @@ class ContainerScaffoldingTests(unittest.TestCase):
         self.assertIn('test: ["CMD", "python", "-m", "newspaper_translator.manage", "check"', compose_text)
         self.assertIn("condition: service_started", compose_text)
 
+    def test_compose_passes_model_and_proxy_settings_to_web_and_worker(self) -> None:
+        compose_path = PROJECT_ROOT / "docker-compose.yml"
+        self.assertTrue(compose_path.exists(), "docker-compose.yml should exist at the project root")
+
+        compose_text = compose_path.read_text()
+
+        self.assertIn("MINERU_API_TOKEN:", compose_text)
+        self.assertIn("MINERU_MODEL_VERSION:", compose_text)
+        self.assertIn("MINERU_LANGUAGE:", compose_text)
+        self.assertIn("GEMINI_TOKEN:", compose_text)
+        self.assertIn("HTTP_PROXY:", compose_text)
+        self.assertIn("HTTPS_PROXY:", compose_text)
+        self.assertIn("ALL_PROXY:", compose_text)
+
+    def test_compose_mounts_local_gmail_config_and_secrets_into_web_and_worker(self) -> None:
+        compose_path = PROJECT_ROOT / "docker-compose.yml"
+        self.assertTrue(compose_path.exists(), "docker-compose.yml should exist at the project root")
+
+        compose_text = compose_path.read_text()
+
+        self.assertIn("./config:/app/config:ro", compose_text)
+        self.assertIn("./secrets:/app/secrets:ro", compose_text)
+
     def test_project_includes_an_env_example_for_container_runtime(self) -> None:
         env_example_path = PROJECT_ROOT / ".env.example"
         self.assertTrue(env_example_path.exists(), ".env.example should exist at the project root")
@@ -49,6 +72,10 @@ class ContainerScaffoldingTests(unittest.TestCase):
         self.assertIn("GMAIL_CONFIG_PATH=", env_text)
         self.assertIn("FRONTEND_PORT=", env_text)
         self.assertIn("WEB_PORT=", env_text)
+        self.assertIn("GEMINI_TOKEN=", env_text)
+        self.assertIn("HTTP_PROXY=", env_text)
+        self.assertIn("HTTPS_PROXY=", env_text)
+        self.assertIn("ALL_PROXY=", env_text)
 
     def test_compose_avoids_default_host_port_conflicts_for_db_and_allows_configurable_web_ports(self) -> None:
         compose_path = PROJECT_ROOT / "docker-compose.yml"

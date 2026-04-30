@@ -24,6 +24,7 @@ const detailMeta = document.querySelector("#detail-meta");
 const detailTags = document.querySelector("#detail-tags");
 const detailProcessing = document.querySelector("#detail-processing");
 const detailOpenDocumentButton = document.querySelector("#detail-open-document-button");
+const detailImageGallery = document.querySelector("#detail-image-gallery");
 const detailSingleTitle = document.querySelector("#detail-single-title");
 const detailSingleBody = document.querySelector("#detail-single-body");
 const detailZhBody = document.querySelector("#detail-zh-body");
@@ -112,6 +113,7 @@ function renderSummary(overview) {
   const items = [
     ["今日导入文档", overview.imported_document_count],
     ["今日文章数", overview.article_count],
+    ["待翻译文章", overview.pending_article_count],
     ["处理中", overview.processing_document_count],
     ["待处理异常", overview.pending_exception_count],
   ];
@@ -353,6 +355,24 @@ function renderDetailMode(mode) {
   detailSingleBody.textContent = currentDetail.body_text_zh || currentDetail.body_text_en;
 }
 
+function renderDetailImages(images) {
+  detailImageGallery.replaceChildren();
+  if (!images?.length) {
+    detailImageGallery.classList.add("hidden");
+    return;
+  }
+
+  images.forEach((imagePath, index) => {
+    const image = document.createElement("img");
+    image.className = "detail-image";
+    image.src = `/api/local-image?path=${encodeURIComponent(imagePath)}`;
+    image.alt = `${currentDetail?.title_zh || currentDetail?.title_en || "article"} image ${index + 1}`;
+    image.loading = "lazy";
+    detailImageGallery.appendChild(image);
+  });
+  detailImageGallery.classList.remove("hidden");
+}
+
 function showArticleDetail(detail) {
   currentDetail = detail;
   showDashboardSections();
@@ -374,6 +394,7 @@ function showArticleDetail(detail) {
     badge.textContent = `${key}: ${value}`;
     detailProcessing.appendChild(badge);
   });
+  renderDetailImages(detail.images || []);
   detailZhBody.textContent = detail.body_text_zh || "当前没有中文正文。";
   detailEnBody.textContent = detail.body_text_en;
   renderDetailMode("zh");

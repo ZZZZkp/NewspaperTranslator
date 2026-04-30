@@ -34,7 +34,9 @@ try:
         record_import_run_item,
     )
     from newspaper_translator.document_processing import (
+        create_article_processing_run,
         create_document_processing_run,
+        request_manual_article_retry,
         request_manual_document_retry,
     )
     from newspaper_translator.web import create_app
@@ -42,6 +44,7 @@ except ImportError:
     create_article_enrichment_run = None
     create_app = None
     create_parse_run = None
+    create_article_processing_run = None
     create_document_processing_run = None
     create_import_run = None
     get_article_detail_view = None
@@ -56,6 +59,7 @@ except ImportError:
     record_import_run_retry_summary = None
     record_import_run_item = None
     record_parse_run_result = None
+    request_manual_article_retry = None
     request_manual_document_retry = None
     run_pending_migrations = None
 
@@ -375,6 +379,80 @@ class WebHealthEndpointTests(unittest.TestCase):
         self.assertEqual(one_payload["run"]["status"], "manual_retry_requested")
         self.assertEqual(status_retry, "200 OK")
         self.assertEqual(retry_payload["run"]["document_key"], document_key)
+        self.assertEqual(retry_payload["run"]["status"], "manual_retry_requested")
+
+    def test_api_article_processing_endpoints_return_current_state_and_support_retry(self) -> None:
+        self.assertIsNotNone(create_article_processing_run)
+        self.assertIsNotNone(request_manual_article_retry)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-1:attachment-1:hash-1",
+            )
+            article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=document_key,
+                publication_date="2026-04-22",
+                title="Chipmakers prepare for a new subsidy dispute",
+                body_suffix="Subsidy pressure is spreading across Asia and Europe.",
+                translated_title_zh="芯片制造商准备应对新的补贴争端",
+                summary_zh="多国芯片企业正重新评估补贴竞争和供应链布局。",
+                translated_body_zh="随着补贴争夺升级，芯片制造商开始重新配置产能与投资方向。",
+                tags=["Semiconductors", "Policy", "Trade"],
+            )
+            article_key = self._get_article_key(
+                database_path=database_path,
+                article_id=article_id,
+            )
+            create_article_processing_run(
+                database_url=database_url,
+                article_id=article_id,
+            )
+            request_manual_article_retry(
+                database_url=database_url,
+                article_key=article_key,
+            )
+
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status_list, _, body_list = _perform_wsgi_request(
+                app,
+                path="/api/article-processing",
+            )
+            status_one, _, body_one = _perform_wsgi_request(
+                app,
+                path=f"/api/article-processing/{article_key}",
+            )
+            status_retry, _, body_retry = _perform_wsgi_request(
+                app,
+                method="POST",
+                path=f"/api/article-processing/{article_key}/retry",
+            )
+
+        list_payload = json.loads(body_list.decode("utf-8"))
+        one_payload = json.loads(body_one.decode("utf-8"))
+        retry_payload = json.loads(body_retry.decode("utf-8"))
+
+        self.assertEqual(status_list, "200 OK")
+        self.assertEqual([item["article_key"] for item in list_payload["runs"]], [article_key])
+        self.assertEqual(list_payload["runs"][0]["status"], "manual_retry_requested")
+        self.assertEqual(status_one, "200 OK")
+        self.assertEqual(one_payload["run"]["article_key"], article_key)
+        self.assertEqual(one_payload["run"]["status"], "manual_retry_requested")
+        self.assertEqual(one_payload["run"]["title_en"], "Chipmakers prepare for a new subsidy dispute")
+        self.assertEqual(status_retry, "200 OK")
+        self.assertEqual(retry_payload["run"]["article_key"], article_key)
         self.assertEqual(retry_payload["run"]["status"], "manual_retry_requested")
 
     def test_api_document_processing_detail_endpoint_includes_visible_articles(self) -> None:
@@ -1175,6 +1253,28 @@ class WebHealthEndpointTests(unittest.TestCase):
             connection.commit()
         finally:
             connection.close()
+
+    def _get_article_key(
+        self,
+        *,
+        database_path: pathlib.Path,
+        article_id: str,
+    ) -> str:
+        import sqlite3
+
+        connection = sqlite3.connect(database_path)
+        try:
+            row = connection.execute(
+                """
+                SELECT article_key
+                FROM final_articles
+                WHERE article_id = ?
+                """,
+                (article_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        return row[0]
 
     def _build_parse_result(self, *, title: str, body_suffix: str):
         from newspaper_translator.pdf import (

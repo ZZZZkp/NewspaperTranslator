@@ -9,7 +9,10 @@ from newspaper_translator.article_store import (
     list_latest_document_articles,
 )
 from newspaper_translator.database import sqlite_path_from_database_url
-from newspaper_translator.document_processing import get_document_processing_run
+from newspaper_translator.document_processing import (
+    get_article_processing_run,
+    get_document_processing_run,
+)
 
 
 @dataclass(frozen=True)
@@ -97,6 +100,31 @@ class DocumentProcessingDetailView:
     latest_error_summary: str
     visible_article_count: int
     visible_articles: list[DocumentVisibleArticleView]
+
+
+@dataclass(frozen=True)
+class ArticleProcessingDetailView:
+    article_processing_run_id: str
+    article_key: str
+    article_id: str
+    document_key: str
+    source_name: str
+    original_filename: str
+    publication_date: str
+    title_en: str
+    source_page_numbers: list[int]
+    status: str
+    current_step: str
+    automatic_failure_count: int
+    last_error_message: str | None
+    last_success_input_hash: str | None
+    last_attempt_started_at: str | None
+    last_attempt_finished_at: str | None
+    locked_by: str | None
+    lock_expires_at: str | None
+    created_at: str
+    updated_at: str
+    latest_error_summary: str
 
 
 def get_overview_view(*, database_url: str) -> OverviewView:
@@ -378,6 +406,64 @@ def get_document_processing_detail_view(
         latest_error_summary=latest_error_summary,
         visible_article_count=len(visible_articles),
         visible_articles=visible_articles,
+    )
+
+
+def get_article_processing_detail_view(
+    *,
+    database_url: str,
+    article_key: str,
+) -> ArticleProcessingDetailView:
+    run = get_article_processing_run(
+        database_url=database_url,
+        article_key=article_key,
+    )
+    article = get_final_article(
+        database_url=database_url,
+        article_id=run.article_id,
+    )
+    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+    try:
+        document_row = connection.execute(
+            """
+            SELECT source_name, original_filename
+            FROM documents
+            WHERE document_key = ?
+            """,
+            (article.document_key,),
+        ).fetchone()
+    finally:
+        connection.close()
+
+    if document_row is None:
+        raise LookupError(f"Document not found for article processing: {article.document_key}")
+
+    latest_error_summary = "当前没有错误。"
+    if run.last_error_message:
+        latest_error_summary = f"{run.current_step}: {run.last_error_message}"
+
+    return ArticleProcessingDetailView(
+        article_processing_run_id=run.article_processing_run_id,
+        article_key=run.article_key,
+        article_id=run.article_id,
+        document_key=article.document_key,
+        source_name=document_row[0],
+        original_filename=document_row[1],
+        publication_date=article.publication_date,
+        title_en=article.title_en,
+        source_page_numbers=article.source_page_numbers,
+        status=run.status,
+        current_step=run.current_step,
+        automatic_failure_count=run.automatic_failure_count,
+        last_error_message=run.last_error_message,
+        last_success_input_hash=run.last_success_input_hash,
+        last_attempt_started_at=run.last_attempt_started_at,
+        last_attempt_finished_at=run.last_attempt_finished_at,
+        locked_by=run.locked_by,
+        lock_expires_at=run.lock_expires_at,
+        created_at=run.created_at,
+        updated_at=run.updated_at,
+        latest_error_summary=latest_error_summary,
     )
 
 

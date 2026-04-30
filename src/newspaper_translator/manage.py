@@ -17,7 +17,9 @@ from newspaper_translator.article_store import (
 )
 from newspaper_translator.config import GeminiSettings, MineruSettings
 from newspaper_translator.document_processing import (
+    get_article_processing_run,
     get_document_processing_run,
+    request_manual_article_retry,
     request_manual_document_retry,
     run_scheduler_tick,
 )
@@ -135,6 +137,14 @@ def run_cli(argv: list[str]) -> tuple[int, str]:
     document_processing_status_parser = subparsers.add_parser("document-processing-status")
     document_processing_status_parser.add_argument("--database-url")
     document_processing_status_parser.add_argument("--document-key", required=True)
+
+    retry_article_parser = subparsers.add_parser("retry-article")
+    retry_article_parser.add_argument("--database-url")
+    retry_article_parser.add_argument("--article-key", required=True)
+
+    article_processing_status_parser = subparsers.add_parser("article-processing-status")
+    article_processing_status_parser.add_argument("--database-url")
+    article_processing_status_parser.add_argument("--article-key", required=True)
 
     args = parser.parse_args(argv)
 
@@ -323,6 +333,20 @@ def run_cli(argv: list[str]) -> tuple[int, str]:
         run = get_document_processing_run(
             database_url=_resolve_setting(args.database_url, "DATABASE_URL"),
             document_key=args.document_key,
+        )
+        return 0, json.dumps(_to_jsonable(run), sort_keys=True)
+
+    if args.command == "retry-article":
+        run = request_manual_article_retry(
+            database_url=_resolve_setting(args.database_url, "DATABASE_URL"),
+            article_key=args.article_key,
+        )
+        return 0, json.dumps(_to_jsonable(run), sort_keys=True)
+
+    if args.command == "article-processing-status":
+        run = get_article_processing_run(
+            database_url=_resolve_setting(args.database_url, "DATABASE_URL"),
+            article_key=args.article_key,
         )
         return 0, json.dumps(_to_jsonable(run), sort_keys=True)
 

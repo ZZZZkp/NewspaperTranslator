@@ -56,6 +56,7 @@ try:
         create_article_processing_run,
         create_document_processing_run,
         create_scheduler_run,
+        enqueue_document_article_processing_runs,
         enrich_document_articles,
         fail_article_processing_run,
         fail_document_processing_run,
@@ -66,7 +67,9 @@ try:
         get_scheduler_run,
         list_eligible_article_processing_runs,
         list_eligible_document_processing_runs,
+        process_article_processing_run,
         process_document,
+        recover_stale_article_runs,
         recover_stale_document_runs,
         request_manual_article_retry,
         run_scheduler_tick,
@@ -79,6 +82,7 @@ except ImportError:
     create_article_processing_run = None
     create_document_processing_run = None
     create_scheduler_run = None
+    enqueue_document_article_processing_runs = None
     enrich_document_articles = None
     fail_article_processing_run = None
     fail_document_processing_run = None
@@ -89,7 +93,9 @@ except ImportError:
     get_scheduler_run = None
     list_eligible_article_processing_runs = None
     list_eligible_document_processing_runs = None
+    process_article_processing_run = None
     process_document = None
+    recover_stale_article_runs = None
     recover_stale_document_runs = None
     request_manual_article_retry = None
     run_scheduler_tick = None
@@ -1083,6 +1089,336 @@ class SchedulerRunStoreTests(unittest.TestCase):
         self.assertEqual(article_processing_run.article_id, article.article_id)
         self.assertEqual(article_processing_run.status, "pending")
 
+    def test_process_article_processing_run_succeeds_and_records_last_success_input_hash(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_article_processing_run)
+        self.assertIsNotNone(process_article_processing_run)
+        self.assertIsNotNone(get_article_processing_run)
+        self.assertIsNotNone(list_latest_document_articles)
+        self.assertIsNotNone(ArticleTranslationResult)
+        self.assertIsNotNone(ArticleSummaryTagResult)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            self._persist_parsed_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            article = list_latest_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )[0]
+            create_article_processing_run(
+                database_url=database_url,
+                article_id=article.article_id,
+            )
+
+            stored_run = process_article_processing_run(
+                database_url=database_url,
+                article_key=article.article_key,
+                locked_by="article-worker-1",
+                translator=lambda _article: ArticleTranslationResult(
+                    translated_title_zh="标题",
+                    translated_body_zh="正文",
+                ),
+                summarizer_tagger=lambda **kwargs: ArticleSummaryTagResult(
+                    summary_zh="摘要",
+                    tags=["能源", "市场", "国际"],
+                ),
+                provider_name="gemini",
+                model_name="gemini-2.5-flash",
+                prompt_version="article-enrichment-v2",
+                lock_timeout_seconds=600,
+            )
+            connection = sqlite3.connect(database_path)
+            try:
+                latest_enrichment_row = connection.execute(
+                    """
+                    SELECT status, input_hash
+                    FROM article_enrichment_runs
+                    WHERE article_id = ?
+                    ORDER BY started_at DESC, rowid DESC
+                    LIMIT 1
+                    """,
+                    (article.article_id,),
+                ).fetchone()
+            finally:
+                connection.close()
+
+        self.assertEqual(stored_run.status, "succeeded")
+        self.assertEqual(stored_run.current_step, "completed")
+        self.assertIsNotNone(stored_run.last_success_input_hash)
+        self.assertEqual(stored_run.last_success_input_hash, latest_enrichment_row[1])
+        self.assertEqual(latest_enrichment_row[0], "succeeded")
+
+    def test_enqueue_document_article_processing_runs_skips_unchanged_articles_and_requeues_changed_articles(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(enqueue_document_article_processing_runs)
+        self.assertIsNotNone(process_article_processing_run)
+        self.assertIsNotNone(get_article_processing_run)
+        self.assertIsNotNone(list_latest_document_articles)
+        self.assertIsNotNone(ArticleTranslationResult)
+        self.assertIsNotNone(ArticleSummaryTagResult)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            self._persist_multi_article_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            first_articles = list_latest_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            initial_runs = enqueue_document_article_processing_runs(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            for article in first_articles:
+                process_article_processing_run(
+                    database_url=database_url,
+                    article_key=article.article_key,
+                    locked_by=f"article-worker:{article.article_order}",
+                    translator=lambda _article: ArticleTranslationResult(
+                        translated_title_zh="标题",
+                        translated_body_zh="正文",
+                    ),
+                    summarizer_tagger=lambda **kwargs: ArticleSummaryTagResult(
+                        summary_zh="摘要",
+                        tags=["能源", "市场", "国际"],
+                    ),
+                    provider_name="gemini",
+                    model_name="gemini-2.5-flash",
+                    prompt_version="article-enrichment-v2",
+                    lock_timeout_seconds=600,
+                )
+
+            self._persist_custom_parse_result(
+                database_url=database_url,
+                document_key=document_key,
+                parse_result=self._build_multi_article_parse_result(
+                    first_body_text="First article body changed.",
+                    second_body_text="Second article body.",
+                ),
+            )
+            latest_articles = list_latest_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            refreshed_runs = enqueue_document_article_processing_runs(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            runs_by_key = {
+                article.article_key: get_article_processing_run(
+                    database_url=database_url,
+                    article_key=article.article_key,
+                )
+                for article in latest_articles
+            }
+            changed_article = next(article for article in latest_articles if article.title_en == "First article title")
+            unchanged_article = next(article for article in latest_articles if article.title_en == "Second article title")
+
+        self.assertEqual([run.status for run in initial_runs], ["pending", "pending"])
+        self.assertEqual(
+            [run.article_key for run in refreshed_runs],
+            [changed_article.article_key],
+        )
+        self.assertEqual(runs_by_key[changed_article.article_key].article_id, changed_article.article_id)
+        self.assertEqual(runs_by_key[changed_article.article_key].status, "pending")
+        self.assertIsNotNone(runs_by_key[changed_article.article_key].last_success_input_hash)
+        self.assertEqual(runs_by_key[unchanged_article.article_key].article_id, unchanged_article.article_id)
+        self.assertEqual(runs_by_key[unchanged_article.article_key].status, "succeeded")
+        self.assertIsNotNone(runs_by_key[unchanged_article.article_key].last_success_input_hash)
+
+    def test_process_article_processing_run_respects_manual_retry_override_even_when_input_is_unchanged(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_article_processing_run)
+        self.assertIsNotNone(process_article_processing_run)
+        self.assertIsNotNone(request_manual_article_retry)
+        self.assertIsNotNone(list_latest_document_articles)
+        self.assertIsNotNone(ArticleTranslationResult)
+        self.assertIsNotNone(ArticleSummaryTagResult)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            self._persist_parsed_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            article = list_latest_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )[0]
+            create_article_processing_run(
+                database_url=database_url,
+                article_id=article.article_id,
+            )
+            translator_calls: list[str] = []
+
+            def translator(_article):
+                translator_calls.append("called")
+                return ArticleTranslationResult(
+                    translated_title_zh="标题",
+                    translated_body_zh="正文",
+                )
+
+            summarizer = lambda **kwargs: ArticleSummaryTagResult(
+                summary_zh="摘要",
+                tags=["能源", "市场", "国际"],
+            )
+
+            first_run = process_article_processing_run(
+                database_url=database_url,
+                article_key=article.article_key,
+                locked_by="article-worker-1",
+                translator=translator,
+                summarizer_tagger=summarizer,
+                provider_name="gemini",
+                model_name="gemini-2.5-flash",
+                prompt_version="article-enrichment-v2",
+                lock_timeout_seconds=600,
+            )
+            request_manual_article_retry(
+                database_url=database_url,
+                article_key=article.article_key,
+            )
+            second_run = process_article_processing_run(
+                database_url=database_url,
+                article_key=article.article_key,
+                locked_by="article-worker-2",
+                translator=translator,
+                summarizer_tagger=summarizer,
+                provider_name="gemini",
+                model_name="gemini-2.5-flash",
+                prompt_version="article-enrichment-v2",
+                lock_timeout_seconds=600,
+            )
+
+        self.assertEqual(first_run.status, "succeeded")
+        self.assertEqual(second_run.status, "succeeded")
+        self.assertEqual(len(translator_calls), 2)
+
+    def test_recover_stale_article_runs_marks_stale_running_articles_retryable_or_terminal(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_article_processing_run)
+        self.assertIsNotNone(claim_article_processing_run)
+        self.assertIsNotNone(recover_stale_article_runs)
+        self.assertIsNotNone(get_article_processing_run)
+        self.assertIsNotNone(list_latest_document_articles)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            retryable_document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            terminal_document_key = self._insert_document(
+                database_path,
+                "message-2:attachment-1:hash-2",
+            )
+            fresh_document_key = self._insert_document(
+                database_path,
+                "message-3:attachment-1:hash-3",
+            )
+
+            for document_key in [
+                retryable_document_key,
+                terminal_document_key,
+                fresh_document_key,
+            ]:
+                self._persist_parsed_document_articles(
+                    database_url=database_url,
+                    document_key=document_key,
+                )
+                article = list_latest_document_articles(
+                    database_url=database_url,
+                    document_key=document_key,
+                )[0]
+                create_article_processing_run(
+                    database_url=database_url,
+                    article_id=article.article_id,
+                )
+                claim_article_processing_run(
+                    database_url=database_url,
+                    article_key=article.article_key,
+                    locked_by="article-worker-1",
+                    lock_timeout_seconds=600,
+                )
+
+            retryable_article = list_latest_document_articles(
+                database_url=database_url,
+                document_key=retryable_document_key,
+            )[0]
+            terminal_article = list_latest_document_articles(
+                database_url=database_url,
+                document_key=terminal_document_key,
+            )[0]
+            fresh_article = list_latest_document_articles(
+                database_url=database_url,
+                document_key=fresh_document_key,
+            )[0]
+            self._set_article_processing_attempt_age_seconds(
+                database_path=database_path,
+                article_key=retryable_article.article_key,
+                age_seconds=7200,
+            )
+            self._set_article_processing_attempt_age_seconds(
+                database_path=database_path,
+                article_key=terminal_article.article_key,
+                age_seconds=7200,
+                automatic_failure_count=1,
+            )
+
+            recovered_runs = recover_stale_article_runs(
+                database_url=database_url,
+                running_timeout_seconds=3600,
+            )
+            retryable_run = get_article_processing_run(
+                database_url=database_url,
+                article_key=retryable_article.article_key,
+            )
+            terminal_run = get_article_processing_run(
+                database_url=database_url,
+                article_key=terminal_article.article_key,
+            )
+            fresh_run = get_article_processing_run(
+                database_url=database_url,
+                article_key=fresh_article.article_key,
+            )
+
+        self.assertEqual(
+            {run.article_key for run in recovered_runs},
+            {retryable_article.article_key, terminal_article.article_key},
+        )
+        self.assertEqual(retryable_run.status, "failed_retryable")
+        self.assertEqual(retryable_run.automatic_failure_count, 1)
+        self.assertEqual(retryable_run.current_step, "enrich")
+        self.assertIn("stale running timeout", retryable_run.last_error_message)
+        self.assertEqual(terminal_run.status, "failed_terminal")
+        self.assertEqual(terminal_run.automatic_failure_count, 2)
+        self.assertEqual(fresh_run.status, "running")
+
     def test_recover_stale_document_runs_marks_stale_running_documents_retryable_or_terminal(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
         self.assertIsNotNone(create_document_processing_run)
@@ -1197,6 +1533,115 @@ class SchedulerRunStoreTests(unittest.TestCase):
             )
 
         self.assertEqual(log_events, [f"document.recovered_stale:{document_key}"])
+
+    def test_scheduler_tick_processes_pending_article_runs(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_article_processing_run)
+        self.assertIsNotNone(run_scheduler_tick)
+        self.assertIsNotNone(get_article_processing_run)
+        self.assertIsNotNone(list_latest_document_articles)
+        self.assertIsNotNone(succeed_article_processing_run)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            self._persist_parsed_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            article = list_latest_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )[0]
+            create_article_processing_run(
+                database_url=database_url,
+                article_id=article.article_id,
+            )
+            processed_article_keys: list[str] = []
+
+            def process_one_article(*, article_key: str, locked_by: str):
+                processed_article_keys.append(article_key)
+                return succeed_article_processing_run(
+                    database_url=database_url,
+                    article_key=article_key,
+                    last_success_input_hash=f"hash:{locked_by}",
+                )
+
+            scheduler_run = run_scheduler_tick(
+                database_url=database_url,
+                trigger_type="interval",
+                import_documents=lambda: SimpleNamespace(run_id="import-run-1"),
+                process_one_document=lambda **kwargs: SimpleNamespace(status="succeeded"),
+                document_limit=10,
+                process_one_article=process_one_article,
+                article_limit=10,
+            )
+            stored_run = get_article_processing_run(
+                database_url=database_url,
+                article_key=article.article_key,
+            )
+
+        self.assertEqual(scheduler_run.status, "succeeded")
+        self.assertEqual(processed_article_keys, [article.article_key])
+        self.assertEqual(stored_run.status, "succeeded")
+        self.assertEqual(stored_run.last_success_input_hash, "hash:article-worker-1")
+
+    def test_scheduler_tick_marks_run_partial_when_article_processing_fails(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_document_processing_run)
+        self.assertIsNotNone(create_article_processing_run)
+        self.assertIsNotNone(run_scheduler_tick)
+        self.assertIsNotNone(get_scheduler_run)
+        self.assertIsNotNone(list_latest_document_articles)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            create_document_processing_run(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            self._persist_parsed_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            article = list_latest_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )[0]
+            create_article_processing_run(
+                database_url=database_url,
+                article_id=article.article_id,
+            )
+
+            scheduler_run = run_scheduler_tick(
+                database_url=database_url,
+                trigger_type="interval",
+                import_documents=lambda: SimpleNamespace(run_id="import-run-1"),
+                process_one_document=lambda **kwargs: SimpleNamespace(status="succeeded"),
+                document_limit=10,
+                process_one_article=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("article gemini timeout")),
+                article_limit=10,
+            )
+            stored_scheduler_run = get_scheduler_run(
+                database_url=database_url,
+                scheduler_run_id=scheduler_run.scheduler_run_id,
+            )
+
+        self.assertEqual(stored_scheduler_run.status, "partial")
+        self.assertEqual(stored_scheduler_run.completed_document_count, 1)
+        self.assertEqual(stored_scheduler_run.failed_document_count, 1)
+        self.assertIn("article gemini timeout", stored_scheduler_run.error_message)
 
     def test_scheduler_tick_can_continue_retryable_documents_when_gmail_import_finds_nothing_new(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
@@ -1524,6 +1969,35 @@ class SchedulerRunStoreTests(unittest.TestCase):
             status="succeeded",
         )
 
+    def _persist_custom_parse_result(
+        self,
+        *,
+        database_url: str,
+        document_key: str,
+        parse_result: ParseResult,
+    ) -> None:
+        parse_run = create_parse_run(
+            database_url=database_url,
+            document_key=document_key,
+            parser_name="mineru",
+            parser_version="vlm",
+            publication_date="2026-04-20",
+            continuation_matcher_name="gemini",
+            continuation_matcher_version="2.5-flash",
+        )
+        record_parse_run_result(
+            database_url=database_url,
+            parse_run_id=parse_run.parse_run_id,
+            parse_result=parse_result,
+            document_key=document_key,
+            publication_date="2026-04-20",
+        )
+        finalize_parse_run(
+            database_url=database_url,
+            parse_run_id=parse_run.parse_run_id,
+            status="succeeded",
+        )
+
     def _set_document_processing_status(
         self,
         *,
@@ -1579,6 +2053,45 @@ class SchedulerRunStoreTests(unittest.TestCase):
                     WHERE document_key = ?
                     """,
                     (age_seconds, automatic_failure_count, document_key),
+                )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def _set_article_processing_attempt_age_seconds(
+        self,
+        *,
+        database_path: pathlib.Path,
+        article_key: str,
+        age_seconds: int,
+        automatic_failure_count: int | None = None,
+    ) -> None:
+        connection = sqlite3.connect(database_path)
+        try:
+            if automatic_failure_count is None:
+                connection.execute(
+                    """
+                    UPDATE article_processing_runs
+                    SET
+                        last_attempt_started_at = datetime(CURRENT_TIMESTAMP, '-' || ? || ' seconds'),
+                        lock_expires_at = datetime(CURRENT_TIMESTAMP, '-1 seconds'),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE article_key = ?
+                    """,
+                    (age_seconds, article_key),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE article_processing_runs
+                    SET
+                        last_attempt_started_at = datetime(CURRENT_TIMESTAMP, '-' || ? || ' seconds'),
+                        lock_expires_at = datetime(CURRENT_TIMESTAMP, '-1 seconds'),
+                        automatic_failure_count = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE article_key = ?
+                    """,
+                    (age_seconds, automatic_failure_count, article_key),
                 )
             connection.commit()
         finally:
@@ -1643,19 +2156,24 @@ class SchedulerRunStoreTests(unittest.TestCase):
             ],
         )
 
-    def _build_multi_article_parse_result(self) -> ParseResult:
+    def _build_multi_article_parse_result(
+        self,
+        *,
+        first_body_text: str = "First article body.",
+        second_body_text: str = "Second article body.",
+    ) -> ParseResult:
         return ParseResult(
             fragments=[
                 ArticleFragment(
                     title="First article title",
-                    body_text="First article body.",
+                    body_text=first_body_text,
                     source_order=1,
                     continued_to_page="",
                     continued_from_page="",
                 ),
                 ArticleFragment(
                     title="Second article title",
-                    body_text="Second article body.",
+                    body_text=second_body_text,
                     source_order=2,
                     continued_to_page="",
                     continued_from_page="",
@@ -1668,7 +2186,7 @@ class SchedulerRunStoreTests(unittest.TestCase):
                     primary_source_order=1,
                     source_fragment_count=1,
                     title="First article title",
-                    body_text="First article body.",
+                    body_text=first_body_text,
                     source_fragments=[
                         ArticleSource(
                             source_order=1,
@@ -1682,7 +2200,7 @@ class SchedulerRunStoreTests(unittest.TestCase):
                     primary_source_order=2,
                     source_fragment_count=1,
                     title="Second article title",
-                    body_text="Second article body.",
+                    body_text=second_body_text,
                     source_fragments=[
                         ArticleSource(
                             source_order=2,

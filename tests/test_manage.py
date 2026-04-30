@@ -600,6 +600,78 @@ class ManagementCommandTests(unittest.TestCase):
         self.assertIn('"status": "failed_retryable"', output)
         self.assertIn('"last_error_message": "mineru timeout"', output)
 
+    def test_retry_article_command_requests_manual_retry_for_article(self) -> None:
+        self.assertIsNotNone(
+            run_cli,
+            "run_cli should be importable from newspaper_translator.manage",
+        )
+
+        with patch("newspaper_translator.manage.request_manual_article_retry") as request_manual_article_retry:
+            request_manual_article_retry.return_value = SimpleNamespace(
+                article_processing_run_id="article-processing-run-1",
+                article_key="article-key-1",
+                article_id="article-1",
+                status="manual_retry_requested",
+                current_step="completed",
+                automatic_failure_count=1,
+                last_error_message="summary timeout",
+            )
+
+            exit_code, output = run_cli(
+                [
+                    "retry-article",
+                    "--database-url",
+                    "sqlite:////tmp/newspaper-translator.db",
+                    "--article-key",
+                    "article-key-1",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(request_manual_article_retry.call_count, 1)
+        self.assertEqual(
+            request_manual_article_retry.call_args.kwargs["article_key"],
+            "article-key-1",
+        )
+        self.assertIn('"status": "manual_retry_requested"', output)
+        self.assertIn('"article_key": "article-key-1"', output)
+
+    def test_article_processing_status_command_returns_current_article_state(self) -> None:
+        self.assertIsNotNone(
+            run_cli,
+            "run_cli should be importable from newspaper_translator.manage",
+        )
+
+        with patch("newspaper_translator.manage.get_article_processing_run") as get_article_processing_run:
+            get_article_processing_run.return_value = SimpleNamespace(
+                article_processing_run_id="article-processing-run-1",
+                article_key="article-key-1",
+                article_id="article-1",
+                status="failed_retryable",
+                current_step="enrich",
+                automatic_failure_count=1,
+                last_error_message="summary timeout",
+            )
+
+            exit_code, output = run_cli(
+                [
+                    "article-processing-status",
+                    "--database-url",
+                    "sqlite:////tmp/newspaper-translator.db",
+                    "--article-key",
+                    "article-key-1",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(get_article_processing_run.call_count, 1)
+        self.assertEqual(
+            get_article_processing_run.call_args.kwargs["article_key"],
+            "article-key-1",
+        )
+        self.assertIn('"status": "failed_retryable"', output)
+        self.assertIn('"last_error_message": "summary timeout"', output)
+
     def test_check_command_can_read_runtime_settings_from_environment(self) -> None:
         self.assertIsNotNone(
             run_cli,

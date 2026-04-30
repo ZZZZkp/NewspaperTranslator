@@ -320,6 +320,112 @@ class ArticleEnrichmentTests(unittest.TestCase):
         self.assertEqual(run.status, "failed")
         self.assertEqual(run.error_message, "translation timeout")
 
+    def test_reuses_existing_successful_enrichment_for_unchanged_article_input(self) -> None:
+        self.assertIsNotNone(enrich_article)
+        self.assertIsNotNone(run_pending_migrations)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                original_filename="wsj-2026-04-20.pdf",
+            )
+
+            first_parse_run = create_parse_run(
+                database_url=database_url,
+                document_key=document_key,
+                parser_name="mineru",
+                parser_version="vlm",
+                publication_date="2026-04-20",
+                continuation_matcher_name="gemini",
+                continuation_matcher_version="2.5-flash",
+            )
+            parse_result = self._build_parse_result(
+                title="Big Oil Explores Farther Afield To Dodge Middle East Turmoil",
+                body_suffix="The oil companies want to maximize their production.",
+            )
+            record_parse_run_result(
+                database_url=database_url,
+                parse_run_id=first_parse_run.parse_run_id,
+                parse_result=parse_result,
+                document_key=document_key,
+                publication_date="2026-04-20",
+            )
+            finalize_parse_run(
+                database_url=database_url,
+                parse_run_id=first_parse_run.parse_run_id,
+                status="succeeded",
+            )
+            first_article = list_parse_run_final_articles(
+                database_url=database_url,
+                parse_run_id=first_parse_run.parse_run_id,
+            )[0]
+            translator = _CountingTranslator()
+            summarizer = _CountingSummarizerTagger()
+
+            first_run = enrich_article(
+                database_url=database_url,
+                article_id=first_article.article_id,
+                translator=translator,
+                summarizer_tagger=summarizer,
+                provider_name="gemini",
+                model_name="gemini-2.5-flash",
+                prompt_version="article-enrichment-v1",
+            )
+
+            second_parse_run = create_parse_run(
+                database_url=database_url,
+                document_key=document_key,
+                parser_name="mineru",
+                parser_version="vlm",
+                publication_date="2026-04-20",
+                continuation_matcher_name="gemini",
+                continuation_matcher_version="2.5-flash",
+            )
+            record_parse_run_result(
+                database_url=database_url,
+                parse_run_id=second_parse_run.parse_run_id,
+                parse_result=parse_result,
+                document_key=document_key,
+                publication_date="2026-04-20",
+            )
+            finalize_parse_run(
+                database_url=database_url,
+                parse_run_id=second_parse_run.parse_run_id,
+                status="succeeded",
+            )
+            second_article = list_parse_run_final_articles(
+                database_url=database_url,
+                parse_run_id=second_parse_run.parse_run_id,
+            )[0]
+
+            second_run = enrich_article(
+                database_url=database_url,
+                article_id=second_article.article_id,
+                translator=translator,
+                summarizer_tagger=summarizer,
+                provider_name="gemini",
+                model_name="gemini-2.5-flash",
+                prompt_version="article-enrichment-v1",
+            )
+
+            connection = sqlite3.connect(database_path)
+            try:
+                enrichment_run_count = connection.execute(
+                    "SELECT COUNT(*) FROM article_enrichment_runs"
+                ).fetchone()[0]
+            finally:
+                connection.close()
+
+        self.assertEqual(first_article.article_key, second_article.article_key)
+        self.assertNotEqual(first_article.article_id, second_article.article_id)
+        self.assertEqual(second_run.enrichment_run_id, first_run.enrichment_run_id)
+        self.assertEqual(enrichment_run_count, 1)
+        self.assertEqual(translator.call_count, 1)
+        self.assertEqual(summarizer.call_count, 1)
+
     def _insert_document(self, database_path: pathlib.Path, *, original_filename: str) -> str:
         document_key = "message-1:attachment-1:hash-1"
         connection = sqlite3.connect(database_path)
@@ -412,6 +518,18 @@ class _FakeTranslator:
         )
 
 
+class _CountingTranslator:
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    def __call__(self, article):
+        self.call_count += 1
+        return ArticleTranslationResult(
+            translated_title_zh="大型石油公司远赴他处避开中东动荡",
+            translated_body_zh="多家能源企业正加速在非洲和南美寻找新机会。",
+        )
+
+
 class _CapturingTranslator:
     def __init__(self) -> None:
         self.article = None
@@ -434,6 +552,18 @@ class _FailingTranslator:
 
 class _FakeSummarizerTagger:
     def __call__(self, *, article, translated_title_zh: str, translated_body_zh: str):
+        return ArticleSummaryTagResult(
+            summary_zh="油企为避开中东风险，正把勘探重点转向非洲和南美。",
+            tags=["能源", "石油", "中东局势"],
+        )
+
+
+class _CountingSummarizerTagger:
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    def __call__(self, *, article, translated_title_zh: str, translated_body_zh: str):
+        self.call_count += 1
         return ArticleSummaryTagResult(
             summary_zh="油企为避开中东风险，正把勘探重点转向非洲和南美。",
             tags=["能源", "石油", "中东局势"],

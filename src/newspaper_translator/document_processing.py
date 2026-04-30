@@ -4,9 +4,9 @@ from pathlib import Path
 import sqlite3
 import uuid
 
-from newspaper_translator.article_enrichment import enrich_article
+from newspaper_translator.article_enrichment import build_article_input_hash, enrich_article
 from newspaper_translator.article_pipeline import persist_document_articles
-from newspaper_translator.article_store import list_latest_document_articles
+from newspaper_translator.article_store import get_final_article, list_latest_document_articles
 from newspaper_translator.logging_utils import format_log_event
 from newspaper_translator.database import sqlite_path_from_database_url
 
@@ -233,33 +233,98 @@ def create_article_processing_run(
     article_id: str,
 ) -> ArticleProcessingRun:
     article_processing_run_id = str(uuid.uuid4())
-    article_key = _get_article_key_for_article_id(
+    article = get_final_article(
         database_url=database_url,
         article_id=article_id,
     )
+    article_key = article.article_key
+    input_hash = build_article_input_hash(article)
     connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
     try:
-        connection.execute(
+        existing_row = connection.execute(
             """
-            INSERT INTO article_processing_runs (
-                article_processing_run_id,
-                article_key,
-                article_id,
-                status,
-                current_step
-            ) VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(article_key) DO UPDATE SET
-                article_id = excluded.article_id,
-                updated_at = CURRENT_TIMESTAMP
+            SELECT status, last_success_input_hash
+            FROM article_processing_runs
+            WHERE article_key = ?
             """,
-            (
-                article_processing_run_id,
-                article_key,
-                article_id,
-                "pending",
-                "enrich",
-            ),
-        )
+            (article_key,),
+        ).fetchone()
+        if existing_row is None:
+            connection.execute(
+                """
+                INSERT INTO article_processing_runs (
+                    article_processing_run_id,
+                    article_key,
+                    article_id,
+                    status,
+                    current_step
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    article_processing_run_id,
+                    article_key,
+                    article_id,
+                    "pending",
+                    "enrich",
+                ),
+            )
+        else:
+            current_status = existing_row[0]
+            last_success_input_hash = existing_row[1]
+            if current_status == "manual_retry_requested":
+                connection.execute(
+                    """
+                    UPDATE article_processing_runs
+                    SET
+                        article_id = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE article_key = ?
+                    """,
+                    (
+                        article_id,
+                        article_key,
+                    ),
+                )
+            elif last_success_input_hash == input_hash:
+                connection.execute(
+                    """
+                    UPDATE article_processing_runs
+                    SET
+                        article_id = ?,
+                        status = 'succeeded',
+                        current_step = 'completed',
+                        locked_by = NULL,
+                        lock_expires_at = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE article_key = ?
+                    """,
+                    (
+                        article_id,
+                        article_key,
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE article_processing_runs
+                    SET
+                        article_id = ?,
+                        status = 'pending',
+                        current_step = 'enrich',
+                        automatic_failure_count = 0,
+                        last_error_message = NULL,
+                        last_attempt_started_at = NULL,
+                        last_attempt_finished_at = NULL,
+                        locked_by = NULL,
+                        lock_expires_at = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE article_key = ?
+                    """,
+                    (
+                        article_id,
+                        article_key,
+                    ),
+                )
         connection.commit()
     finally:
         connection.close()
@@ -610,6 +675,69 @@ def list_document_processing_runs(
     return [_row_to_document_processing_run(row) for row in rows]
 
 
+def list_article_processing_runs(
+    *,
+    database_url: str,
+    limit: int,
+    status: str | None = None,
+) -> list[ArticleProcessingRun]:
+    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+    try:
+        if status:
+            rows = connection.execute(
+                """
+                SELECT
+                    article_processing_run_id,
+                    article_key,
+                    article_id,
+                    status,
+                    current_step,
+                    automatic_failure_count,
+                    last_error_message,
+                    last_success_input_hash,
+                    last_attempt_started_at,
+                    last_attempt_finished_at,
+                    locked_by,
+                    lock_expires_at,
+                    created_at,
+                    updated_at
+                FROM article_processing_runs
+                WHERE status = ?
+                ORDER BY updated_at DESC, created_at DESC, rowid DESC
+                LIMIT ?
+                """,
+                (status, limit),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """
+                SELECT
+                    article_processing_run_id,
+                    article_key,
+                    article_id,
+                    status,
+                    current_step,
+                    automatic_failure_count,
+                    last_error_message,
+                    last_success_input_hash,
+                    last_attempt_started_at,
+                    last_attempt_finished_at,
+                    locked_by,
+                    lock_expires_at,
+                    created_at,
+                    updated_at
+                FROM article_processing_runs
+                ORDER BY updated_at DESC, created_at DESC, rowid DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+    finally:
+        connection.close()
+
+    return [_row_to_article_processing_run(row) for row in rows]
+
+
 def fail_document_processing_run(
     *,
     database_url: str,
@@ -859,6 +987,67 @@ def succeed_article_processing_run(
     return get_article_processing_run(
         database_url=database_url,
         article_key=article_key,
+    )
+
+
+def process_article_processing_run(
+    *,
+    database_url: str,
+    article_key: str,
+    locked_by: str,
+    translator,
+    summarizer_tagger,
+    provider_name: str,
+    model_name: str,
+    prompt_version: str,
+    lock_timeout_seconds: int = 600,
+    automatic_failure_limit: int = 2,
+) -> ArticleProcessingRun:
+    existing_run = None
+    try:
+        existing_run = get_article_processing_run(
+            database_url=database_url,
+            article_key=article_key,
+        )
+    except LookupError:
+        existing_run = None
+    claimed_run = claim_article_processing_run(
+        database_url=database_url,
+        article_key=article_key,
+        locked_by=locked_by,
+        lock_timeout_seconds=lock_timeout_seconds,
+    )
+    if claimed_run is None:
+        return get_article_processing_run(
+            database_url=database_url,
+            article_key=article_key,
+        )
+
+    enrichment_run = enrich_article(
+        database_url=database_url,
+        article_id=claimed_run.article_id,
+        translator=translator,
+        summarizer_tagger=summarizer_tagger,
+        provider_name=provider_name,
+        model_name=model_name,
+        prompt_version=prompt_version,
+        force_reenrich=bool(
+            existing_run is not None and existing_run.status == "manual_retry_requested"
+        ),
+    )
+    if enrichment_run.status == "succeeded":
+        return succeed_article_processing_run(
+            database_url=database_url,
+            article_key=article_key,
+            last_success_input_hash=enrichment_run.input_hash,
+        )
+
+    return fail_article_processing_run(
+        database_url=database_url,
+        article_key=article_key,
+        failed_step="enrich",
+        error_message=enrichment_run.error_message or f"article enrichment ended with status {enrichment_run.status}",
+        automatic_failure_limit=automatic_failure_limit,
     )
 
 
@@ -1125,12 +1314,17 @@ def enqueue_document_article_processing_runs(
     if not articles:
         raise LookupError(f"No latest document articles found for: {document_key}")
 
-    return [
+    processing_runs = [
         create_article_processing_run(
             database_url=database_url,
             article_id=article.article_id,
         )
         for article in articles
+    ]
+    return [
+        run
+        for run in processing_runs
+        if run.status in ("pending", "failed_retryable", "manual_retry_requested")
     ]
 
 
@@ -1232,6 +1426,45 @@ def recover_stale_document_runs(
     return recovered_runs
 
 
+def recover_stale_article_runs(
+    *,
+    database_url: str,
+    running_timeout_seconds: int,
+    automatic_failure_limit: int = 2,
+) -> list[ArticleProcessingRun]:
+    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+    try:
+        rows = connection.execute(
+            """
+            SELECT article_key
+            FROM article_processing_runs
+            WHERE status = 'running'
+              AND last_attempt_started_at IS NOT NULL
+              AND last_attempt_started_at <= datetime(
+                    CURRENT_TIMESTAMP,
+                    '-' || ? || ' seconds'
+              )
+            ORDER BY last_attempt_started_at ASC, rowid ASC
+            """,
+            (running_timeout_seconds,),
+        ).fetchall()
+    finally:
+        connection.close()
+
+    recovered_runs = []
+    for row in rows:
+        recovered_runs.append(
+            fail_article_processing_run(
+                database_url=database_url,
+                article_key=row[0],
+                failed_step="enrich",
+                error_message="stale running timeout during automatic recovery",
+                automatic_failure_limit=automatic_failure_limit,
+            )
+        )
+    return recovered_runs
+
+
 def run_scheduler_tick(
     *,
     database_url: str,
@@ -1239,7 +1472,10 @@ def run_scheduler_tick(
     import_documents,
     process_one_document,
     document_limit: int,
+    process_one_article=None,
+    article_limit: int = 0,
     locked_by_prefix: str = "scheduler-worker",
+    article_locked_by_prefix: str = "article-worker",
     log_event=None,
 ) -> SchedulerRun:
     scheduler_run = create_scheduler_run(
@@ -1276,6 +1512,14 @@ def run_scheduler_tick(
         database_url=database_url,
         limit=document_limit,
     )
+    eligible_article_runs = (
+        list_eligible_article_processing_runs(
+            database_url=database_url,
+            limit=article_limit,
+        )
+        if process_one_article is not None and article_limit > 0
+        else []
+    )
 
     completed_document_count = 0
     failed_document_count = 0
@@ -1304,6 +1548,29 @@ def run_scheduler_tick(
             else:
                 failed_document_count += 1
 
+    max_article_workers = max(1, len(eligible_article_runs))
+    with ThreadPoolExecutor(max_workers=max_article_workers) as executor:
+        future_to_article_key = {
+            executor.submit(
+                process_one_article,
+                article_key=eligible_run.article_key,
+                locked_by=f"{article_locked_by_prefix}-{index}",
+            ): eligible_run.article_key
+            for index, eligible_run in enumerate(eligible_article_runs, start=1)
+        }
+        for future in as_completed(future_to_article_key):
+            try:
+                result = future.result()
+            except Exception as exc:  # noqa: BLE001
+                failed_document_count += 1
+                error_messages.append(str(exc))
+                continue
+
+            if getattr(result, "status", "") == "succeeded":
+                completed_document_count += 1
+            else:
+                failed_document_count += 1
+
     final_status = "succeeded"
     if failed_document_count and completed_document_count:
         final_status = "partial"
@@ -1315,7 +1582,7 @@ def run_scheduler_tick(
         scheduler_run_id=scheduler_run.scheduler_run_id,
         status=final_status,
         import_run_id=import_run_id,
-        selected_document_count=len(eligible_runs),
+        selected_document_count=len(eligible_runs) + len(eligible_article_runs),
         completed_document_count=completed_document_count,
         failed_document_count=failed_document_count,
         error_message="; ".join(error_messages) if error_messages else None,

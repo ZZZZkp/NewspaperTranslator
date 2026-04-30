@@ -9,6 +9,7 @@ from wsgiref.simple_server import make_server
 
 from newspaper_translator.api.queries import (
     get_article_detail_view,
+    get_article_processing_detail_view,
     get_document_processing_detail_view,
     get_filter_options_view,
     get_overview_view,
@@ -16,7 +17,9 @@ from newspaper_translator.api.queries import (
     list_focus_tag_article_card_views,
 )
 from newspaper_translator.document_processing import (
+    list_article_processing_runs,
     list_document_processing_runs,
+    request_manual_article_retry,
     request_manual_document_retry,
 )
 from newspaper_translator.import_audit import (
@@ -157,6 +160,18 @@ def create_app(env: Mapping[str, str]):
             }
             return _json_response(start_response, "200 OK", payload)
 
+        if path in {"/article-processing", "/api/article-processing"}:
+            payload = {
+                "runs": _to_jsonable(
+                    list_article_processing_runs(
+                        database_url=database_url,
+                        limit=_query_int(query, "limit", default=50),
+                        status=_query_value(query, "status"),
+                    )
+                )
+            }
+            return _json_response(start_response, "200 OK", payload)
+
         if path.startswith("/document-processing/") or path.startswith("/api/document-processing/"):
             prefix = "/api/document-processing/" if path.startswith("/api/document-processing/") else "/document-processing/"
             suffix = path.removeprefix(prefix)
@@ -177,6 +192,31 @@ def create_app(env: Mapping[str, str]):
                     get_document_processing_detail_view(
                         database_url=database_url,
                         document_key=suffix,
+                    )
+                )
+            }
+            return _json_response(start_response, "200 OK", payload)
+
+        if path.startswith("/article-processing/") or path.startswith("/api/article-processing/"):
+            prefix = "/api/article-processing/" if path.startswith("/api/article-processing/") else "/article-processing/"
+            suffix = path.removeprefix(prefix)
+            if suffix.endswith("/retry"):
+                article_key = suffix.removesuffix("/retry").rstrip("/")
+                payload = {
+                    "run": _to_jsonable(
+                        request_manual_article_retry(
+                            database_url=database_url,
+                            article_key=article_key,
+                        )
+                    )
+                }
+                return _json_response(start_response, "200 OK", payload)
+
+            payload = {
+                "run": _to_jsonable(
+                    get_article_processing_detail_view(
+                        database_url=database_url,
+                        article_key=suffix,
                     )
                 )
             }

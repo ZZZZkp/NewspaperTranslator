@@ -12,6 +12,7 @@ if str(SRC_ROOT) not in sys.path:
 
 try:
     from newspaper_translator.api.queries import (
+        get_article_processing_detail_view,
         get_document_processing_detail_view,
         get_article_detail_view,
         get_filter_options_view,
@@ -37,6 +38,7 @@ try:
         ParsedArticle,
     )
 except ImportError:
+    get_article_processing_detail_view = None
     get_document_processing_detail_view = None
     get_article_detail_view = None
     get_filter_options_view = None
@@ -707,6 +709,56 @@ class ArticleQueryTests(unittest.TestCase):
             "enrich: gemini quota exhausted",
         )
 
+    def test_article_processing_detail_view_includes_article_context_and_failure_summary(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(get_article_processing_detail_view)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                original_filename="wsj-2026-04-22.pdf",
+                source_name="Wall Street Journal",
+                document_key="message-2:attachment-1:hash-2",
+            )
+            article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=document_key,
+                publication_date="2026-04-22",
+                title="Chipmakers prepare for a new subsidy dispute",
+                body_suffix="Subsidy pressure is spreading across Asia and Europe.",
+                translated_title_zh="芯片制造商准备应对新的补贴争端",
+                summary_zh="多国芯片企业正重新评估补贴竞争和供应链布局。",
+                translated_body_zh="随着补贴争夺升级，芯片制造商开始重新配置产能与投资方向。",
+                tags=["Semiconductors", "Policy", "Trade"],
+            )
+            article_key = self._get_article_key(database_path=database_path, article_id=article_id)
+            self._insert_article_processing_run(
+                database_path=database_path,
+                article_key=article_key,
+                article_id=article_id,
+                status="failed_retryable",
+                current_step="enrich",
+                last_error_message="summary timeout",
+            )
+
+            detail = get_article_processing_detail_view(
+                database_url=database_url,
+                article_key=article_key,
+            )
+
+        self.assertEqual(detail.article_key, article_key)
+        self.assertEqual(detail.article_id, article_id)
+        self.assertEqual(detail.document_key, document_key)
+        self.assertEqual(detail.source_name, "Wall Street Journal")
+        self.assertEqual(detail.original_filename, "wsj-2026-04-22.pdf")
+        self.assertEqual(detail.title_en, "Chipmakers prepare for a new subsidy dispute")
+        self.assertEqual(detail.status, "failed_retryable")
+        self.assertEqual(detail.source_page_numbers, [0])
+        self.assertEqual(detail.latest_error_summary, "enrich: summary timeout")
+
     def test_article_cards_support_source_filter(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
         self.assertIsNotNone(list_article_card_views)
@@ -1023,6 +1075,62 @@ class ArticleQueryTests(unittest.TestCase):
             connection.commit()
         finally:
             connection.close()
+
+    def _insert_article_processing_run(
+        self,
+        *,
+        database_path: pathlib.Path,
+        article_key: str,
+        article_id: str,
+        status: str,
+        current_step: str,
+        last_error_message: str | None = None,
+    ) -> None:
+        connection = sqlite3.connect(database_path)
+        try:
+            connection.execute(
+                """
+                INSERT INTO article_processing_runs (
+                    article_processing_run_id,
+                    article_key,
+                    article_id,
+                    status,
+                    current_step,
+                    last_error_message
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"article-processing-{article_key}",
+                    article_key,
+                    article_id,
+                    status,
+                    current_step,
+                    last_error_message,
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def _get_article_key(
+        self,
+        *,
+        database_path: pathlib.Path,
+        article_id: str,
+    ) -> str:
+        connection = sqlite3.connect(database_path)
+        try:
+            row = connection.execute(
+                """
+                SELECT article_key
+                FROM final_articles
+                WHERE article_id = ?
+                """,
+                (article_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        return row[0]
 
     def _build_parse_result(self, *, title: str, body_suffix: str) -> ParseResult:
         return ParseResult(

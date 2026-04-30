@@ -4,6 +4,7 @@ import json
 from newspaper_translator.article_store import (
     ArticleEnrichmentRun,
     create_article_enrichment_run,
+    find_successful_article_enrichment_by_article_key_and_input_hash,
     finalize_article_enrichment_run,
     get_article_enrichment_run,
     get_final_article,
@@ -20,11 +21,21 @@ def enrich_article(
     provider_name: str,
     model_name: str,
     prompt_version: str,
+    force_reenrich: bool = False,
 ) -> ArticleEnrichmentRun:
     article = get_final_article(
         database_url=database_url,
         article_id=article_id,
     )
+    input_hash = build_article_input_hash(article)
+    if not force_reenrich:
+        reusable_run = find_successful_article_enrichment_by_article_key_and_input_hash(
+            database_url=database_url,
+            article_key=article.article_key,
+            input_hash=input_hash,
+        )
+        if reusable_run is not None:
+            return reusable_run
     enrichment_run = create_article_enrichment_run(
         database_url=database_url,
         article_id=article.article_id,
@@ -32,7 +43,7 @@ def enrich_article(
         provider_name=provider_name,
         model_name=model_name,
         prompt_version=prompt_version,
-        input_hash=_build_article_input_hash(article),
+        input_hash=input_hash,
     )
 
     try:
@@ -92,9 +103,9 @@ def enrich_article(
     )
 
 
-def _build_article_input_hash(article) -> str:
+def build_article_input_hash(article) -> str:
     payload = {
-        "article_id": article.article_id,
+        "article_key": article.article_key,
         "publication_date": article.publication_date,
         "title_en": article.title_en,
         "body_text_en": article.body_text_en,

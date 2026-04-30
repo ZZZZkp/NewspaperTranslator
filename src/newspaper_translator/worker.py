@@ -6,7 +6,9 @@ import time
 from newspaper_translator.config import AppSettings, GeminiSettings, MineruSettings
 from newspaper_translator.document_processing import (
     get_latest_scheduler_run,
+    process_article_processing_run,
     process_document,
+    recover_stale_article_runs,
     recover_stale_document_runs,
     run_scheduler_tick,
 )
@@ -59,9 +61,11 @@ def run_startup_maintenance(
     now: str,
     interval_seconds: int,
     recover_stale_document_runs,
+    recover_stale_article_runs=lambda: [],
     run_scheduler_tick,
 ) -> dict[str, object]:
-    recovered_runs = recover_stale_document_runs()
+    recovered_document_runs = recover_stale_document_runs()
+    recovered_article_runs = recover_stale_article_runs()
     catch_up_triggered = should_run_catch_up_tick(
         last_scheduler_run_started_at=last_scheduler_run_started_at,
         now=now,
@@ -74,7 +78,11 @@ def run_startup_maintenance(
     return {
         "recovered_document_keys": [
             getattr(run, "document_key", run)
-            for run in recovered_runs
+            for run in recovered_document_runs
+        ],
+        "recovered_article_keys": [
+            getattr(run, "article_key", run)
+            for run in recovered_article_runs
         ],
         "catch_up_triggered": catch_up_triggered,
         "scheduler_run_id": scheduler_run_id,
@@ -95,7 +103,13 @@ def build_run_scheduler_tick_from_env(env: dict[str, str]):
         "DOCUMENT_WORKER_CONCURRENCY",
         default=2,
     )
+    article_limit = _read_int_setting(
+        env,
+        "ARTICLE_WORKER_CONCURRENCY",
+        default=document_limit,
+    )
     process_one_document = build_process_one_document_from_env(env)
+    process_one_article = build_process_one_article_from_env(env)
 
     def import_documents():
         return import_from_gmail(
@@ -111,6 +125,8 @@ def build_run_scheduler_tick_from_env(env: dict[str, str]):
             import_documents=import_documents,
             process_one_document=process_one_document,
             document_limit=document_limit,
+            process_one_article=process_one_article,
+            article_limit=article_limit,
         )
         return scheduler_run.scheduler_run_id
 
@@ -184,6 +200,66 @@ def build_recover_stale_document_runs_from_env(env: dict[str, str]):
     return recover
 
 
+def build_process_one_article_from_env(env: dict[str, str]):
+    app_settings = AppSettings.from_env(env)
+    gemini_settings = GeminiSettings.from_env(env)
+    automatic_failure_limit = _read_int_setting(
+        env,
+        "STEP_RETRY_LIMIT",
+        default=2,
+    )
+    lock_timeout_seconds = _read_int_setting(
+        env,
+        "ARTICLE_LOCK_TIMEOUT_SECONDS",
+        default=600,
+    )
+    prompt_version = (
+        env.get("ARTICLE_ENRICHMENT_PROMPT_VERSION", "article-enrichment-v2").strip()
+        or "article-enrichment-v2"
+    )
+    translator = GeminiArticleTranslator(settings=gemini_settings)
+    summarizer_tagger = GeminiArticleSummarizerTagger(settings=gemini_settings)
+
+    def process_one_article_callback(*, article_key: str, locked_by: str):
+        return process_article_processing_run(
+            database_url=app_settings.database_url,
+            article_key=article_key,
+            locked_by=locked_by,
+            translator=translator,
+            summarizer_tagger=summarizer_tagger,
+            provider_name="gemini",
+            model_name=gemini_settings.model,
+            prompt_version=prompt_version,
+            lock_timeout_seconds=lock_timeout_seconds,
+            automatic_failure_limit=automatic_failure_limit,
+        )
+
+    return process_one_article_callback
+
+
+def build_recover_stale_article_runs_from_env(env: dict[str, str]):
+    app_settings = AppSettings.from_env(env)
+    running_timeout_seconds = _read_int_setting(
+        env,
+        "RUNNING_TIMEOUT_SECONDS",
+        default=14400,
+    )
+    automatic_failure_limit = _read_int_setting(
+        env,
+        "STEP_RETRY_LIMIT",
+        default=2,
+    )
+
+    def recover():
+        return recover_stale_article_runs(
+            database_url=app_settings.database_url,
+            running_timeout_seconds=running_timeout_seconds,
+            automatic_failure_limit=automatic_failure_limit,
+        )
+
+    return recover
+
+
 def run_worker_loop(
     *,
     env: dict[str, str],
@@ -193,6 +269,7 @@ def run_worker_loop(
     run_startup_maintenance_fn=run_startup_maintenance,
     get_last_scheduler_run_started_at_fn=get_last_scheduler_run_started_at,
     recover_stale_document_runs_fn=None,
+    recover_stale_article_runs_fn=None,
     run_scheduler_tick_fn=None,
 ) -> None:
     app_settings = AppSettings.from_env(env)
@@ -209,6 +286,7 @@ def run_worker_loop(
         default=60,
     )
     recover = recover_stale_document_runs_fn or build_recover_stale_document_runs_from_env(env)
+    recover_articles = recover_stale_article_runs_fn or build_recover_stale_article_runs_from_env(env)
     run_tick = run_scheduler_tick_fn or build_run_scheduler_tick_from_env(env)
 
     run_startup_maintenance_fn(
@@ -218,6 +296,7 @@ def run_worker_loop(
         now=now(),
         interval_seconds=scheduler_interval_seconds,
         recover_stale_document_runs=recover,
+        recover_stale_article_runs=recover_articles,
         run_scheduler_tick=run_tick,
     )
 

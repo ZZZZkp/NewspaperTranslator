@@ -860,6 +860,50 @@ def get_latest_article_enrichment(
     )
 
 
+def find_successful_article_enrichment_by_article_key_and_input_hash(
+    *,
+    database_url: str,
+    article_key: str,
+    input_hash: str,
+) -> ArticleEnrichmentRun | None:
+    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+    try:
+        row = connection.execute(
+            """
+            SELECT
+                r.enrichment_run_id,
+                r.article_id,
+                r.parse_run_id,
+                r.status,
+                r.provider_name,
+                r.model_name,
+                r.prompt_version,
+                r.input_hash,
+                r.started_at,
+                r.finished_at,
+                r.error_message
+            FROM article_enrichment_runs r
+            JOIN final_articles a
+                ON a.article_id = r.article_id
+            WHERE a.article_key = ?
+              AND r.input_hash = ?
+              AND r.status = 'succeeded'
+            ORDER BY r.finished_at DESC, r.rowid DESC
+            LIMIT 1
+            """,
+            (
+                article_key,
+                input_hash,
+            ),
+        ).fetchone()
+    finally:
+        connection.close()
+
+    if row is None:
+        return None
+    return _article_enrichment_run_from_row(row)
+
+
 def _get_parse_run(*, database_url: str, parse_run_id: str) -> ParseRun:
     connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
     try:
@@ -922,19 +966,7 @@ def _get_article_enrichment_run(
         connection.close()
     if row is None:
         raise LookupError(f"Article enrichment run not found: {enrichment_run_id}")
-    return ArticleEnrichmentRun(
-        enrichment_run_id=row[0],
-        article_id=row[1],
-        parse_run_id=row[2],
-        status=row[3],
-        provider_name=row[4],
-        model_name=row[5],
-        prompt_version=row[6],
-        input_hash=row[7],
-        started_at=row[8],
-        finished_at=row[9],
-        error_message=row[10],
-    )
+    return _article_enrichment_run_from_row(row)
 
 
 def _parse_run_from_row(row) -> ParseRun:
@@ -953,6 +985,22 @@ def _parse_run_from_row(row) -> ParseRun:
         started_at=row[11],
         finished_at=row[12],
         error_message=row[13],
+    )
+
+
+def _article_enrichment_run_from_row(row) -> ArticleEnrichmentRun:
+    return ArticleEnrichmentRun(
+        enrichment_run_id=row[0],
+        article_id=row[1],
+        parse_run_id=row[2],
+        status=row[3],
+        provider_name=row[4],
+        model_name=row[5],
+        prompt_version=row[6],
+        input_hash=row[7],
+        started_at=row[8],
+        finished_at=row[9],
+        error_message=row[10],
     )
 
 

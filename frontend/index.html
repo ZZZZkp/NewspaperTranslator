@@ -67,6 +67,14 @@
               <h2>处理筛选</h2>
               <p>按当前状态聚焦失败、重试或运行中的文档</p>
             </div>
+            <div id="workbench-tabs" class="button-row workbench-tabs">
+              <button id="workbench-tab-documents" class="nav-button active" data-route="documents" type="button">
+                文档处理
+              </button>
+              <button id="workbench-tab-articles" class="nav-button" data-route="articles-processing" type="button">
+                文章处理
+              </button>
+            </div>
             <div class="filter-form">
               <label>
                 <span>文档状态</span>
@@ -84,6 +92,38 @@
                 <button id="document-refresh-button" type="button">刷新列表</button>
               </div>
             </div>
+            <form id="article-processing-filter-form" class="filter-form hidden">
+              <label>
+                <span>文章状态</span>
+                <select id="article-processing-status-filter" name="article_processing_status">
+                  <option value="">全部状态</option>
+                  <option value="pending">pending</option>
+                  <option value="running">running</option>
+                  <option value="failed_retryable">failed_retryable</option>
+                  <option value="manual_retry_requested">manual_retry_requested</option>
+                  <option value="failed_terminal">failed_terminal</option>
+                  <option value="succeeded">succeeded</option>
+                </select>
+              </label>
+              <label>
+                <span>来源</span>
+                <select id="article-processing-source-filter" name="article_processing_source">
+                  <option value="">全部来源</option>
+                </select>
+              </label>
+              <label>
+                <span>开始日期</span>
+                <input id="article-processing-date-from-filter" name="article_processing_date_from" type="date" />
+              </label>
+              <label>
+                <span>结束日期</span>
+                <input id="article-processing-date-to-filter" name="article_processing_date_to" type="date" />
+              </label>
+              <div class="filter-actions">
+                <button type="submit">应用筛选</button>
+                <button type="button" id="article-processing-reset-filters" class="ghost-button">重置</button>
+              </div>
+            </form>
           </section>
 
           <section class="panel">
@@ -185,6 +225,58 @@
               <p id="document-processing-meta" class="meta-copy">等待加载文档处理记录...</p>
             </div>
             <div id="document-processing-cards" class="card-grid"></div>
+          </section>
+
+          <section id="article-processing-section" class="panel hidden">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Article Operator View</p>
+                <h2>文章处理列表</h2>
+              </div>
+              <p id="article-processing-meta" class="meta-copy">等待加载文章处理记录...</p>
+            </div>
+            <div id="article-processing-cards" class="card-grid"></div>
+          </section>
+
+          <section id="article-processing-detail-view" class="panel hidden">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Article Processing Detail</p>
+                <h2 id="article-processing-detail-title">文章处理详情</h2>
+              </div>
+              <div class="button-row">
+                <button id="article-processing-retry-button" type="button">请求重试</button>
+                <button id="article-processing-open-document-button" type="button">查看所属文档</button>
+                <button id="article-processing-open-article-button" type="button">查看文章</button>
+                <button id="article-processing-back-button" class="ghost-button" type="button">返回列表</button>
+              </div>
+            </div>
+            <div class="detail-layout">
+              <aside class="detail-sidebar">
+                <div class="detail-block">
+                  <h3>状态摘要</h3>
+                  <p id="article-processing-detail-meta">等待加载状态...</p>
+                </div>
+                <div class="detail-block">
+                  <h3>状态标签</h3>
+                  <div id="article-processing-detail-badges" class="badge-row"></div>
+                </div>
+                <div class="detail-block">
+                  <h3>错误摘要</h3>
+                  <p id="article-processing-detail-error-summary">等待加载错误摘要...</p>
+                </div>
+              </aside>
+              <div class="detail-main">
+                <div class="detail-block">
+                  <h3>文章身份</h3>
+                  <div id="article-processing-identity-fields" class="key-value-list"></div>
+                </div>
+                <div class="detail-block">
+                  <h3>运行字段</h3>
+                  <div id="article-processing-detail-fields" class="key-value-list"></div>
+                </div>
+              </div>
+            </div>
           </section>
 
           <section id="document-detail-view" class="panel hidden">

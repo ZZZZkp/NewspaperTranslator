@@ -14,10 +14,10 @@ from newspaper_translator.api.queries import (
     get_filter_options_view,
     get_overview_view,
     list_article_card_views,
+    list_article_processing_card_views,
     list_focus_tag_article_card_views,
 )
 from newspaper_translator.document_processing import (
-    list_article_processing_runs,
     list_document_processing_runs,
     request_manual_article_retry,
     request_manual_document_retry,
@@ -163,10 +163,13 @@ def create_app(env: Mapping[str, str]):
         if path in {"/article-processing", "/api/article-processing"}:
             payload = {
                 "runs": _to_jsonable(
-                    list_article_processing_runs(
+                    list_article_processing_card_views(
                         database_url=database_url,
                         limit=_query_int(query, "limit", default=50),
                         status=_query_value(query, "status"),
+                        source=_query_value(query, "source"),
+                        publication_date_from=_query_value(query, "publication_date_from"),
+                        publication_date_to=_query_value(query, "publication_date_to"),
                     )
                 )
             }

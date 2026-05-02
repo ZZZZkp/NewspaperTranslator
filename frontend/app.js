@@ -3,6 +3,9 @@ const dashboardNavButton = document.querySelector("#nav-dashboard");
 const documentsNavButton = document.querySelector("#nav-documents");
 const dashboardControlsSection = document.querySelector("#dashboard-controls-section");
 const documentControlsSection = document.querySelector("#document-controls-section");
+const workbenchTabs = document.querySelector("#workbench-tabs");
+const workbenchTabDocuments = document.querySelector("#workbench-tab-documents");
+const workbenchTabArticles = document.querySelector("#workbench-tab-articles");
 const summaryBar = document.querySelector("#summary-bar");
 const filterForm = document.querySelector("#filter-form");
 const sourceFilter = document.querySelector("#source-filter");
@@ -38,8 +41,28 @@ const detailComparePane = document.querySelector("#detail-compare-pane");
 const documentProcessingSection = document.querySelector("#document-processing-section");
 const documentStatusFilter = document.querySelector("#document-status-filter");
 const documentRefreshButton = document.querySelector("#document-refresh-button");
+const articleProcessingFilterForm = document.querySelector("#article-processing-filter-form");
+const articleProcessingStatusFilter = document.querySelector("#article-processing-status-filter");
+const articleProcessingSourceFilter = document.querySelector("#article-processing-source-filter");
+const articleProcessingDateFromFilter = document.querySelector("#article-processing-date-from-filter");
+const articleProcessingDateToFilter = document.querySelector("#article-processing-date-to-filter");
+const articleProcessingResetFiltersButton = document.querySelector("#article-processing-reset-filters");
 const documentProcessingMeta = document.querySelector("#document-processing-meta");
 const documentProcessingCards = document.querySelector("#document-processing-cards");
+const articleProcessingSection = document.querySelector("#article-processing-section");
+const articleProcessingMeta = document.querySelector("#article-processing-meta");
+const articleProcessingCards = document.querySelector("#article-processing-cards");
+const articleProcessingDetailView = document.querySelector("#article-processing-detail-view");
+const articleProcessingDetailTitle = document.querySelector("#article-processing-detail-title");
+const articleProcessingDetailMeta = document.querySelector("#article-processing-detail-meta");
+const articleProcessingDetailBadges = document.querySelector("#article-processing-detail-badges");
+const articleProcessingDetailErrorSummary = document.querySelector("#article-processing-detail-error-summary");
+const articleProcessingDetailFields = document.querySelector("#article-processing-detail-fields");
+const articleProcessingIdentityFields = document.querySelector("#article-processing-identity-fields");
+const articleProcessingRetryButton = document.querySelector("#article-processing-retry-button");
+const articleProcessingOpenDocumentButton = document.querySelector("#article-processing-open-document-button");
+const articleProcessingOpenArticleButton = document.querySelector("#article-processing-open-article-button");
+const articleProcessingBackButton = document.querySelector("#article-processing-back-button");
 const documentDetailView = document.querySelector("#document-detail-view");
 const documentDetailTitle = document.querySelector("#document-detail-title");
 const documentDetailMeta = document.querySelector("#document-detail-meta");
@@ -58,6 +81,7 @@ const documentCardTemplate = document.querySelector("#document-card-template");
 
 let currentDetail = null;
 let currentDocumentRun = null;
+let currentArticleProcessingRun = null;
 
 async function fetchJson(path, options = {}) {
   const response = await fetch(path, {
@@ -94,8 +118,22 @@ function showDashboardSections() {
   allArticlesSection.classList.remove("hidden");
   documentControlsSection.classList.add("hidden");
   documentProcessingSection.classList.add("hidden");
+  articleProcessingSection.classList.add("hidden");
+  articleProcessingDetailView.classList.add("hidden");
+  articleProcessingFilterForm.classList.add("hidden");
   documentDetailView.classList.add("hidden");
   setActiveNav("dashboard");
+}
+
+function setActiveWorkbenchTab(tabName) {
+  [workbenchTabDocuments, workbenchTabArticles].forEach((button) => {
+    button.classList.remove("active");
+  });
+  if (tabName === "articles") {
+    workbenchTabArticles.classList.add("active");
+    return;
+  }
+  workbenchTabDocuments.classList.add("active");
 }
 
 function showDocumentProcessingPage() {
@@ -105,6 +143,27 @@ function showDocumentProcessingPage() {
   articleDetailView.classList.add("hidden");
   documentControlsSection.classList.remove("hidden");
   documentProcessingSection.classList.remove("hidden");
+  articleProcessingSection.classList.add("hidden");
+  articleProcessingDetailView.classList.add("hidden");
+  articleProcessingFilterForm.classList.add("hidden");
+  documentRefreshButton.classList.remove("hidden");
+  setActiveWorkbenchTab("documents");
+  setActiveNav("documents");
+}
+
+function showArticleProcessingPage() {
+  dashboardControlsSection.classList.add("hidden");
+  focusTagSection.classList.add("hidden");
+  allArticlesSection.classList.add("hidden");
+  articleDetailView.classList.add("hidden");
+  documentDetailView.classList.add("hidden");
+  documentControlsSection.classList.remove("hidden");
+  documentProcessingSection.classList.add("hidden");
+  articleProcessingSection.classList.remove("hidden");
+  articleProcessingDetailView.classList.add("hidden");
+  articleProcessingFilterForm.classList.remove("hidden");
+  documentRefreshButton.classList.add("hidden");
+  setActiveWorkbenchTab("articles");
   setActiveNav("documents");
 }
 
@@ -270,6 +329,113 @@ function renderDocumentVisibleArticles(articles) {
   documentVisibleArticlesMeta.textContent = `当前可见文章 ${articles.length} 篇`;
 }
 
+function renderArticleProcessingList(runs) {
+  articleProcessingCards.replaceChildren();
+  if (!runs.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "当前没有文章处理记录。";
+    articleProcessingCards.appendChild(empty);
+    return;
+  }
+
+  runs.forEach((run) => {
+    const node = documentCardTemplate.content.firstElementChild.cloneNode(true);
+    node.querySelector(".document-card-key").textContent = run.title_en || run.article_key;
+    node.querySelector(".document-card-status").textContent = run.status;
+    node.querySelector(".document-card-step").textContent = run.current_step;
+    node.querySelector(".document-card-updated-at").textContent =
+      run.publication_date || "未知日期";
+    node.querySelector(".document-card-summary").textContent =
+      run.latest_error_summary || "当前没有错误消息。";
+
+    const badgeRow = node.querySelector(".badge-row");
+    [
+      run.source_name || "未知来源",
+      `pages:${(run.source_page_numbers || []).join(",") || "n/a"}`,
+      `failures:${run.automatic_failure_count ?? 0}`,
+    ].forEach((badgeText) => {
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = badgeText;
+      badgeRow.appendChild(badge);
+    });
+
+    node.addEventListener("click", () => {
+      window.location.hash = `article-processing/${encodeURIComponent(run.article_key)}`;
+    });
+
+    articleProcessingCards.appendChild(node);
+  });
+}
+
+function showArticleProcessingDetail(run) {
+  currentArticleProcessingRun = run;
+  showArticleProcessingPage();
+  articleProcessingDetailView.classList.remove("hidden");
+  articleProcessingDetailTitle.textContent = run.title_en || run.article_key;
+  articleProcessingDetailMeta.textContent =
+    `状态 ${run.status} · 当前步骤 ${run.current_step}`;
+  articleProcessingDetailErrorSummary.textContent =
+    run.latest_error_summary || "当前没有错误。";
+  articleProcessingDetailBadges.replaceChildren();
+  [
+    `status:${run.status}`,
+    `step:${run.current_step}`,
+    `failures:${run.automatic_failure_count ?? 0}`,
+  ].forEach((badgeText) => {
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    badge.textContent = badgeText;
+    articleProcessingDetailBadges.appendChild(badge);
+  });
+
+  articleProcessingIdentityFields.replaceChildren();
+  [
+    ["来源", run.source_name || "无"],
+    ["原始文件名", run.original_filename || "无"],
+    ["发布日期", run.publication_date || "无"],
+    ["页码", (run.source_page_numbers || []).join(", ") || "无"],
+    ["文档键", run.document_key || "无"],
+  ].forEach(([label, value]) => {
+    const row = document.createElement("div");
+    row.className = "key-value-row";
+    const key = document.createElement("span");
+    key.className = "key-value-label";
+    key.textContent = label;
+    const text = document.createElement("span");
+    text.className = "key-value-value";
+    text.textContent = value;
+    row.appendChild(key);
+    row.appendChild(text);
+    articleProcessingIdentityFields.appendChild(row);
+  });
+
+  articleProcessingDetailFields.replaceChildren();
+  [
+    ["上次开始时间", run.last_attempt_started_at || "无"],
+    ["上次结束时间", run.last_attempt_finished_at || "无"],
+    ["锁定执行器", run.locked_by || "无"],
+    ["锁过期时间", run.lock_expires_at || "无"],
+    ["最近成功输入哈希", run.last_success_input_hash || "无"],
+    ["最近更新时间", run.updated_at || "无"],
+  ].forEach(([label, value]) => {
+    const row = document.createElement("div");
+    row.className = "key-value-row";
+    const key = document.createElement("span");
+    key.className = "key-value-label";
+    key.textContent = label;
+    const text = document.createElement("span");
+    text.className = "key-value-value";
+    text.textContent = value;
+    row.appendChild(key);
+    row.appendChild(text);
+    articleProcessingDetailFields.appendChild(row);
+  });
+
+  articleProcessingRetryButton.disabled = run.status === "running";
+}
+
 function buildArticleQueryString() {
   const params = new URLSearchParams();
   if (sourceFilter.value) {
@@ -295,6 +461,23 @@ function buildDocumentProcessingQueryString() {
   return params.toString();
 }
 
+function buildArticleProcessingQueryString() {
+  const params = new URLSearchParams();
+  if (articleProcessingStatusFilter.value) {
+    params.set("status", articleProcessingStatusFilter.value);
+  }
+  if (articleProcessingSourceFilter.value) {
+    params.set("source", articleProcessingSourceFilter.value);
+  }
+  if (articleProcessingDateFromFilter.value) {
+    params.set("publication_date_from", articleProcessingDateFromFilter.value);
+  }
+  if (articleProcessingDateToFilter.value) {
+    params.set("publication_date_to", articleProcessingDateToFilter.value);
+  }
+  return params.toString();
+}
+
 async function loadOverview() {
   const payload = await fetchJson("/api/overview");
   renderSummary(payload.overview);
@@ -304,6 +487,7 @@ async function loadFilters() {
   const payload = await fetchJson("/api/filters");
   renderSelectOptions(sourceFilter, payload.filters.sources, "全部来源");
   renderSelectOptions(tagFilter, payload.filters.tags, "全部标签");
+  renderSelectOptions(articleProcessingSourceFilter, payload.filters.sources, "全部来源");
 }
 
 async function loadFocusTagArticles() {
@@ -502,6 +686,25 @@ async function loadDocumentProcessing() {
   setStatus("文档处理列表已加载。");
 }
 
+async function loadArticleProcessing() {
+  showArticleProcessingPage();
+  setStatus("正在加载文章处理列表...");
+  const queryString = buildArticleProcessingQueryString();
+  const path = queryString ? `/api/article-processing?${queryString}` : "/api/article-processing";
+  const payload = await fetchJson(path);
+  renderArticleProcessingList(payload.runs);
+  articleProcessingMeta.textContent = `当前列表共 ${payload.runs.length} 条记录`;
+  setStatus("文章处理列表已加载。");
+}
+
+async function loadArticleProcessingDetail(articleKey) {
+  showArticleProcessingPage();
+  setStatus("正在加载文章处理详情...");
+  const payload = await fetchJson(`/api/article-processing/${encodeURIComponent(articleKey)}`);
+  showArticleProcessingDetail(payload.run);
+  setStatus("文章处理详情已加载。");
+}
+
 async function loadDocumentDetail(documentKey) {
   showDocumentProcessingPage();
   setStatus("正在加载文档处理详情...");
@@ -522,6 +725,18 @@ async function requestManualRetry(documentKey) {
   setStatus("已请求手动重试。");
 }
 
+async function requestManualArticleRetry(articleKey) {
+  setStatus("正在请求文章重试...");
+  const payload = await fetchJson(
+    `/api/article-processing/${encodeURIComponent(articleKey)}/retry`,
+    { method: "POST" },
+  );
+  showArticleProcessingDetail(payload.run);
+  await loadArticleProcessing();
+  showArticleProcessingDetail(payload.run);
+  setStatus("已请求文章重试。");
+}
+
 async function syncRouteFromHash() {
   const hash = window.location.hash.replace(/^#/, "").trim();
   if (!hash || hash === "dashboard") {
@@ -536,6 +751,12 @@ async function syncRouteFromHash() {
     return;
   }
 
+  if (hash === "articles-processing") {
+    documentDetailView.classList.add("hidden");
+    await loadArticleProcessing();
+    return;
+  }
+
   if (hash.startsWith("article/")) {
     const articleId = hash.replace("article/", "").trim();
     if (!articleId) {
@@ -544,6 +765,16 @@ async function syncRouteFromHash() {
       return;
     }
     await loadArticleDetail(articleId);
+    return;
+  }
+
+  if (hash.startsWith("article-processing/")) {
+    const articleKey = decodeURIComponent(hash.replace("article-processing/", "").trim());
+    if (!articleKey) {
+      await loadArticleProcessing();
+      return;
+    }
+    await loadArticleProcessingDetail(articleKey);
     return;
   }
 
@@ -580,6 +811,14 @@ async function loadDashboard() {
 }
 
 primaryNav.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-route]");
+  if (!button) {
+    return;
+  }
+  window.location.hash = button.dataset.route;
+});
+
+workbenchTabs.addEventListener("click", (event) => {
   const button = event.target.closest("[data-route]");
   if (!button) {
     return;
@@ -629,6 +868,26 @@ documentStatusFilter.addEventListener("change", async () => {
   }
 });
 
+articleProcessingFilterForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    await loadArticleProcessing();
+  } catch (error) {
+    console.error(error);
+    setStatus("文章处理筛选失败。");
+  }
+});
+
+articleProcessingResetFiltersButton.addEventListener("click", async () => {
+  articleProcessingFilterForm.reset();
+  try {
+    await loadArticleProcessing();
+  } catch (error) {
+    console.error(error);
+    setStatus("文章处理筛选重置失败。");
+  }
+});
+
 detailBackButton.addEventListener("click", () => {
   window.location.hash = "dashboard";
   articleDetailView.classList.add("hidden");
@@ -636,6 +895,39 @@ detailBackButton.addEventListener("click", () => {
 
 detailOpenDocumentButton.addEventListener("click", () => {
   openSourceDocumentFromArticleDetail();
+});
+
+articleProcessingBackButton.addEventListener("click", () => {
+  window.location.hash = "articles-processing";
+  articleProcessingDetailView.classList.add("hidden");
+});
+
+articleProcessingOpenDocumentButton.addEventListener("click", () => {
+  if (!currentArticleProcessingRun?.document_key) {
+    setStatus("当前文章处理记录没有可用的所属文档。");
+    return;
+  }
+  window.location.hash = `document/${encodeURIComponent(currentArticleProcessingRun.document_key)}`;
+});
+
+articleProcessingOpenArticleButton.addEventListener("click", () => {
+  if (!currentArticleProcessingRun?.article_id) {
+    setStatus("当前文章处理记录没有可用的文章标识。");
+    return;
+  }
+  window.location.hash = `article/${encodeURIComponent(currentArticleProcessingRun.article_id)}`;
+});
+
+articleProcessingRetryButton.addEventListener("click", async () => {
+  if (!currentArticleProcessingRun?.article_key) {
+    return;
+  }
+  try {
+    await requestManualArticleRetry(currentArticleProcessingRun.article_key);
+  } catch (error) {
+    console.error(error);
+    setStatus("文章手动重试请求失败。");
+  }
 });
 
 documentBackButton.addEventListener("click", () => {

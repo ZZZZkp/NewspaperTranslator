@@ -127,6 +127,23 @@ class ArticleProcessingDetailView:
     latest_error_summary: str
 
 
+@dataclass(frozen=True)
+class ArticleProcessingCardView:
+    article_processing_run_id: str
+    article_key: str
+    article_id: str
+    document_key: str
+    source_name: str
+    original_filename: str
+    publication_date: str
+    title_en: str
+    source_page_numbers: list[int]
+    status: str
+    current_step: str
+    automatic_failure_count: int
+    latest_error_summary: str
+
+
 def get_overview_view(*, database_url: str) -> OverviewView:
     connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
     try:
@@ -465,6 +482,88 @@ def get_article_processing_detail_view(
         updated_at=run.updated_at,
         latest_error_summary=latest_error_summary,
     )
+
+
+def list_article_processing_card_views(
+    *,
+    database_url: str,
+    limit: int,
+    status: str | None = None,
+    source: str | None = None,
+    publication_date_from: str | None = None,
+    publication_date_to: str | None = None,
+) -> list[ArticleProcessingCardView]:
+    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+    try:
+        query = """
+        SELECT
+            r.article_processing_run_id,
+            r.article_key,
+            r.article_id,
+            a.document_key,
+            d.source_name,
+            d.original_filename,
+            a.publication_date,
+            a.title_en,
+            r.status,
+            r.current_step,
+            r.automatic_failure_count,
+            r.last_error_message
+        FROM article_processing_runs r
+        JOIN final_articles a
+            ON a.article_id = r.article_id
+        JOIN documents d
+            ON d.document_key = a.document_key
+        """
+        params: list[object] = []
+        clauses: list[str] = []
+        if status:
+            clauses.append("r.status = ?")
+            params.append(status)
+        if source:
+            clauses.append("d.source_name = ?")
+            params.append(source)
+        if publication_date_from:
+            clauses.append("a.publication_date >= ?")
+            params.append(publication_date_from)
+        if publication_date_to:
+            clauses.append("a.publication_date <= ?")
+            params.append(publication_date_to)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY r.updated_at DESC, r.created_at DESC, r.rowid DESC LIMIT ?"
+        params.append(limit)
+        rows = connection.execute(query, tuple(params)).fetchall()
+    finally:
+        connection.close()
+
+    cards: list[ArticleProcessingCardView] = []
+    for row in rows:
+        article = get_final_article(
+            database_url=database_url,
+            article_id=row[2],
+        )
+        latest_error_summary = "当前没有错误。"
+        if row[11]:
+            latest_error_summary = f"{row[9]}: {row[11]}"
+        cards.append(
+            ArticleProcessingCardView(
+                article_processing_run_id=row[0],
+                article_key=row[1],
+                article_id=row[2],
+                document_key=row[3],
+                source_name=row[4],
+                original_filename=row[5],
+                publication_date=row[6],
+                title_en=row[7],
+                source_page_numbers=article.source_page_numbers,
+                status=row[8],
+                current_step=row[9],
+                automatic_failure_count=row[10],
+                latest_error_summary=latest_error_summary,
+            )
+        )
+    return cards
 
 
 def list_article_card_views(

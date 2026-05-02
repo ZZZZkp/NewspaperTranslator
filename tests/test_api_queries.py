@@ -12,6 +12,7 @@ if str(SRC_ROOT) not in sys.path:
 
 try:
     from newspaper_translator.api.queries import (
+        list_article_processing_card_views,
         get_article_processing_detail_view,
         get_document_processing_detail_view,
         get_article_detail_view,
@@ -38,6 +39,7 @@ try:
         ParsedArticle,
     )
 except ImportError:
+    list_article_processing_card_views = None
     get_article_processing_detail_view = None
     get_document_processing_detail_view = None
     get_article_detail_view = None
@@ -758,6 +760,130 @@ class ArticleQueryTests(unittest.TestCase):
         self.assertEqual(detail.status, "failed_retryable")
         self.assertEqual(detail.source_page_numbers, [0])
         self.assertEqual(detail.latest_error_summary, "enrich: summary timeout")
+        self.assertEqual(detail.automatic_failure_count, 0)
+        self.assertIsNone(detail.last_success_input_hash)
+
+    def test_article_processing_card_views_include_operator_context(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(list_article_processing_card_views)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                original_filename="wsj-2026-04-22.pdf",
+                source_name="Wall Street Journal",
+                document_key="message-2:attachment-1:hash-2",
+            )
+            article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=document_key,
+                publication_date="2026-04-22",
+                title="Chipmakers prepare for a new subsidy dispute",
+                body_suffix="Subsidy pressure is spreading across Asia and Europe.",
+                translated_title_zh="芯片制造商准备应对新的补贴争端",
+                summary_zh="多国芯片企业正重新评估补贴竞争和供应链布局。",
+                translated_body_zh="随着补贴争夺升级，芯片制造商开始重新配置产能与投资方向。",
+                tags=["Semiconductors", "Policy", "Trade"],
+            )
+            article_key = self._get_article_key(database_path=database_path, article_id=article_id)
+            self._insert_article_processing_run(
+                database_path=database_path,
+                article_key=article_key,
+                article_id=article_id,
+                status="failed_retryable",
+                current_step="enrich",
+                last_error_message="summary timeout",
+            )
+
+            cards = list_article_processing_card_views(
+                database_url=database_url,
+                limit=20,
+            )
+
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0].article_key, article_key)
+        self.assertEqual(cards[0].article_id, article_id)
+        self.assertEqual(cards[0].document_key, document_key)
+        self.assertEqual(cards[0].title_en, "Chipmakers prepare for a new subsidy dispute")
+        self.assertEqual(cards[0].source_name, "Wall Street Journal")
+        self.assertEqual(cards[0].original_filename, "wsj-2026-04-22.pdf")
+        self.assertEqual(cards[0].publication_date, "2026-04-22")
+        self.assertEqual(cards[0].source_page_numbers, [0])
+        self.assertEqual(cards[0].status, "failed_retryable")
+        self.assertEqual(cards[0].current_step, "enrich")
+        self.assertEqual(cards[0].automatic_failure_count, 0)
+        self.assertEqual(cards[0].latest_error_summary, "enrich: summary timeout")
+
+    def test_article_processing_card_views_support_source_and_date_filters(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(list_article_processing_card_views)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            first_document_key = self._insert_document(
+                database_path,
+                original_filename="ft-2026-04-22.pdf",
+                source_name="Financial Times",
+                document_key="message-1:attachment-1:hash-1",
+            )
+            second_document_key = self._insert_document(
+                database_path,
+                original_filename="wsj-2026-04-24.pdf",
+                source_name="Wall Street Journal",
+                document_key="message-2:attachment-1:hash-2",
+            )
+            first_article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=first_document_key,
+                publication_date="2026-04-22",
+                title="First article",
+                body_suffix="First body.",
+                translated_title_zh="第一篇文章",
+                summary_zh="第一篇摘要",
+                translated_body_zh="第一篇正文。",
+                tags=["First", "Policy", "Trade"],
+            )
+            second_article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=second_document_key,
+                publication_date="2026-04-24",
+                title="Second article",
+                body_suffix="Second body.",
+                translated_title_zh="第二篇文章",
+                summary_zh="第二篇摘要",
+                translated_body_zh="第二篇正文。",
+                tags=["Second", "Policy", "Trade"],
+            )
+            self._insert_article_processing_run(
+                database_path=database_path,
+                article_key=self._get_article_key(database_path=database_path, article_id=first_article_id),
+                article_id=first_article_id,
+                status="pending",
+                current_step="enrich",
+            )
+            second_article_key = self._get_article_key(database_path=database_path, article_id=second_article_id)
+            self._insert_article_processing_run(
+                database_path=database_path,
+                article_key=second_article_key,
+                article_id=second_article_id,
+                status="pending",
+                current_step="enrich",
+            )
+
+            cards = list_article_processing_card_views(
+                database_url=database_url,
+                limit=20,
+                source="Wall Street Journal",
+                publication_date_from="2026-04-23",
+                publication_date_to="2026-04-24",
+            )
+
+        self.assertEqual([card.article_key for card in cards], [second_article_key])
 
     def test_article_cards_support_source_filter(self) -> None:
         self.assertIsNotNone(run_pending_migrations)

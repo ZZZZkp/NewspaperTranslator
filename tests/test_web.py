@@ -447,6 +447,18 @@ class WebHealthEndpointTests(unittest.TestCase):
         self.assertEqual(status_list, "200 OK")
         self.assertEqual([item["article_key"] for item in list_payload["runs"]], [article_key])
         self.assertEqual(list_payload["runs"][0]["status"], "manual_retry_requested")
+        self.assertEqual(
+            list_payload["runs"][0]["title_en"],
+            "Chipmakers prepare for a new subsidy dispute",
+        )
+        self.assertEqual(list_payload["runs"][0]["source_name"], "gmail")
+        self.assertEqual(list_payload["runs"][0]["original_filename"], "wsj-2026-04-20.pdf")
+        self.assertEqual(list_payload["runs"][0]["publication_date"], "2026-04-22")
+        self.assertEqual(list_payload["runs"][0]["source_page_numbers"], [0])
+        self.assertEqual(
+            list_payload["runs"][0]["latest_error_summary"],
+            "当前没有错误。",
+        )
         self.assertEqual(status_one, "200 OK")
         self.assertEqual(one_payload["run"]["article_key"], article_key)
         self.assertEqual(one_payload["run"]["status"], "manual_retry_requested")
@@ -454,6 +466,153 @@ class WebHealthEndpointTests(unittest.TestCase):
         self.assertEqual(status_retry, "200 OK")
         self.assertEqual(retry_payload["run"]["article_key"], article_key)
         self.assertEqual(retry_payload["run"]["status"], "manual_retry_requested")
+
+    def test_article_processing_list_endpoint_supports_status_filter(self) -> None:
+        self.assertIsNotNone(create_article_processing_run)
+        self.assertIsNotNone(request_manual_article_retry)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            retry_document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-1:attachment-1:hash-1",
+            )
+            pending_document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-2:attachment-1:hash-2",
+            )
+            retry_article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=retry_document_key,
+                publication_date="2026-04-22",
+                title="Retry article",
+                body_suffix="Retry body.",
+                translated_title_zh="重试文章",
+                summary_zh="重试摘要",
+                translated_body_zh="重试正文。",
+                tags=["Retry", "Policy", "Operations"],
+            )
+            pending_article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=pending_document_key,
+                publication_date="2026-04-22",
+                title="Pending article",
+                body_suffix="Pending body.",
+                translated_title_zh="待处理文章",
+                summary_zh="待处理摘要",
+                translated_body_zh="待处理正文。",
+                tags=["Pending", "Queue", "Operations"],
+            )
+            retry_article_key = self._get_article_key(
+                database_path=database_path,
+                article_id=retry_article_id,
+            )
+            create_article_processing_run(
+                database_url=database_url,
+                article_id=retry_article_id,
+            )
+            create_article_processing_run(
+                database_url=database_url,
+                article_id=pending_article_id,
+            )
+            request_manual_article_retry(
+                database_url=database_url,
+                article_key=retry_article_key,
+            )
+
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path="/api/article-processing",
+                query_string="status=manual_retry_requested",
+            )
+
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(status, "200 OK")
+        self.assertEqual([item["article_key"] for item in payload["runs"]], [retry_article_key])
+
+    def test_article_processing_list_endpoint_supports_source_and_date_filters(self) -> None:
+        self.assertIsNotNone(create_article_processing_run)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            first_document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-1:attachment-1:hash-1",
+                original_filename="ft-2026-04-22.pdf",
+                source_name="Financial Times",
+            )
+            second_document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-2:attachment-1:hash-2",
+                original_filename="wsj-2026-04-24.pdf",
+                source_name="Wall Street Journal",
+            )
+            first_article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=first_document_key,
+                publication_date="2026-04-22",
+                title="First article",
+                body_suffix="First body.",
+                translated_title_zh="第一篇文章",
+                summary_zh="第一篇摘要",
+                translated_body_zh="第一篇正文。",
+                tags=["First", "Policy", "Trade"],
+            )
+            second_article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=second_document_key,
+                publication_date="2026-04-24",
+                title="Second article",
+                body_suffix="Second body.",
+                translated_title_zh="第二篇文章",
+                summary_zh="第二篇摘要",
+                translated_body_zh="第二篇正文。",
+                tags=["Second", "Policy", "Trade"],
+            )
+            create_article_processing_run(
+                database_url=database_url,
+                article_id=first_article_id,
+            )
+            second_article_key = self._get_article_key(
+                database_path=database_path,
+                article_id=second_article_id,
+            )
+            create_article_processing_run(
+                database_url=database_url,
+                article_id=second_article_id,
+            )
+
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path="/api/article-processing",
+                query_string="source=Wall%20Street%20Journal&publication_date_from=2026-04-23&publication_date_to=2026-04-24",
+            )
+
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(status, "200 OK")
+        self.assertEqual([item["article_key"] for item in payload["runs"]], [second_article_key])
 
     def test_api_document_processing_detail_endpoint_includes_visible_articles(self) -> None:
         self.assertIsNotNone(create_parse_run)

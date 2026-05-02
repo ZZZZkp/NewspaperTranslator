@@ -135,6 +135,105 @@ class GeminiContinuationMatcherTests(unittest.TestCase):
         self.assertIn("front_source_order", prompt_text)
         self.assertIn("Big Oil Explores Farther Afield To Dodge Middle East Turmoil", prompt_text)
 
+    def test_uses_configured_base_url_for_fragment_matching_requests(self) -> None:
+        self.assertIsNotNone(GeminiSettings)
+        self.assertIsNotNone(GeminiContinuationMatcher)
+        self.assertIsNotNone(ArticleFragment)
+
+        transport = _FakeTransport(
+            response_payload={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": "{\"matches\": []}"
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+        matcher = GeminiContinuationMatcher(
+            settings=GeminiSettings(
+                api_token="proxy-gemini-key",
+                model="gemini-2.5-flash",
+                timeout_seconds=45,
+                base_url="https://nuoapi.com/v1beta",
+                api_compat_mode="openai_compatible",
+            ),
+            transport=transport,
+        )
+
+        matcher(
+            [
+                ArticleFragment(
+                    title="Big Oil Explores Farther Afield To Dodge Middle East Turmoil",
+                    body_text="Please turn to page A7",
+                    source_order=2,
+                    continued_to_page="A7",
+                    continued_from_page="",
+                )
+            ]
+        )
+
+        request = transport.requests[0]
+        self.assertEqual(
+            request["url"],
+            "https://nuoapi.com/v1beta/chat/completions",
+        )
+        payload = json.loads(request["body"].decode("utf-8"))
+        self.assertEqual(payload["model"], "gemini-2.5-flash")
+        self.assertEqual(payload["messages"][0]["role"], "user")
+
+    def test_uses_bearer_authorization_header_for_openai_compatible_requests(self) -> None:
+        self.assertIsNotNone(GeminiSettings)
+        self.assertIsNotNone(GeminiContinuationMatcher)
+        self.assertIsNotNone(ArticleFragment)
+
+        transport = _FakeTransport(
+            response_payload={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": "{\"matches\": []}"
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+        matcher = GeminiContinuationMatcher(
+            settings=GeminiSettings(
+                api_token="proxy-gemini-key",
+                model="gemini-2.5-flash",
+                timeout_seconds=45,
+                base_url="https://nuoapi.com/v1beta",
+                api_compat_mode="openai_compatible",
+            ),
+            transport=transport,
+        )
+
+        matcher(
+            [
+                ArticleFragment(
+                    title="Big Oil Explores Farther Afield To Dodge Middle East Turmoil",
+                    body_text="Please turn to page A7",
+                    source_order=2,
+                    continued_to_page="A7",
+                    continued_from_page="",
+                )
+            ]
+        )
+
+        request = transport.requests[0]
+        self.assertEqual(request["headers"]["Authorization"], "Bearer proxy-gemini-key")
+        self.assertNotIn("x-goog-api-key", request["headers"])
+
     def test_returns_empty_matches_without_calling_transport_for_empty_fragments(self) -> None:
         self.assertIsNotNone(GeminiSettings)
         self.assertIsNotNone(GeminiContinuationMatcher)
@@ -262,6 +361,68 @@ class GeminiArticleTranslatorTests(unittest.TestCase):
         self.assertIn("Please turn to page A7", prompt_text)
         self.assertIn("translated_title_zh", prompt_text)
         self.assertIn("Big Oil Explores Farther Afield To Dodge Middle East Turmoil", prompt_text)
+
+    def test_uses_openai_compatible_chat_completions_request_for_article_translation(self) -> None:
+        self.assertIsNotNone(GeminiSettings)
+        self.assertIsNotNone(GeminiArticleTranslator)
+        self.assertIsNotNone(StoredFinalArticle)
+
+        transport = _FakeTransport(
+            response_payload={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "translated_title_zh": "测试标题",
+                                    "translated_body_zh": "这是一段测试翻译。",
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        )
+        translator = GeminiArticleTranslator(
+            settings=GeminiSettings(
+                api_token="proxy-gemini-key",
+                model="gemini-2.5-flash",
+                timeout_seconds=45,
+                base_url="https://nuoapi.com/v1beta",
+                api_compat_mode="openai_compatible",
+            ),
+            transport=transport,
+        )
+
+        result = translator(
+            StoredFinalArticle(
+                article_id="article-1",
+                parse_run_id="parse-run-1",
+                document_key="message-1:attachment-1:hash-1",
+                publication_date="2026-04-20",
+                article_order=1,
+                primary_source_order=1,
+                source_fragment_count=2,
+                title_en="Big Oil Explores Farther Afield To Dodge Middle East Turmoil",
+                body_text_en="Exxon, Chevron and others turn to Africa and South America for next prospects.",
+                created_at="2026-04-28 00:00:00",
+            )
+        )
+
+        self.assertEqual(result.translated_title_zh, "测试标题")
+        self.assertEqual(result.translated_body_zh, "这是一段测试翻译。")
+
+        request = transport.requests[0]
+        self.assertEqual(request["method"], "POST")
+        self.assertEqual(request["url"], "https://nuoapi.com/v1beta/chat/completions")
+        self.assertEqual(request["headers"]["Authorization"], "Bearer proxy-gemini-key")
+
+        payload = json.loads(request["body"].decode("utf-8"))
+        self.assertEqual(payload["model"], "gemini-2.5-flash")
+        self.assertEqual(payload["temperature"], 0)
+        self.assertEqual(payload["response_format"]["type"], "json_object")
+        self.assertEqual(payload["messages"][0]["role"], "user")
+        self.assertIn("return JSON only", payload["messages"][0]["content"])
 
 
 class GeminiArticleSummarizerTaggerTests(unittest.TestCase):

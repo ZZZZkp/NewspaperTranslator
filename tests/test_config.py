@@ -106,6 +106,25 @@ class AppSettingsTests(unittest.TestCase):
         self.assertEqual(settings.model, "gemini-2.5-flash")
         self.assertEqual(settings.timeout_seconds, 45)
 
+    def test_loads_gemini_proxy_settings_from_environment_when_compat_mode_is_enabled(self) -> None:
+        self.assertIsNotNone(GeminiSettings, "GeminiSettings should be importable from newspaper_translator.config")
+
+        env = {
+            "GEMINI_API_COMPAT_MODE": "openai_compatible",
+            "GOOGLE_GEMINI_BASE_URL": "https://nuoapi.com/v1beta",
+            "GEMINI_API_KEY": "proxy-gemini-key",
+            "GEMINI_MODEL": "gemini-2.5-flash",
+            "GEMINI_TIMEOUT_SECONDS": "45",
+        }
+
+        settings = GeminiSettings.from_env(env)
+
+        self.assertEqual(settings.api_token, "proxy-gemini-key")
+        self.assertEqual(settings.base_url, "https://nuoapi.com/v1beta")
+        self.assertEqual(settings.api_compat_mode, "openai_compatible")
+        self.assertEqual(settings.model, "gemini-2.5-flash")
+        self.assertEqual(settings.timeout_seconds, 45)
+
     def test_fails_fast_when_required_gemini_token_is_missing(self) -> None:
         self.assertIsNotNone(GeminiSettings, "GeminiSettings should be importable from newspaper_translator.config")
         self.assertIsNotNone(ConfigurationError, "ConfigurationError should be importable from newspaper_translator.config")
@@ -118,6 +137,21 @@ class AppSettingsTests(unittest.TestCase):
             GeminiSettings.from_env(env)
 
         self.assertIn("GEMINI_TOKEN", str(context.exception))
+
+    def test_fails_fast_when_required_proxy_gemini_api_key_is_missing(self) -> None:
+        self.assertIsNotNone(GeminiSettings, "GeminiSettings should be importable from newspaper_translator.config")
+        self.assertIsNotNone(ConfigurationError, "ConfigurationError should be importable from newspaper_translator.config")
+
+        env = {
+            "GEMINI_API_COMPAT_MODE": "openai_compatible",
+            "GOOGLE_GEMINI_BASE_URL": "https://nuoapi.com/v1beta",
+            "GEMINI_API_KEY": "",
+        }
+
+        with self.assertRaises(ConfigurationError) as context:
+            GeminiSettings.from_env(env)
+
+        self.assertIn("GEMINI_API_KEY", str(context.exception))
 
 
 if __name__ == "__main__":

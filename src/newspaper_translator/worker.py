@@ -333,21 +333,28 @@ def _current_timestamp() -> str:
 
 
 def _build_continuation_matcher_from_env(env: dict[str, str]) -> GeminiContinuationMatcher | None:
-    if not env.get("GEMINI_TOKEN", "").strip():
+    if not _gemini_is_configured(env):
         return None
     return GeminiContinuationMatcher(settings=GeminiSettings.from_env(env))
 
 
 def _continuation_matcher_name_from_env(env: dict[str, str]) -> str:
-    if not env.get("GEMINI_TOKEN", "").strip():
+    if not _gemini_is_configured(env):
         return ""
     return "gemini"
 
 
 def _continuation_matcher_version_from_env(env: dict[str, str]) -> str:
-    if not env.get("GEMINI_TOKEN", "").strip():
+    if not _gemini_is_configured(env):
         return ""
     return env.get("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+
+
+def _gemini_is_configured(env: dict[str, str]) -> bool:
+    api_compat_mode = env.get("GEMINI_API_COMPAT_MODE", "standard").strip() or "standard"
+    if api_compat_mode == "openai_compatible":
+        return bool(env.get("GEMINI_API_KEY", "").strip())
+    return bool(env.get("GEMINI_TOKEN", "").strip())
 
 
 def _read_int_setting(env: dict[str, str], key: str, *, default: int) -> int:

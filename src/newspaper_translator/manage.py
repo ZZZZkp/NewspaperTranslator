@@ -393,22 +393,29 @@ def _build_cli_env_overrides(*, database_url: str | None = None) -> dict[str, st
 
 
 def _build_continuation_matcher_from_env(env) -> GeminiContinuationMatcher | None:
-    if not env.get("GEMINI_TOKEN", "").strip():
+    if not _gemini_is_configured(env):
         return None
     settings = GeminiSettings.from_env(env)
     return GeminiContinuationMatcher(settings=settings)
 
 
 def _continuation_matcher_name_from_env(env) -> str:
-    if not env.get("GEMINI_TOKEN", "").strip():
+    if not _gemini_is_configured(env):
         return ""
     return "gemini"
 
 
 def _continuation_matcher_version_from_env(env) -> str:
-    if not env.get("GEMINI_TOKEN", "").strip():
+    if not _gemini_is_configured(env):
         return ""
     return env.get("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+
+
+def _gemini_is_configured(env) -> bool:
+    api_compat_mode = env.get("GEMINI_API_COMPAT_MODE", "standard").strip() or "standard"
+    if api_compat_mode == "openai_compatible":
+        return bool(env.get("GEMINI_API_KEY", "").strip())
+    return bool(env.get("GEMINI_TOKEN", "").strip())
 
 
 def _read_int_setting(env, key: str, *, default: int) -> int:

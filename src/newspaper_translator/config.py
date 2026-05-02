@@ -61,13 +61,29 @@ class MineruSettings:
 @dataclass(frozen=True)
 class GeminiSettings:
     api_token: str
-    model: str
-    timeout_seconds: int
+    base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+    api_compat_mode: str = "standard"
+    model: str = "gemini-2.5-flash"
+    timeout_seconds: int = 120
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "GeminiSettings":
+        api_compat_mode = env.get("GEMINI_API_COMPAT_MODE", "standard").strip() or "standard"
+        if api_compat_mode == "openai_compatible":
+            api_token = _require_setting(env, "GEMINI_API_KEY")
+            base_url = env.get("GOOGLE_GEMINI_BASE_URL", "https://nuoapi.com/v1beta").strip()
+            if not base_url:
+                raise ConfigurationError("Missing required configuration: GOOGLE_GEMINI_BASE_URL")
+        else:
+            api_token = _require_setting(env, "GEMINI_TOKEN")
+            base_url = env.get(
+                "GOOGLE_GEMINI_BASE_URL",
+                "https://generativelanguage.googleapis.com/v1beta",
+            ).strip() or "https://generativelanguage.googleapis.com/v1beta"
         return cls(
-            api_token=_require_setting(env, "GEMINI_TOKEN"),
+            api_token=api_token,
+            base_url=base_url.rstrip("/"),
+            api_compat_mode=api_compat_mode,
             model=env.get("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash",
             timeout_seconds=_read_int_setting(
                 env,

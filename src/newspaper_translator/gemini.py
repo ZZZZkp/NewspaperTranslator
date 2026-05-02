@@ -58,28 +58,14 @@ class GeminiContinuationMatcher:
         if not fragments:
             return []
 
-        payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {
-                            "text": self._build_prompt(fragments),
-                        }
-                    ]
-                }
-            ],
-            "generationConfig": {
-                "temperature": 0,
-                "responseMimeType": "application/json",
-            },
-        }
+        payload = _build_request_payload(
+            settings=self._settings,
+            prompt=self._build_prompt(fragments),
+        )
         response = self._transport.request(
             method="POST",
-            url=f"https://generativelanguage.googleapis.com/v1beta/models/{self._settings.model}:generateContent",
-            headers={
-                "Content-Type": "application/json",
-                "x-goog-api-key": self._settings.api_token,
-            },
+            url=_build_generate_content_url(self._settings),
+            headers=_build_request_headers(self._settings),
             body=json.dumps(payload).encode("utf-8"),
             timeout=self._settings.timeout_seconds,
         )
@@ -145,28 +131,14 @@ class GeminiArticleTranslator:
         self._transport = transport or _UrllibTransport()
 
     def __call__(self, article: StoredFinalArticle) -> ArticleTranslationResult:
-        payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {
-                            "text": self._build_prompt(article),
-                        }
-                    ]
-                }
-            ],
-            "generationConfig": {
-                "temperature": 0,
-                "responseMimeType": "application/json",
-            },
-        }
+        payload = _build_request_payload(
+            settings=self._settings,
+            prompt=self._build_prompt(article),
+        )
         response = self._transport.request(
             method="POST",
-            url=f"https://generativelanguage.googleapis.com/v1beta/models/{self._settings.model}:generateContent",
-            headers={
-                "Content-Type": "application/json",
-                "x-goog-api-key": self._settings.api_token,
-            },
+            url=_build_generate_content_url(self._settings),
+            headers=_build_request_headers(self._settings),
             body=json.dumps(payload).encode("utf-8"),
             timeout=self._settings.timeout_seconds,
         )
@@ -224,32 +196,18 @@ class GeminiArticleSummarizerTagger:
         translated_title_zh: str,
         translated_body_zh: str,
     ) -> ArticleSummaryTagResult:
-        payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {
-                            "text": self._build_prompt(
-                                article=article,
-                                translated_title_zh=translated_title_zh,
-                                translated_body_zh=translated_body_zh,
-                            ),
-                        }
-                    ]
-                }
-            ],
-            "generationConfig": {
-                "temperature": 0,
-                "responseMimeType": "application/json",
-            },
-        }
+        payload = _build_request_payload(
+            settings=self._settings,
+            prompt=self._build_prompt(
+                article=article,
+                translated_title_zh=translated_title_zh,
+                translated_body_zh=translated_body_zh,
+            ),
+        )
         response = self._transport.request(
             method="POST",
-            url=f"https://generativelanguage.googleapis.com/v1beta/models/{self._settings.model}:generateContent",
-            headers={
-                "Content-Type": "application/json",
-                "x-goog-api-key": self._settings.api_token,
-            },
+            url=_build_generate_content_url(self._settings),
+            headers=_build_request_headers(self._settings),
             body=json.dumps(payload).encode("utf-8"),
             timeout=self._settings.timeout_seconds,
         )
@@ -318,9 +276,60 @@ def _normalize_tags(raw_tags: object) -> list[str]:
 def _extract_response_text(body: bytes) -> str:
     response_payload = json.loads(body.decode("utf-8"))
     try:
-        return response_payload["candidates"][0]["content"]["parts"][0]["text"]
+        if "candidates" in response_payload:
+            return response_payload["candidates"][0]["content"]["parts"][0]["text"]
+        return response_payload["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
         raise GeminiError("Gemini response did not contain a valid text candidate") from exc
+
+
+def _build_generate_content_url(settings: GeminiSettings) -> str:
+    if settings.api_compat_mode == "openai_compatible":
+        return f"{settings.base_url}/chat/completions"
+    return f"{settings.base_url}/models/{settings.model}:generateContent"
+
+
+def _build_request_headers(settings: GeminiSettings) -> dict[str, str]:
+    headers = {
+        "Content-Type": "application/json",
+    }
+    if settings.api_compat_mode == "openai_compatible":
+        headers["Authorization"] = f"Bearer {settings.api_token}"
+    else:
+        headers["x-goog-api-key"] = settings.api_token
+    return headers
+
+
+def _build_request_payload(*, settings: GeminiSettings, prompt: str) -> dict[str, object]:
+    if settings.api_compat_mode == "openai_compatible":
+        return {
+            "model": settings.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            "temperature": 0,
+            "response_format": {
+                "type": "json_object",
+            },
+        }
+    return {
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "text": prompt,
+                    }
+                ]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0,
+            "responseMimeType": "application/json",
+        },
+    }
 
 
 class _UrllibTransport:

@@ -128,6 +128,8 @@ class ContainerScaffoldingTests(unittest.TestCase):
         self.assertIn('"enable_body_links"', config_text)
         self.assertIn('"allowed_link_domains"', config_text)
         self.assertIn('"download_link_keywords"', config_text)
+        self.assertIn('dengtawaikan@dengtazk.xin', config_text)
+        self.assertIn('www.dengtazk.xin', config_text)
 
     def test_requirements_include_gmail_api_dependencies(self) -> None:
         requirements_path = PROJECT_ROOT / "requirements.txt"

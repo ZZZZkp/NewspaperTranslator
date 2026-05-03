@@ -1,5 +1,6 @@
 import base64
 from dataclasses import dataclass
+import hashlib
 from html.parser import HTMLParser
 import json
 import os
@@ -26,6 +27,7 @@ from newspaper_translator.import_audit import (
 from newspaper_translator.ingestion import (
     GmailAttachment,
     GmailMessage,
+    TRANSLATED_FILENAME_PATTERNS,
     import_selected_messages,
     select_target_messages,
 )
@@ -561,7 +563,19 @@ def _extract_pdf_links_from_message_body(
                 )
                 continue
             if attachment is not None:
-                attachments.append(attachment)
+                lowered_filename = attachment.filename.lower()
+                if any(pattern in lowered_filename for pattern in TRANSLATED_FILENAME_PATTERNS):
+                    _emit_body_link_audit(
+                        body_link_audit_callback,
+                        message_id=message_id,
+                        message_internal_date=message_internal_date,
+                        link_url=url,
+                        status="skipped",
+                        detail_code="body_link_filename_filtered",
+                        detail_message=f"Body link resolved to a translated PDF filename: {attachment.filename}",
+                    )
+                else:
+                    attachments.append(attachment)
             else:
                 _emit_body_link_audit(
                     body_link_audit_callback,
@@ -670,6 +684,8 @@ def _record_imported_document_items(
     imported_document_iter = iter(imported_documents)
     for message in messages:
         for attachment in message.attachments:
+            if not attachment.is_pdf:
+                continue
             imported_document = next(imported_document_iter)
             was_created = imported_document.was_created
             record_import_run_item(
@@ -746,14 +762,20 @@ def _emit_body_link_audit(
 
 def _build_import_item_key(*, message_id: str, attachment: GmailAttachment) -> str:
     if attachment.attachment_id.startswith("link:"):
-        return f"message:{message_id}:body_link:{attachment.attachment_id.removeprefix('link:')}"
+        return f"message:{message_id}:body_link:{_body_link_reference(attachment)}"
     return f"message:{message_id}:attachment:{attachment.attachment_id}"
 
 
 def _link_url_from_attachment(attachment: GmailAttachment) -> str | None:
     if attachment.attachment_id.startswith("link:"):
-        return attachment.attachment_id.removeprefix("link:")
+        return _body_link_reference(attachment)
     return None
+
+
+def _body_link_reference(attachment: GmailAttachment) -> str:
+    if attachment.link_url:
+        return attachment.link_url
+    return attachment.attachment_id.removeprefix("link:")
 
 
 def _build_incremental_query(*, base_query: str, checkpoint_value: str | None) -> str:
@@ -880,10 +902,9 @@ def _build_attachment_from_url(
     download_link_keywords: list[str],
 ) -> GmailAttachment | None:
     if _looks_like_pdf_url(url):
-        return GmailAttachment(
-            attachment_id=f"link:{url}",
+        return _build_body_link_attachment(
+            source_url=url,
             filename=_filename_from_url(url),
-            mime_type="application/pdf",
             content_bytes=downloader.download_binary(url),
         )
 
@@ -892,10 +913,9 @@ def _build_attachment_from_url(
         downloader=downloader,
     )
     if resolved_download_url:
-        return GmailAttachment(
-            attachment_id=f"link:{resolved_download_url}",
+        return _build_body_link_attachment(
+            source_url=url,
             filename=_filename_from_url(resolved_download_url),
-            mime_type="application/pdf",
             content_bytes=downloader.download_binary(resolved_download_url),
         )
 
@@ -904,10 +924,9 @@ def _build_attachment_from_url(
         downloader=downloader,
     )
     if direct_pdf_bytes is not None:
-        return GmailAttachment(
-            attachment_id=f"link:{url}",
+        return _build_body_link_attachment(
+            source_url=url,
             filename=_filename_from_url(url),
-            mime_type="application/pdf",
             content_bytes=direct_pdf_bytes,
         )
 
@@ -920,12 +939,32 @@ def _build_attachment_from_url(
     if not download_url:
         return None
 
-    return GmailAttachment(
-        attachment_id=f"link:{download_url}",
+    return _build_body_link_attachment(
+        source_url=url,
         filename=_filename_from_url(download_url),
-        mime_type="application/pdf",
         content_bytes=downloader.download_binary(download_url),
     )
+
+
+def _build_body_link_attachment(
+    *,
+    source_url: str,
+    filename: str,
+    content_bytes: bytes,
+) -> GmailAttachment:
+    return GmailAttachment(
+        attachment_id=_body_link_attachment_id(source_url),
+        filename=filename,
+        mime_type="application/pdf",
+        content_bytes=content_bytes,
+        link_url=source_url,
+    )
+
+
+def _body_link_attachment_id(url: str) -> str:
+    normalized_url = url.strip()
+    digest = hashlib.sha256(normalized_url.encode("utf-8")).hexdigest()[:24]
+    return f"link:body-{digest}"
 
 
 def _resolve_download_url(
@@ -944,7 +983,7 @@ def _try_download_direct_pdf(
     url: str,
     downloader,
 ) -> bytes | None:
-    if not _is_qq_mail_landing_page(url):
+    if not (_is_qq_mail_landing_page(url) or _is_dengtazk_email_download_url(url)):
         return None
 
     content = downloader.download_binary(url)
@@ -971,6 +1010,25 @@ def _find_download_link_in_html(
         if any(keyword in lowered_text for keyword in lowered_keywords):
             return absolute_url
 
+    script_resource_url = _find_script_resource_url_in_html(
+        page_url=page_url,
+        html=html,
+    )
+    if script_resource_url:
+        return script_resource_url
+
+    return None
+
+
+def _find_script_resource_url_in_html(*, page_url: str, html: str) -> str | None:
+    patterns = (
+        r"(?:pdfUrl|downloadUrl|file|src)\s*[:=]\s*[\"']([^\"']+)[\"']",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, html):
+            candidate_url = urljoin(page_url, match.group(1))
+            if _looks_like_pdf_url(candidate_url):
+                return candidate_url
     return None
 
 
@@ -1060,6 +1118,11 @@ class HttpLinkDownloader:
 def _is_qq_mail_landing_page(url: str) -> bool:
     parsed = urlparse(url)
     return parsed.hostname == "wx.mail.qq.com" and parsed.path == "/ftn/download"
+
+
+def _is_dengtazk_email_download_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.hostname == "www.dengtazk.xin" and parsed.path == "/api/public/email-download"
 
 
 class RequestsGmailService:

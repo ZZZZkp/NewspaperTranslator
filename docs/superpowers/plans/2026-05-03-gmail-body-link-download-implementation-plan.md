@@ -20,7 +20,21 @@ This plan turns the approved Gmail body-link download design into a staged backe
 
 ## Execution Status
 
-Status on 2026-05-03: planning approved, implementation not started yet.
+Status on 2026-05-03: implementation complete. All six slices delivered. CLI verification passed on 2026-05-03.
+
+Summary of outcomes:
+
+- Slice 1 (stable body-link identity): `_body_link_attachment_id` generates `link:body-{hash24}` IDs. Raw paths are now 103 chars, well within filesystem limits. `link_url` remains visible in audit records.
+- Slice 2 (sender and translation filtering): `dengtawaikan@dengtazk.xin` added to `allowed_senders` in `config/gmail-config.json`. `www.dengtazk.xin` added to `allowed_link_domains`. `TRANSLATED_FILENAME_PATTERNS` added to `ingestion.py` and used to skip known translated PDFs.
+- Slice 3 (dengtazk.xin:8282 resolver): `_is_dengtazk_email_download_url` and `_try_download_direct_pdf` handle direct PDF responses from the new link family.
+- Slice 4 (preview-page resolution): `_find_script_resource_url_in_html` extracts PDF URLs from inline script config variables such as `pdfUrl`.
+- Slice 5 (audit semantics): translated body-link filenames are now recorded as skipped `body_link` audit items with `detail_code="body_link_filename_filtered"` before the attachment reaches the import pipeline.
+- Slice 6 (CLI verification): one real import run on 2026-05-03 fetched 25 messages, created 6 documents, and produced no path-length failures. Two messages failed with `401 Client Error` from dengtazk.xin (time-expired signed URLs, server-side limitation). A new translation filename pattern `【译】` was observed in production but is intentionally outside the initial conservative filter list.
+
+Open items:
+
+- The `【译】华尔街日报` and `【译】金融时报` filename patterns appear in production. They are currently imported. Extend `TRANSLATED_FILENAME_PATTERNS` when the pattern is confirmed as always-translated.
+- dengtazk.xin links returning 401 are recorded as `link_fetch_failed`. Slice 5 mentioned adding `dengtazk_download_link_not_found` and related codes; that refinement is deferred until the 401 causes operational confusion.
 
 The repository already has the key foundations for this slice:
 

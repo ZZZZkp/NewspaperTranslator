@@ -308,6 +308,60 @@ class IngestionSelectionTests(unittest.TestCase):
         self.assertEqual(results[0].document_key, "message-1:attachment-1:" + results[0].content_hash)
         self.assertEqual(document_count, 1)
 
+    def test_import_selected_messages_skips_known_translated_pdf_variants(self) -> None:
+        self.assertIsNotNone(
+            run_pending_migrations,
+            "run_pending_migrations should be importable from newspaper_translator.database",
+        )
+        self.assertIsNotNone(
+            import_selected_messages,
+            "import_selected_messages should be importable from newspaper_translator.ingestion",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage_root = pathlib.Path(temp_dir) / "storage"
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            matching_message = GmailMessage(
+                message_id="message-1",
+                sender="briefing@example.com",
+                attachments=[
+                    GmailAttachment(
+                        attachment_id="attachment-1",
+                        filename="wsj-2026-05-03.pdf",
+                        mime_type="application/pdf",
+                        content_bytes=b"%PDF-1.7 english",
+                    ),
+                    GmailAttachment(
+                        attachment_id="attachment-2",
+                        filename="中文-华尔街日报-2026-05-03.pdf",
+                        mime_type="application/pdf",
+                        content_bytes=b"%PDF-1.7 translated",
+                    ),
+                ],
+            )
+
+            results = import_selected_messages(
+                messages=[matching_message],
+                allowed_senders={"briefing@example.com"},
+                storage_root=storage_root,
+                database_url=database_url,
+            )
+
+            connection = sqlite3.connect(database_path)
+            try:
+                stored_filenames = connection.execute(
+                    "SELECT original_filename FROM documents ORDER BY original_filename"
+                ).fetchall()
+            finally:
+                connection.close()
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].document_key, "message-1:attachment-1:" + results[0].content_hash)
+        self.assertEqual(stored_filenames, [("wsj-2026-05-03.pdf",)])
+
 
 if __name__ == "__main__":
     unittest.main()

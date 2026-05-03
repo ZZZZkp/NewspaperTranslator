@@ -7,6 +7,12 @@ from newspaper_translator.database import sqlite_path_from_database_url
 from newspaper_translator.documents import DocumentIdentity
 from newspaper_translator.tasks import ProcessingTask
 
+TRANSLATED_FILENAME_PATTERNS = (
+    "中文-华尔街日报",
+    "中文-金融时报",
+    "【译】the_economist_(web_edition)_0205.pdf",
+)
+
 
 @dataclass(frozen=True)
 class GmailAttachment:
@@ -14,10 +20,13 @@ class GmailAttachment:
     filename: str
     mime_type: str
     content_bytes: bytes = b""
+    link_url: str | None = None
 
     @property
     def is_pdf(self) -> bool:
-        return self.mime_type == "application/pdf" or self.filename.lower().endswith(".pdf")
+        return (
+            self.mime_type == "application/pdf" or self.filename.lower().endswith(".pdf")
+        ) and not _is_translated_pdf_filename(self.filename)
 
 
 @dataclass(frozen=True)
@@ -178,3 +187,8 @@ def _build_raw_pdf_path(
         / message_id
         / f"{sanitized_attachment_id}-{content_hash}{suffix}"
     )
+
+
+def _is_translated_pdf_filename(filename: str) -> bool:
+    lowered_filename = filename.lower()
+    return any(pattern in lowered_filename for pattern in TRANSLATED_FILENAME_PATTERNS)

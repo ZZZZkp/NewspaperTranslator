@@ -1,3 +1,4 @@
+import base64
 import json
 import pathlib
 import requests
@@ -570,6 +571,197 @@ class GmailIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(stored_row[0], "download.pdf")
         self.assertTrue(stored_row[1].endswith(".pdf"))
+
+    def test_imports_long_signed_body_links_without_storing_the_full_url_as_attachment_identity(self) -> None:
+        self.assertIsNotNone(
+            run_pending_migrations,
+            "run_pending_migrations should be importable from newspaper_translator.database",
+        )
+        self.assertIsNotNone(
+            import_from_gmail,
+            "import_from_gmail should be importable from newspaper_translator.gmail",
+        )
+
+        long_signed_url = (
+            "https://www.dengtazk.xin:8282/api/public/email-download"
+            "?attachmentId=1058"
+            "&sentAt=1777637975"
+            "&delayMinutes=1440"
+            "&sign=3ad4d67f0172fefdb8e61497ba80dc0c80020edf28396447a55db10ec1df1453"
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = pathlib.Path(temp_dir)
+            config_path = temp_path / "gmail-config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "oauth_client_secrets_path": "./secrets/google-client.json",
+                        "oauth_token_path": "./secrets/gmail-token.json",
+                        "allowed_senders": ["briefing@example.com"],
+                        "query": "newer_than:7d",
+                        "label_ids": ["INBOX"],
+                        "max_results": 10,
+                        "include_spam_trash": False,
+                        "enable_body_links": True,
+                        "allowed_link_domains": ["www.dengtazk.xin"],
+                        "download_link_keywords": ["download", "pdf"],
+                    }
+                )
+            )
+
+            storage_root = temp_path / "storage"
+            database_path = temp_path / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            summary = import_from_gmail(
+                config_path=config_path,
+                storage_root=storage_root,
+                database_url=database_url,
+                service=_FakeLongSignedLinkService(long_signed_url),
+                downloader=_FakeLongSignedLinkDownloader(long_signed_url),
+            )
+
+            connection = sqlite3.connect(database_path)
+            try:
+                stored_row = connection.execute(
+                    """
+                    SELECT source_attachment_id, original_filename, raw_path
+                    FROM documents
+                    """
+                ).fetchone()
+            finally:
+                connection.close()
+
+        self.assertEqual(summary.created_document_count, 1)
+        self.assertEqual(stored_row[1], "email-download.pdf")
+        self.assertNotEqual(stored_row[0], f"link:{long_signed_url}")
+        self.assertNotIn("attachmentId=1058", stored_row[0])
+        self.assertNotIn("attachmentId=1058", pathlib.Path(stored_row[2]).name)
+        self.assertLess(len(pathlib.Path(stored_row[2]).name), 180)
+
+    def test_imports_pdf_documents_from_dengtazk_preview_pages_via_script_resource_urls(self) -> None:
+        self.assertIsNotNone(
+            run_pending_migrations,
+            "run_pending_migrations should be importable from newspaper_translator.database",
+        )
+        self.assertIsNotNone(
+            import_from_gmail,
+            "import_from_gmail should be importable from newspaper_translator.gmail",
+        )
+
+        preview_url = (
+            "https://www.dengtazk.xin:8282/api/public/email-download"
+            "?attachmentId=1066"
+            "&sentAt=1777728107"
+            "&delayMinutes=1440"
+            "&sign=19095352459332b104d5b2f393bed594d9e2952617f16d43d1bbd2f9dfd077ac"
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = pathlib.Path(temp_dir)
+            config_path = temp_path / "gmail-config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "oauth_client_secrets_path": "./secrets/google-client.json",
+                        "oauth_token_path": "./secrets/gmail-token.json",
+                        "allowed_senders": ["briefing@example.com"],
+                        "query": "newer_than:7d",
+                        "label_ids": ["INBOX"],
+                        "max_results": 10,
+                        "include_spam_trash": False,
+                        "enable_body_links": True,
+                        "allowed_link_domains": ["www.dengtazk.xin"],
+                        "download_link_keywords": ["download", "pdf"],
+                    }
+                )
+            )
+
+            storage_root = temp_path / "storage"
+            database_path = temp_path / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            summary = import_from_gmail(
+                config_path=config_path,
+                storage_root=storage_root,
+                database_url=database_url,
+                service=_FakeDengtazkPreviewPageService(preview_url),
+                downloader=_FakeDengtazkPreviewPageDownloader(preview_url),
+            )
+
+            connection = sqlite3.connect(database_path)
+            try:
+                stored_row = connection.execute(
+                    """
+                    SELECT original_filename, raw_path
+                    FROM documents
+                    """
+                ).fetchone()
+            finally:
+                connection.close()
+
+        self.assertEqual(summary.created_document_count, 1)
+        self.assertEqual(stored_row[0], "preview-file.pdf")
+        self.assertTrue(stored_row[1].endswith(".pdf"))
+
+    def test_skips_translated_pdf_body_links_and_records_filtered_audit_items(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(import_from_gmail)
+        self.assertIsNotNone(list_import_run_items)
+
+        translated_url = "https://example.com/pdfs/中文-华尔街日报-2026.pdf"
+        regular_url = "https://example.com/pdfs/regular-paper.pdf"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = pathlib.Path(temp_dir)
+            config_path = temp_path / "gmail-config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "oauth_client_secrets_path": "./secrets/google-client.json",
+                        "oauth_token_path": "./secrets/gmail-token.json",
+                        "allowed_senders": ["briefing@example.com"],
+                        "query": "newer_than:7d",
+                        "label_ids": ["INBOX"],
+                        "max_results": 10,
+                        "include_spam_trash": False,
+                        "enable_body_links": True,
+                        "allowed_link_domains": ["example.com"],
+                        "download_link_keywords": ["download", "pdf"],
+                    }
+                )
+            )
+
+            storage_root = temp_path / "storage"
+            database_path = temp_path / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            summary = import_from_gmail(
+                config_path=config_path,
+                storage_root=storage_root,
+                database_url=database_url,
+                service=_FakeTranslatedBodyLinkService(translated_url, regular_url),
+                downloader=_FakeTranslatedBodyLinkDownloader(translated_url, regular_url),
+            )
+
+            skipped_items = list_import_run_items(
+                database_url=database_url,
+                run_id=summary.run_id,
+                status="skipped",
+            )
+
+        self.assertEqual(summary.imported_attachment_count, 1)
+        self.assertEqual(summary.created_document_count, 1)
+        filtered_items = [
+            item for item in skipped_items
+            if item.detail_code == "body_link_filename_filtered"
+        ]
+        self.assertEqual(len(filtered_items), 1)
+        self.assertEqual(filtered_items[0].link_url, translated_url)
 
     def test_marks_import_run_failed_when_gmail_fetch_aborts(self) -> None:
         self.assertIsNotNone(list_import_runs)
@@ -1260,6 +1452,158 @@ class _FakeQqMailLandingPageDownloader:
         raise AssertionError(f"Should not fetch HTML for QQ landing page URL: {url}")
 
 
+class _FakeLongSignedLinkService:
+    def __init__(self, long_signed_url: str) -> None:
+        self._long_signed_url = long_signed_url
+
+    def users(self):
+        return _FakeLongSignedLinkUsersResource(self._long_signed_url)
+
+
+class _FakeLongSignedLinkUsersResource:
+    def __init__(self, long_signed_url: str) -> None:
+        self._long_signed_url = long_signed_url
+
+    def messages(self):
+        return _FakeLongSignedLinkMessagesResource(self._long_signed_url)
+
+
+class _FakeLongSignedLinkMessagesResource:
+    def __init__(self, long_signed_url: str) -> None:
+        self._long_signed_url = long_signed_url
+
+    def list(self, **kwargs):
+        return _FakeRequest(
+            {
+                "messages": [
+                    {"id": "message-long-link-1", "threadId": "thread-long-link-1"},
+                ],
+                "resultSizeEstimate": 1,
+            }
+        )
+
+    def get(self, *, userId: str, id: str, format: str):
+        return _FakeRequest(
+            {
+                "id": "message-long-link-1",
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": "Briefing <briefing@example.com>"}
+                    ],
+                    "parts": [
+                        {
+                            "mimeType": "text/plain",
+                            "filename": "",
+                            "body": {
+                                "data": _encode_gmail_body(self._long_signed_url)
+                            },
+                        }
+                    ],
+                },
+            }
+        )
+
+    def attachments(self):
+        return _FakeAttachmentsResource()
+
+
+class _FakeLongSignedLinkDownloader:
+    def __init__(self, long_signed_url: str) -> None:
+        self._long_signed_url = long_signed_url
+
+    def download_binary(self, url: str) -> bytes:
+        if url != self._long_signed_url:
+            raise AssertionError(f"Unexpected binary download URL: {url}")
+        return b"%PDF-1.7 long-signed-link"
+
+    def fetch_html(self, url: str) -> str:
+        raise AssertionError(f"Should not fetch HTML for direct PDF URL: {url}")
+
+
+class _FakeDengtazkPreviewPageService:
+    def __init__(self, preview_url: str) -> None:
+        self._preview_url = preview_url
+
+    def users(self):
+        return _FakeDengtazkPreviewPageUsersResource(self._preview_url)
+
+
+class _FakeDengtazkPreviewPageUsersResource:
+    def __init__(self, preview_url: str) -> None:
+        self._preview_url = preview_url
+
+    def messages(self):
+        return _FakeDengtazkPreviewPageMessagesResource(self._preview_url)
+
+
+class _FakeDengtazkPreviewPageMessagesResource:
+    def __init__(self, preview_url: str) -> None:
+        self._preview_url = preview_url
+
+    def list(self, **kwargs):
+        return _FakeRequest(
+            {
+                "messages": [
+                    {"id": "message-preview-link-1", "threadId": "thread-preview-link-1"},
+                ],
+                "resultSizeEstimate": 1,
+            }
+        )
+
+    def get(self, *, userId: str, id: str, format: str):
+        return _FakeRequest(
+            {
+                "id": "message-preview-link-1",
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": "Briefing <briefing@example.com>"}
+                    ],
+                    "parts": [
+                        {
+                            "mimeType": "text/plain",
+                            "filename": "",
+                            "body": {
+                                "data": _encode_gmail_body(self._preview_url)
+                            },
+                        }
+                    ],
+                },
+            }
+        )
+
+    def attachments(self):
+        return _FakeAttachmentsResource()
+
+
+class _FakeDengtazkPreviewPageDownloader:
+    def __init__(self, preview_url: str) -> None:
+        self._preview_url = preview_url
+        self.downloaded_urls: list[str] = []
+
+    def download_binary(self, url: str) -> bytes:
+        self.downloaded_urls.append(url)
+        if url == self._preview_url:
+            return b"<html>preview shell</html>"
+        if url == "https://www.dengtazk.xin:8282/files/preview-file.pdf":
+            return b"%PDF-1.7 preview-file"
+        raise AssertionError(f"Unexpected binary download URL: {url}")
+
+    def fetch_html(self, url: str) -> str:
+        if url != self._preview_url:
+            raise AssertionError(f"Unexpected HTML fetch URL: {url}")
+        return """
+            <html>
+              <body>
+                <script>
+                  window.viewerConfig = {
+                    pdfUrl: "/files/preview-file.pdf"
+                  };
+                </script>
+              </body>
+            </html>
+        """
+
+
 class _RetryingSingleMessageService:
     def users(self):
         return _RetryingSingleMessageUsersResource()
@@ -1322,6 +1666,83 @@ class _FlakyThenHealthyDownloader:
 
     def fetch_html(self, url: str) -> str:
         raise AssertionError(f"Should not fetch HTML for direct PDF URL: {url}")
+
+
+class _FakeTranslatedBodyLinkService:
+    def __init__(self, translated_url: str, regular_url: str) -> None:
+        self._translated_url = translated_url
+        self._regular_url = regular_url
+
+    def users(self):
+        return _FakeTranslatedBodyLinkUsersResource(self._translated_url, self._regular_url)
+
+
+class _FakeTranslatedBodyLinkUsersResource:
+    def __init__(self, translated_url: str, regular_url: str) -> None:
+        self._translated_url = translated_url
+        self._regular_url = regular_url
+
+    def messages(self):
+        return _FakeTranslatedBodyLinkMessagesResource(self._translated_url, self._regular_url)
+
+
+class _FakeTranslatedBodyLinkMessagesResource:
+    def __init__(self, translated_url: str, regular_url: str) -> None:
+        self._translated_url = translated_url
+        self._regular_url = regular_url
+
+    def list(self, **kwargs):
+        return _FakeRequest(
+            {
+                "messages": [
+                    {"id": "message-translated-link-1", "threadId": "thread-translated-1"},
+                ],
+                "resultSizeEstimate": 1,
+            }
+        )
+
+    def get(self, *, userId: str, id: str, format: str):
+        body_text = f"{self._translated_url} {self._regular_url}"
+        return _FakeRequest(
+            {
+                "id": "message-translated-link-1",
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": "Briefing <briefing@example.com>"}
+                    ],
+                    "parts": [
+                        {
+                            "mimeType": "text/plain",
+                            "filename": "",
+                            "body": {"data": _encode_gmail_body(body_text)},
+                        }
+                    ],
+                },
+            }
+        )
+
+    def attachments(self):
+        return _FakeAttachmentsResource()
+
+
+class _FakeTranslatedBodyLinkDownloader:
+    def __init__(self, translated_url: str, regular_url: str) -> None:
+        self._translated_url = translated_url
+        self._regular_url = regular_url
+
+    def download_binary(self, url: str) -> bytes:
+        if url == self._translated_url:
+            return b"%PDF-1.7 translated-content"
+        if url == self._regular_url:
+            return b"%PDF-1.7 regular-content"
+        raise AssertionError(f"Unexpected binary download URL: {url}")
+
+    def fetch_html(self, url: str) -> str:
+        raise AssertionError(f"Should not fetch HTML for direct PDF URLs: {url}")
+
+
+def _encode_gmail_body(text: str) -> str:
+    return base64.urlsafe_b64encode(text.encode("utf-8")).decode("ascii").rstrip("=")
 
 
 if __name__ == "__main__":

@@ -2,7 +2,8 @@
   "oauth_client_secrets_path": "../secrets/google-oauth-client.json",
   "oauth_token_path": "../secrets/gmail-token.json",
   "allowed_senders": [
-    "13802809612@163.com"
+    "13802809612@163.com",
+    "dengtawaikan@dengtazk.xin"
   ],
   "query": "newer_than:7d",
   "label_ids": [
@@ -11,7 +12,7 @@
   "max_results": 25,
   "include_spam_trash": false,
   "enable_body_links": true,
-  "allowed_link_domains": ["dl.dengtazk.xin", "wx.mail.qq.com"],
+  "allowed_link_domains": ["dl.dengtazk.xin", "www.dengtazk.xin", "wx.mail.qq.com"],
   "download_link_keywords": [
     "download",
     "pdf"

@@ -49,7 +49,7 @@ class DatabaseMigrationTests(unittest.TestCase):
         self.assertIn("0001_initial", applied_versions)
         self.assertIn("schema_migrations", table_names)
         self.assertIn("documents", table_names)
-        self.assertIn("processing_tasks", table_names)
+        self.assertNotIn("processing_tasks", table_names)
         self.assertIn("0001_initial", recorded_versions)
 
     def test_applies_import_audit_schema_migration_to_sqlite_database(self) -> None:
@@ -158,6 +158,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 "0008_article_fragment_page_numbers",
                 "0009_final_articles_article_key",
                 "0010_article_processing_runs",
+                "0011_drop_processing_tasks",
             ],
         )
 
@@ -320,6 +321,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 "0008_article_fragment_page_numbers",
                 "0009_final_articles_article_key",
                 "0010_article_processing_runs",
+                "0011_drop_processing_tasks",
             ],
         )
 

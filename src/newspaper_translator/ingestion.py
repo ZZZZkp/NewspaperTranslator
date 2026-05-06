@@ -4,8 +4,8 @@ from pathlib import Path
 import sqlite3
 
 from newspaper_translator.database import sqlite_path_from_database_url
+from newspaper_translator.document_processing import create_document_processing_run
 from newspaper_translator.documents import DocumentIdentity
-from newspaper_translator.tasks import ProcessingTask
 
 TRANSLATION_PREFIXES = ("【译】",)
 TRANSLATED_FILENAME_PATTERNS = (
@@ -56,10 +56,6 @@ def select_target_messages(
         for message in messages
         if message.sender in allowed_senders and any(attachment.is_pdf for attachment in message.attachments)
     ]
-
-
-def create_document_processing_task(*, document_key: str) -> ProcessingTask:
-    return ProcessingTask.create(task_name=f"process-document:{document_key}")
 
 
 def import_gmail_pdf_attachment(
@@ -124,25 +120,22 @@ def import_gmail_pdf_attachment(
         if was_created and not raw_path.exists():
             raw_path.write_bytes(attachment.content_bytes)
 
-        if was_created:
-            task = create_document_processing_task(document_key=identity.document_key)
-            connection.execute(
-                """
-                INSERT OR IGNORE INTO processing_tasks (task_name, status)
-                VALUES (?, ?)
-                """,
-                (task.task_name, task.status),
-            )
-
         connection.commit()
-        return ImportedDocument(
-            document_key=identity.document_key,
-            content_hash=content_hash,
-            raw_path=raw_path,
-            was_created=was_created,
-        )
     finally:
         connection.close()
+
+    if was_created:
+        create_document_processing_run(
+            database_url=database_url,
+            document_key=identity.document_key,
+        )
+
+    return ImportedDocument(
+        document_key=identity.document_key,
+        content_hash=content_hash,
+        raw_path=raw_path,
+        was_created=was_created,
+    )
 
 
 def import_selected_messages(

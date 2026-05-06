@@ -15,9 +15,12 @@ if str(SRC_ROOT) not in sys.path:
 try:
     from newspaper_translator.database import run_pending_migrations
     from newspaper_translator.worker import (
+        build_run_import_tick_from_env,
+        build_run_processing_tick_from_env,
         build_startup_report,
         build_startup_log_line,
         build_run_scheduler_tick_from_env,
+        get_last_import_run_started_at,
         run_startup_maintenance,
         run_worker_loop,
         should_run_catch_up_tick,
@@ -25,7 +28,10 @@ try:
 except ImportError:
     build_startup_log_line = None
     build_startup_report = None
+    build_run_import_tick_from_env = None
+    build_run_processing_tick_from_env = None
     build_run_scheduler_tick_from_env = None
+    get_last_import_run_started_at = None
     run_pending_migrations = None
     run_startup_maintenance = None
     run_worker_loop = None
@@ -250,7 +256,125 @@ class WorkerStartupTests(unittest.TestCase):
         self.assertEqual(process_article.call_args.kwargs["translator"].name, "translator")
         self.assertEqual(process_article.call_args.kwargs["summarizer_tagger"].name, "summarizer")
 
-    def test_worker_loop_runs_periodic_tick_when_scheduler_becomes_overdue(self) -> None:
+    def test_last_import_started_at_uses_import_runs_not_processing_scheduler_runs(self) -> None:
+        self.assertIsNotNone(get_last_import_run_started_at)
+
+        with patch("newspaper_translator.worker.list_import_runs") as list_import_runs:
+            list_import_runs.return_value = [
+                SimpleNamespace(started_at="2026-05-06T09:15:00")
+            ]
+
+            started_at = get_last_import_run_started_at(
+                database_url="sqlite:////tmp/newspaper-translator.db",
+            )
+
+        self.assertEqual(started_at, "2026-05-06T09:15:00")
+        self.assertEqual(list_import_runs.call_args.kwargs["database_url"], "sqlite:////tmp/newspaper-translator.db")
+        self.assertEqual(list_import_runs.call_args.kwargs["limit"], 1)
+
+    def test_worker_loop_runs_processing_each_poll_without_overdue_import(self) -> None:
+        self.assertIsNotNone(run_worker_loop)
+
+        env = {
+            "APP_ENV": "test",
+            "DATABASE_URL": "sqlite:////tmp/newspaper-translator.db",
+            "STORAGE_ROOT": "/tmp/newspaper-translator-data",
+            "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+            "GMAIL_IMPORT_INTERVAL_SECONDS": "7200",
+            "PROCESSING_POLL_INTERVAL_SECONDS": "60",
+        }
+        now_values = iter(
+            [
+                "2026-05-06T12:00:00",
+                "2026-05-06T12:00:00",
+            ]
+        )
+        import_started_values = iter(
+            [
+                "2026-05-06T11:30:00",
+                "2026-05-06T11:30:00",
+            ]
+        )
+        calls: list[tuple[str, str | None]] = []
+        sleep_calls: list[int] = []
+
+        def fake_startup_maintenance(**kwargs):
+            calls.append(("startup", kwargs["last_scheduler_run_started_at"]))
+            return {
+                "recovered_document_keys": [],
+                "recovered_article_keys": [],
+                "catch_up_triggered": False,
+                "scheduler_run_id": None,
+            }
+
+        def fake_get_last_started_at(*, database_url: str) -> str | None:
+            self.assertEqual(database_url, "sqlite:////tmp/newspaper-translator.db")
+            return next(import_started_values)
+
+        def fake_processing_tick() -> str:
+            calls.append(("processing", None))
+            return "processing-run-1"
+
+        def fake_import_tick(*, trigger_type: str) -> str:
+            calls.append(("import", trigger_type))
+            return "import-run-1"
+
+        run_worker_loop(
+            env=env,
+            now_fn=lambda: next(now_values),
+            sleep_fn=lambda seconds: sleep_calls.append(seconds),
+            max_loops=1,
+            run_startup_maintenance_fn=fake_startup_maintenance,
+            get_last_scheduler_run_started_at_fn=fake_get_last_started_at,
+            recover_stale_document_runs_fn=lambda: [],
+            recover_stale_article_runs_fn=lambda: [],
+            run_import_tick_fn=fake_import_tick,
+            run_processing_tick_fn=fake_processing_tick,
+        )
+
+        self.assertEqual(calls, [("startup", "2026-05-06T11:30:00"), ("processing", None)])
+        self.assertEqual(sleep_calls, [60])
+
+    def test_worker_loop_runs_import_when_import_interval_is_overdue(self) -> None:
+        self.assertIsNotNone(run_worker_loop)
+
+        env = {
+            "APP_ENV": "test",
+            "DATABASE_URL": "sqlite:////tmp/newspaper-translator.db",
+            "STORAGE_ROOT": "/tmp/newspaper-translator-data",
+            "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+            "GMAIL_IMPORT_INTERVAL_SECONDS": "7200",
+            "PROCESSING_POLL_INTERVAL_SECONDS": "60",
+        }
+        calls: list[tuple[str, str | None]] = []
+
+        run_worker_loop(
+            env=env,
+            now_fn=lambda: "2026-05-06T12:31:00",
+            sleep_fn=lambda seconds: None,
+            max_loops=1,
+            run_startup_maintenance_fn=lambda **kwargs: calls.append(
+                ("startup", kwargs["last_scheduler_run_started_at"])
+            ),
+            get_last_scheduler_run_started_at_fn=lambda *, database_url: "2026-05-06T10:30:00",
+            recover_stale_document_runs_fn=lambda: [],
+            recover_stale_article_runs_fn=lambda: [],
+            run_import_tick_fn=lambda *, trigger_type: calls.append(
+                ("import", trigger_type)
+            ) or "import-run-1",
+            run_processing_tick_fn=lambda: calls.append(("processing", None)) or "processing-run-1",
+        )
+
+        self.assertEqual(
+            calls,
+            [
+                ("startup", "2026-05-06T10:30:00"),
+                ("import", "interval"),
+                ("processing", None),
+            ],
+        )
+
+    def test_worker_loop_runs_periodic_import_and_processing_when_import_becomes_overdue(self) -> None:
         self.assertIsNotNone(run_worker_loop)
 
         env = {
@@ -290,8 +414,8 @@ class WorkerStartupTests(unittest.TestCase):
             return next(last_started_values)
 
         def fake_run_tick(*, trigger_type: str) -> str:
-            calls.append(("tick", trigger_type))
-            return "scheduler-run-1"
+            calls.append(("import", trigger_type))
+            return "import-run-1"
 
         run_worker_loop(
             env=env,
@@ -300,11 +424,20 @@ class WorkerStartupTests(unittest.TestCase):
             max_loops=1,
             run_startup_maintenance_fn=fake_startup_maintenance,
             get_last_scheduler_run_started_at_fn=fake_get_last_started_at,
-            run_scheduler_tick_fn=fake_run_tick,
+            run_import_tick_fn=fake_run_tick,
+            run_processing_tick_fn=lambda: calls.append(("processing", None)) or "processing-run-1",
             recover_stale_document_runs_fn=lambda: [],
+            recover_stale_article_runs_fn=lambda: [],
         )
 
-        self.assertEqual(calls, [("startup", "2026-04-28T10:30:00"), ("tick", "interval")])
+        self.assertEqual(
+            calls,
+            [
+                ("startup", "2026-04-28T10:30:00"),
+                ("import", "interval"),
+                ("processing", None),
+            ],
+        )
         self.assertEqual(sleep_calls, [60])
 
 

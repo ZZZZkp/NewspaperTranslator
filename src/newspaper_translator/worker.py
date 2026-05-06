@@ -10,6 +10,7 @@ from newspaper_translator.document_processing import (
     process_document,
     recover_stale_article_runs,
     recover_stale_document_runs,
+    run_processing_tick,
     run_scheduler_tick,
 )
 from newspaper_translator.gemini import (
@@ -18,6 +19,7 @@ from newspaper_translator.gemini import (
     GeminiContinuationMatcher,
 )
 from newspaper_translator.gmail import import_from_gmail
+from newspaper_translator.import_audit import list_import_runs
 from newspaper_translator.logging_utils import format_log_event
 from newspaper_translator.mineru import MineruClient
 from newspaper_translator.runtime import build_runtime_report
@@ -96,6 +98,13 @@ def get_last_scheduler_run_started_at(*, database_url: str) -> str | None:
     return latest_scheduler_run.started_at
 
 
+def get_last_import_run_started_at(*, database_url: str) -> str | None:
+    latest_import_runs = list_import_runs(database_url=database_url, limit=1)
+    if not latest_import_runs:
+        return None
+    return latest_import_runs[0].started_at
+
+
 def build_run_scheduler_tick_from_env(env: dict[str, str]):
     app_settings = AppSettings.from_env(env)
     document_limit = _read_int_setting(
@@ -123,6 +132,49 @@ def build_run_scheduler_tick_from_env(env: dict[str, str]):
             database_url=app_settings.database_url,
             trigger_type=trigger_type,
             import_documents=import_documents,
+            process_one_document=process_one_document,
+            document_limit=document_limit,
+            process_one_article=process_one_article,
+            article_limit=article_limit,
+        )
+        return scheduler_run.scheduler_run_id
+
+    return run_tick
+
+
+def build_run_import_tick_from_env(env: dict[str, str]):
+    app_settings = AppSettings.from_env(env)
+
+    def run_import_tick(*, trigger_type: str) -> str:
+        summary = import_from_gmail(
+            config_path=Path(app_settings.gmail_config_path),
+            storage_root=Path(app_settings.storage_root),
+            database_url=app_settings.database_url,
+        )
+        return getattr(summary, "run_id", "")
+
+    return run_import_tick
+
+
+def build_run_processing_tick_from_env(env: dict[str, str]):
+    app_settings = AppSettings.from_env(env)
+    document_limit = _read_int_setting(
+        env,
+        "DOCUMENT_WORKER_CONCURRENCY",
+        default=2,
+    )
+    article_limit = _read_int_setting(
+        env,
+        "ARTICLE_WORKER_CONCURRENCY",
+        default=document_limit,
+    )
+    process_one_document = build_process_one_document_from_env(env)
+    process_one_article = build_process_one_article_from_env(env)
+
+    def run_tick() -> str:
+        scheduler_run = run_processing_tick(
+            database_url=app_settings.database_url,
+            trigger_type="processing",
             process_one_document=process_one_document,
             document_limit=document_limit,
             process_one_article=process_one_article,
@@ -267,50 +319,65 @@ def run_worker_loop(
     sleep_fn=None,
     max_loops: int | None = None,
     run_startup_maintenance_fn=run_startup_maintenance,
-    get_last_scheduler_run_started_at_fn=get_last_scheduler_run_started_at,
+    get_last_scheduler_run_started_at_fn=get_last_import_run_started_at,
     recover_stale_document_runs_fn=None,
     recover_stale_article_runs_fn=None,
     run_scheduler_tick_fn=None,
+    run_import_tick_fn=None,
+    run_processing_tick_fn=None,
 ) -> None:
     app_settings = AppSettings.from_env(env)
     now = now_fn or _current_timestamp
     sleep = sleep_fn or time.sleep
-    scheduler_interval_seconds = _read_int_setting(
+    import_interval_seconds = _read_int_setting(
         env,
-        "SCHEDULER_INTERVAL_SECONDS",
-        default=7200,
+        "GMAIL_IMPORT_INTERVAL_SECONDS",
+        default=_read_int_setting(env, "SCHEDULER_INTERVAL_SECONDS", default=7200),
     )
-    poll_interval_seconds = _read_int_setting(
+    processing_poll_interval_seconds = _read_int_setting(
         env,
-        "WORKER_POLL_INTERVAL_SECONDS",
-        default=60,
+        "PROCESSING_POLL_INTERVAL_SECONDS",
+        default=_read_int_setting(env, "WORKER_POLL_INTERVAL_SECONDS", default=60),
     )
     recover = recover_stale_document_runs_fn or build_recover_stale_document_runs_from_env(env)
     recover_articles = recover_stale_article_runs_fn or build_recover_stale_article_runs_from_env(env)
-    run_tick = run_scheduler_tick_fn or build_run_scheduler_tick_from_env(env)
+    run_import_tick = (
+        run_import_tick_fn
+        or run_scheduler_tick_fn
+        or build_run_import_tick_from_env(env)
+    )
+    run_processing_tick_callback = run_processing_tick_fn or build_run_processing_tick_from_env(env)
 
     run_startup_maintenance_fn(
         last_scheduler_run_started_at=get_last_scheduler_run_started_at_fn(
             database_url=app_settings.database_url,
         ),
         now=now(),
-        interval_seconds=scheduler_interval_seconds,
+        interval_seconds=import_interval_seconds,
         recover_stale_document_runs=recover,
         recover_stale_article_runs=recover_articles,
-        run_scheduler_tick=run_tick,
+        run_scheduler_tick=run_import_tick,
     )
 
     loop_count = 0
+    processing_running = False
     while max_loops is None or loop_count < max_loops:
-        sleep(poll_interval_seconds)
+        sleep(processing_poll_interval_seconds)
         if should_run_catch_up_tick(
             last_scheduler_run_started_at=get_last_scheduler_run_started_at_fn(
                 database_url=app_settings.database_url,
             ),
             now=now(),
-            interval_seconds=scheduler_interval_seconds,
+            interval_seconds=import_interval_seconds,
         ):
-            run_tick(trigger_type="interval")
+            run_import_tick(trigger_type="interval")
+
+        if not processing_running:
+            processing_running = True
+            try:
+                run_processing_tick_callback()
+            finally:
+                processing_running = False
         loop_count += 1
 
 

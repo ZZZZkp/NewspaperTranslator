@@ -17,6 +17,156 @@ except ImportError:
 
 
 class DatabaseMigrationTests(unittest.TestCase):
+    def test_backfills_document_processing_runs_before_dropping_legacy_queue(
+        self,
+    ) -> None:
+        self.assertIsNotNone(
+            run_pending_migrations,
+            "run_pending_migrations should be importable from newspaper_translator.database",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            connection = sqlite3.connect(database_path)
+            try:
+                connection.execute(
+                    """
+                    CREATE TABLE schema_migrations (
+                        version TEXT PRIMARY KEY,
+                        applied_at TEXT NOT NULL
+                    )
+                    """
+                )
+                for migration_path in sorted(
+                    (SRC_ROOT / "newspaper_translator" / "migrations").glob("*.sql")
+                ):
+                    if migration_path.stem > "0010_article_processing_runs":
+                        continue
+                    connection.executescript(migration_path.read_text())
+                    connection.execute(
+                        """
+                        INSERT INTO schema_migrations (version, applied_at)
+                        VALUES (?, CURRENT_TIMESTAMP)
+                        """,
+                        (migration_path.stem,),
+                    )
+
+                connection.executemany(
+                    """
+                    INSERT INTO documents (
+                        document_key,
+                        source_name,
+                        source_message_id,
+                        source_attachment_id,
+                        sender,
+                        original_filename,
+                        content_hash,
+                        raw_path,
+                        import_status
+                    )
+                    VALUES (?, 'gmail', ?, ?, 'briefing@example.com', ?, ?, ?, 'imported')
+                    """,
+                    [
+                        (
+                            "doc-existing",
+                            "message-existing",
+                            "attachment-existing",
+                            "existing.pdf",
+                            "hash-existing",
+                            "/tmp/existing.pdf",
+                        ),
+                        (
+                            "doc-missing",
+                            "message-missing",
+                            "attachment-missing",
+                            "missing.pdf",
+                            "hash-missing",
+                            "/tmp/missing.pdf",
+                        ),
+                    ],
+                )
+                connection.executemany(
+                    """
+                    INSERT INTO processing_tasks (task_name, status)
+                    VALUES (?, 'pending')
+                    """,
+                    [
+                        ("process-document:doc-existing",),
+                        ("process-document:doc-missing",),
+                    ],
+                )
+                connection.execute(
+                    """
+                    INSERT INTO document_processing_runs (
+                        processing_run_id,
+                        document_key,
+                        status,
+                        current_step,
+                        automatic_failure_count,
+                        last_error_message
+                    )
+                    VALUES (
+                        'existing-run:doc-existing',
+                        'doc-existing',
+                        'failed',
+                        'extract_articles',
+                        2,
+                        'keep me'
+                    )
+                    """
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            run_pending_migrations(database_url)
+
+            connection = sqlite3.connect(database_path)
+            try:
+                processing_tasks_exists = connection.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM sqlite_master
+                    WHERE type = 'table' AND name = 'processing_tasks'
+                    """
+                ).fetchone()[0]
+                run_rows = {
+                    row[0]: row[1:]
+                    for row in connection.execute(
+                        """
+                        SELECT
+                            document_key,
+                            processing_run_id,
+                            status,
+                            current_step,
+                            automatic_failure_count,
+                            last_error_message
+                        FROM document_processing_runs
+                        ORDER BY document_key
+                        """
+                    )
+                }
+            finally:
+                connection.close()
+
+        self.assertEqual(processing_tasks_exists, 0)
+        self.assertEqual(set(run_rows), {"doc-existing", "doc-missing"})
+        self.assertEqual(
+            run_rows["doc-missing"][:3],
+            ("legacy-processing-task:doc-missing", "pending", "parse_persist"),
+        )
+        self.assertEqual(
+            run_rows["doc-existing"],
+            (
+                "existing-run:doc-existing",
+                "failed",
+                "extract_articles",
+                2,
+                "keep me",
+            ),
+        )
+
     def test_applies_initial_schema_migration_to_sqlite_database(self) -> None:
         self.assertIsNotNone(
             run_pending_migrations,

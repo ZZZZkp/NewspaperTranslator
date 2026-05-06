@@ -7,7 +7,7 @@ import os
 from email.utils import parseaddr
 from pathlib import Path
 import re
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse
 
 from newspaper_translator.import_audit import (
     claim_failed_message_for_retry,
@@ -1037,7 +1037,7 @@ def _looks_like_pdf_url(url: str) -> bool:
 
 def _filename_from_url(url: str) -> str:
     path = urlparse(url).path
-    filename = Path(path).name
+    filename = unquote(Path(path).name)
     if not filename:
         return "download.pdf"
     if Path(filename).suffix:

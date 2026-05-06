@@ -21,6 +21,7 @@ from newspaper_translator.document_processing import (
     get_document_processing_run,
     request_manual_article_retry,
     request_manual_document_retry,
+    run_processing_tick,
     run_scheduler_tick,
 )
 from newspaper_translator.gemini import (
@@ -39,6 +40,7 @@ from newspaper_translator.mineru import MineruClient
 from newspaper_translator.pdf import extract_articles_from_mineru_markdown, parse_pdf_articles
 from newspaper_translator.runtime import build_runtime_report
 from newspaper_translator.worker import (
+    build_process_one_article_from_env,
     build_process_one_document_from_env,
     build_run_scheduler_tick_from_env,
 )
@@ -370,18 +372,25 @@ def run_process_pending_documents_from_env(env: dict[str, str]):
     resolved_env.update(env)
     database_url = resolved_env["DATABASE_URL"]
     process_one_document = build_process_one_document_from_env(resolved_env)
+    process_one_article = build_process_one_article_from_env(resolved_env)
     document_limit = _read_int_setting(
         resolved_env,
         "DOCUMENT_WORKER_CONCURRENCY",
         default=2,
     )
+    article_limit = _read_int_setting(
+        resolved_env,
+        "ARTICLE_WORKER_CONCURRENCY",
+        default=document_limit,
+    )
 
-    return run_scheduler_tick(
+    return run_processing_tick(
         database_url=database_url,
-        trigger_type="manual",
-        import_documents=lambda: {},
+        trigger_type="processing",
         process_one_document=process_one_document,
         document_limit=document_limit,
+        process_one_article=process_one_article,
+        article_limit=article_limit,
     )
 
 

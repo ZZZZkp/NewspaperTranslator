@@ -1,3 +1,4 @@
+import json
 import pathlib
 from types import SimpleNamespace
 import sys
@@ -525,6 +526,38 @@ class ManagementCommandTests(unittest.TestCase):
         self.assertIn('"scheduler_run_id": "scheduler-run-2"', output)
         self.assertIn('"selected_document_count": 2', output)
         self.assertIn('"import_run_id": null', output)
+
+    def test_process_pending_documents_uses_processing_tick_without_gmail_import(self) -> None:
+        self.assertIsNotNone(
+            run_cli,
+            "run_cli should be importable from newspaper_translator.manage",
+        )
+
+        with patch("newspaper_translator.manage.build_process_one_document_from_env") as build_document:
+            with patch("newspaper_translator.manage.build_process_one_article_from_env") as build_article:
+                with patch("newspaper_translator.manage.run_processing_tick") as run_processing_tick:
+                    build_document.return_value = lambda **kwargs: None
+                    build_article.return_value = lambda **kwargs: None
+                    run_processing_tick.return_value = SimpleNamespace(
+                        scheduler_run_id="processing-run-1",
+                        status="succeeded",
+                        trigger_type="processing",
+                    )
+
+                    exit_code, output = run_cli(
+                        [
+                            "process-pending-documents",
+                            "--database-url",
+                            "sqlite:////tmp/newspaper-translator.db",
+                        ]
+                    )
+
+        payload = json.loads(output)
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["scheduler_run_id"], "processing-run-1")
+        self.assertEqual(run_processing_tick.call_args.kwargs["trigger_type"], "processing")
+        self.assertNotIn("import_documents", run_processing_tick.call_args.kwargs)
 
     def test_retry_document_command_requests_manual_retry_for_document(self) -> None:
         self.assertIsNotNone(

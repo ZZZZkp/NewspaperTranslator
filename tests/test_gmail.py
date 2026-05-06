@@ -763,6 +763,62 @@ class GmailIntegrationTests(unittest.TestCase):
         self.assertEqual(len(filtered_items), 1)
         self.assertEqual(filtered_items[0].link_url, translated_url)
 
+    def test_skips_translation_prefix_pdf_body_links_and_records_filtered_audit_items(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(import_from_gmail)
+        self.assertIsNotNone(list_import_run_items)
+
+        translated_url = "https://example.com/pdfs/【译】金融时报-5-5.pdf"
+        regular_url = "https://example.com/pdfs/regular-paper.pdf"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = pathlib.Path(temp_dir)
+            config_path = temp_path / "gmail-config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "oauth_client_secrets_path": "./secrets/google-client.json",
+                        "oauth_token_path": "./secrets/gmail-token.json",
+                        "allowed_senders": ["briefing@example.com"],
+                        "query": "newer_than:7d",
+                        "label_ids": ["INBOX"],
+                        "max_results": 10,
+                        "include_spam_trash": False,
+                        "enable_body_links": True,
+                        "allowed_link_domains": ["example.com"],
+                        "download_link_keywords": ["download", "pdf"],
+                    }
+                )
+            )
+
+            storage_root = temp_path / "storage"
+            database_path = temp_path / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            summary = import_from_gmail(
+                config_path=config_path,
+                storage_root=storage_root,
+                database_url=database_url,
+                service=_FakeTranslatedBodyLinkService(translated_url, regular_url),
+                downloader=_FakeTranslatedBodyLinkDownloader(translated_url, regular_url),
+            )
+
+            skipped_items = list_import_run_items(
+                database_url=database_url,
+                run_id=summary.run_id,
+                status="skipped",
+            )
+
+        self.assertEqual(summary.imported_attachment_count, 1)
+        self.assertEqual(summary.created_document_count, 1)
+        filtered_items = [
+            item for item in skipped_items
+            if item.detail_code == "body_link_filename_filtered"
+        ]
+        self.assertEqual(len(filtered_items), 1)
+        self.assertEqual(filtered_items[0].link_url, translated_url)
+
     def test_marks_import_run_failed_when_gmail_fetch_aborts(self) -> None:
         self.assertIsNotNone(list_import_runs)
 

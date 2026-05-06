@@ -27,7 +27,7 @@ from newspaper_translator.import_audit import (
 from newspaper_translator.ingestion import (
     GmailAttachment,
     GmailMessage,
-    TRANSLATED_FILENAME_PATTERNS,
+    _is_translated_pdf_filename,
     import_selected_messages,
     select_target_messages,
 )
@@ -563,8 +563,7 @@ def _extract_pdf_links_from_message_body(
                 )
                 continue
             if attachment is not None:
-                lowered_filename = attachment.filename.lower()
-                if any(pattern in lowered_filename for pattern in TRANSLATED_FILENAME_PATTERNS):
+                if _is_translated_pdf_filename(attachment.filename):
                     _emit_body_link_audit(
                         body_link_audit_callback,
                         message_id=message_id,

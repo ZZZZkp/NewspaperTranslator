@@ -309,6 +309,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 "0009_final_articles_article_key",
                 "0010_article_processing_runs",
                 "0011_drop_processing_tasks",
+                "0012_article_enrichment_classification",
             ],
         )
 
@@ -472,8 +473,28 @@ class DatabaseMigrationTests(unittest.TestCase):
                 "0009_final_articles_article_key",
                 "0010_article_processing_runs",
                 "0011_drop_processing_tasks",
+                "0012_article_enrichment_classification",
             ],
         )
+
+    def test_article_enrichment_outputs_has_classification_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            connection = sqlite3.connect(database_path)
+            try:
+                columns = [
+                    row[1]
+                    for row in connection.execute(
+                        "PRAGMA table_info(article_enrichment_outputs)"
+                    ).fetchall()
+                ]
+            finally:
+                connection.close()
+
+        self.assertIn("content_type", columns)
+        self.assertIn("classification_reason", columns)
 
 
 if __name__ == "__main__":

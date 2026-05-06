@@ -72,6 +72,7 @@ try:
         recover_stale_article_runs,
         recover_stale_document_runs,
         request_manual_article_retry,
+        run_processing_tick,
         run_scheduler_tick,
         succeed_article_processing_run,
         request_manual_document_retry,
@@ -98,6 +99,7 @@ except ImportError:
     recover_stale_article_runs = None
     recover_stale_document_runs = None
     request_manual_article_retry = None
+    run_processing_tick = None
     run_scheduler_tick = None
     succeed_article_processing_run = None
     request_manual_document_retry = None
@@ -1699,6 +1701,109 @@ class SchedulerRunStoreTests(unittest.TestCase):
         self.assertEqual(stored_scheduler_run.failed_document_count, 0)
         self.assertEqual(stored_scheduler_run.status, "succeeded")
 
+    def test_processing_tick_processes_documents_without_importing_gmail(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_document_processing_run)
+        self.assertIsNotNone(run_processing_tick)
+        self.assertIsNotNone(get_scheduler_run)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            create_document_processing_run(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            processed_document_keys: list[str] = []
+
+            def process_one_document(*, document_key: str, scheduler_run_id: str, locked_by: str):
+                processed_document_keys.append(document_key)
+                return SimpleNamespace(
+                    document_key=document_key,
+                    status="succeeded",
+                    scheduler_run_id=scheduler_run_id,
+                    locked_by=locked_by,
+                )
+
+            scheduler_run = run_processing_tick(
+                database_url=database_url,
+                trigger_type="processing",
+                process_one_document=process_one_document,
+                document_limit=10,
+            )
+            stored_scheduler_run = get_scheduler_run(
+                database_url=database_url,
+                scheduler_run_id=scheduler_run.scheduler_run_id,
+            )
+
+        self.assertEqual(processed_document_keys, [document_key])
+        self.assertEqual(stored_scheduler_run.import_run_id, None)
+        self.assertEqual(stored_scheduler_run.selected_document_count, 1)
+        self.assertEqual(stored_scheduler_run.completed_document_count, 1)
+        self.assertEqual(stored_scheduler_run.failed_document_count, 0)
+        self.assertEqual(stored_scheduler_run.status, "succeeded")
+
+    def test_processing_tick_processes_documents_before_articles(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_document_processing_run)
+        self.assertIsNotNone(create_article_processing_run)
+        self.assertIsNotNone(run_processing_tick)
+        self.assertIsNotNone(list_latest_document_articles)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            create_document_processing_run(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            self._persist_parsed_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            article = list_latest_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )[0]
+            create_article_processing_run(
+                database_url=database_url,
+                article_id=article.article_id,
+            )
+            events: list[str] = []
+
+            def process_one_document(*, document_key: str, scheduler_run_id: str, locked_by: str):
+                events.append(f"document:{document_key}")
+                return SimpleNamespace(status="succeeded")
+
+            def process_one_article(*, article_key: str, locked_by: str):
+                events.append(f"article:{article_key}")
+                return succeed_article_processing_run(
+                    database_url=database_url,
+                    article_key=article_key,
+                    last_success_input_hash=f"hash:{locked_by}",
+                )
+
+            run_processing_tick(
+                database_url=database_url,
+                trigger_type="processing",
+                process_one_document=process_one_document,
+                document_limit=10,
+                process_one_article=process_one_article,
+                article_limit=10,
+            )
+
+        self.assertEqual(events, [f"document:{document_key}", f"article:{article.article_key}"])
+
     def test_scheduler_tick_continues_when_one_document_fails_and_marks_run_partial(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
         self.assertIsNotNone(create_document_processing_run)
@@ -1868,6 +1973,8 @@ class SchedulerRunStoreTests(unittest.TestCase):
                 "scheduler.tick.started",
                 "scheduler.import.started",
                 "scheduler.import.finished",
+                "scheduler.processing.started",
+                "scheduler.processing.finished",
                 "scheduler.tick.finished",
             ],
         )

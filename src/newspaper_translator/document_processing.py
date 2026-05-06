@@ -1478,24 +1478,18 @@ def run_scheduler_tick(
     article_locked_by_prefix: str = "article-worker",
     log_event=None,
 ) -> SchedulerRun:
-    scheduler_run = create_scheduler_run(
-        database_url=database_url,
-        trigger_type=trigger_type,
-    )
     _log_event(
         log_event,
         event="scheduler.tick.started",
         details={
-            "scheduler_run_id": scheduler_run.scheduler_run_id,
             "trigger_type": trigger_type,
         },
     )
-
     _log_event(
         log_event,
         event="scheduler.import.started",
         details={
-            "scheduler_run_id": scheduler_run.scheduler_run_id,
+            "trigger_type": trigger_type,
         },
     )
     import_result = import_documents()
@@ -1504,21 +1498,64 @@ def run_scheduler_tick(
         log_event,
         event="scheduler.import.finished",
         details={
-            "scheduler_run_id": scheduler_run.scheduler_run_id,
+            "trigger_type": trigger_type,
             "import_run_id": import_run_id,
+        },
+    )
+    finalized_run = run_processing_tick(
+        database_url=database_url,
+        trigger_type=trigger_type,
+        process_one_document=process_one_document,
+        document_limit=document_limit,
+        process_one_article=process_one_article,
+        article_limit=article_limit,
+        import_run_id=import_run_id,
+        locked_by_prefix=locked_by_prefix,
+        article_locked_by_prefix=article_locked_by_prefix,
+        log_event=log_event,
+    )
+    _log_event(
+        log_event,
+        event="scheduler.tick.finished",
+        details={
+            "scheduler_run_id": finalized_run.scheduler_run_id,
+            "status": finalized_run.status,
+            "selected_document_count": finalized_run.selected_document_count,
+            "completed_document_count": finalized_run.completed_document_count,
+            "failed_document_count": finalized_run.failed_document_count,
+        },
+    )
+    return finalized_run
+
+
+def run_processing_tick(
+    *,
+    database_url: str,
+    trigger_type: str,
+    process_one_document,
+    document_limit: int,
+    process_one_article=None,
+    article_limit: int = 0,
+    import_run_id: str | None = None,
+    locked_by_prefix: str = "scheduler-worker",
+    article_locked_by_prefix: str = "article-worker",
+    log_event=None,
+) -> SchedulerRun:
+    scheduler_run = create_scheduler_run(
+        database_url=database_url,
+        trigger_type=trigger_type,
+    )
+    _log_event(
+        log_event,
+        event="scheduler.processing.started",
+        details={
+            "scheduler_run_id": scheduler_run.scheduler_run_id,
+            "trigger_type": trigger_type,
         },
     )
     eligible_runs = list_eligible_document_processing_runs(
         database_url=database_url,
         limit=document_limit,
-    )
-    eligible_article_runs = (
-        list_eligible_article_processing_runs(
-            database_url=database_url,
-            limit=article_limit,
-        )
-        if process_one_article is not None and article_limit > 0
-        else []
     )
 
     completed_document_count = 0
@@ -1548,6 +1585,14 @@ def run_scheduler_tick(
             else:
                 failed_document_count += 1
 
+    eligible_article_runs = (
+        list_eligible_article_processing_runs(
+            database_url=database_url,
+            limit=article_limit,
+        )
+        if process_one_article is not None and article_limit > 0
+        else []
+    )
     max_article_workers = max(1, len(eligible_article_runs))
     with ThreadPoolExecutor(max_workers=max_article_workers) as executor:
         future_to_article_key = {
@@ -1593,7 +1638,7 @@ def run_scheduler_tick(
     )
     _log_event(
         log_event,
-        event="scheduler.tick.finished",
+        event="scheduler.processing.finished",
         details={
             "scheduler_run_id": finalized_run.scheduler_run_id,
             "status": finalized_run.status,

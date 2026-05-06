@@ -2,7 +2,9 @@ import json
 import pathlib
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -264,6 +266,78 @@ class WebHealthEndpointTests(unittest.TestCase):
         self.assertEqual([item["item_type"] for item in run_items_payload["items"]], ["body_link"])
         self.assertEqual(status_items, "200 OK")
         self.assertEqual([item["detail_code"] for item in items_payload["items"]], ["link_fetch_failed"])
+
+    def test_manual_gmail_import_endpoint_returns_import_summary(self) -> None:
+        self.assertIsNotNone(create_app)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            with patch("newspaper_translator.web.import_from_gmail") as import_from_gmail:
+                import_from_gmail.return_value = SimpleNamespace(
+                    run_id="import-run-1",
+                    status="succeeded",
+                    fetched_message_count=25,
+                    imported_attachment_count=3,
+                    created_document_count=2,
+                    skipped_document_count=1,
+                )
+
+                status, _, body = _perform_wsgi_request(
+                    app,
+                    path="/api/gmail/import",
+                    method="POST",
+                )
+
+        payload = json.loads(body.decode("utf-8"))
+
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(payload["import_run"]["run_id"], "import-run-1")
+        self.assertEqual(payload["import_run"]["created_document_count"], 2)
+        self.assertEqual(import_from_gmail.call_args.kwargs["config_path"], pathlib.Path("/tmp/gmail-config.json"))
+        self.assertEqual(import_from_gmail.call_args.kwargs["storage_root"], pathlib.Path(temp_dir))
+        self.assertEqual(import_from_gmail.call_args.kwargs["database_url"], database_url)
+
+    def test_manual_gmail_import_endpoint_returns_error_when_import_fails(self) -> None:
+        self.assertIsNotNone(create_app)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            with patch("newspaper_translator.web.import_from_gmail") as import_from_gmail:
+                import_from_gmail.side_effect = RuntimeError("gmail unavailable")
+
+                status, _, body = _perform_wsgi_request(
+                    app,
+                    path="/api/gmail/import",
+                    method="POST",
+                )
+
+        payload = json.loads(body.decode("utf-8"))
+
+        self.assertEqual(status, "500 Internal Server Error")
+        self.assertEqual(payload["status"], "gmail_import_failed")
+        self.assertIn("gmail unavailable", payload["error"])
 
     def test_document_processing_endpoints_return_current_state_and_support_retry(self) -> None:
         self.assertIsNotNone(create_document_processing_run)

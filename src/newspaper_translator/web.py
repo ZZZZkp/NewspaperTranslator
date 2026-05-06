@@ -22,6 +22,7 @@ from newspaper_translator.document_processing import (
     request_manual_article_retry,
     request_manual_document_retry,
 )
+from newspaper_translator.gmail import import_from_gmail
 from newspaper_translator.import_audit import (
     get_import_run,
     list_import_items,
@@ -34,6 +35,8 @@ from newspaper_translator.runtime import build_runtime_report
 def create_app(env: Mapping[str, str]):
     runtime_report = build_runtime_report(env=env, service="web")
     database_url = env["DATABASE_URL"]
+    storage_root = env["STORAGE_ROOT"]
+    gmail_config_path = env["GMAIL_CONFIG_PATH"]
     focus_tags = _read_csv_setting(env, "FOCUS_TAGS")
 
     def app(environ, start_response):
@@ -90,6 +93,34 @@ def create_app(env: Mapping[str, str]):
                 )
             }
             return _json_response(start_response, "200 OK", payload)
+
+        if path == "/api/gmail/import":
+            if environ.get("REQUEST_METHOD", "GET").upper() != "POST":
+                return _json_response(
+                    start_response,
+                    "405 Method Not Allowed",
+                    {"status": "method_not_allowed"},
+                )
+            try:
+                import_summary = import_from_gmail(
+                    config_path=Path(gmail_config_path),
+                    storage_root=Path(storage_root),
+                    database_url=database_url,
+                )
+            except Exception as exc:  # noqa: BLE001
+                return _json_response(
+                    start_response,
+                    "500 Internal Server Error",
+                    {
+                        "status": "gmail_import_failed",
+                        "error": str(exc),
+                    },
+                )
+            return _json_response(
+                start_response,
+                "200 OK",
+                {"import_run": _to_jsonable(import_summary)},
+            )
 
         if path == "/api/articles":
             payload = {

@@ -7,6 +7,7 @@ from newspaper_translator.database import sqlite_path_from_database_url
 from newspaper_translator.documents import DocumentIdentity
 from newspaper_translator.tasks import ProcessingTask
 
+TRANSLATION_PREFIXES = ("【译】",)
 TRANSLATED_FILENAME_PATTERNS = (
     "中文-华尔街日报",
     "中文-金融时报",
@@ -190,5 +191,8 @@ def _build_raw_pdf_path(
 
 
 def _is_translated_pdf_filename(filename: str) -> bool:
-    lowered_filename = filename.lower()
-    return any(pattern in lowered_filename for pattern in TRANSLATED_FILENAME_PATTERNS)
+    base = Path(filename).name
+    if base.startswith(TRANSLATION_PREFIXES):
+        return True
+    lowered_base = base.lower()
+    return any(pattern in lowered_base for pattern in TRANSLATED_FILENAME_PATTERNS)

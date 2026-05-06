@@ -340,6 +340,12 @@ class IngestionSelectionTests(unittest.TestCase):
                         mime_type="application/pdf",
                         content_bytes=b"%PDF-1.7 translated",
                     ),
+                    GmailAttachment(
+                        attachment_id="attachment-3",
+                        filename="【译】金融时报-5-5.pdf",
+                        mime_type="application/pdf",
+                        content_bytes=b"%PDF-1.7 prefix-translated",
+                    ),
                 ],
             )
 
@@ -361,6 +367,47 @@ class IngestionSelectionTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].document_key, "message-1:attachment-1:" + results[0].content_hash)
         self.assertEqual(stored_filenames, [("wsj-2026-05-03.pdf",)])
+
+
+class TranslationPrefixFilterTests(unittest.TestCase):
+    def _attachment(self, filename: str) -> "GmailAttachment":
+        self.assertIsNotNone(
+            GmailAttachment,
+            "GmailAttachment should be importable from newspaper_translator.ingestion",
+        )
+        return GmailAttachment(
+            attachment_id="attachment-1",
+            filename=filename,
+            mime_type="application/pdf",
+        )
+
+    def test_rejects_pdf_whose_basename_starts_with_translation_prefix(self) -> None:
+        for filename in (
+            "【译】金融时报-5-5.pdf",
+            "【译】华尔街日报-5-2.pdf",
+            "【译】纽约时报.pdf",
+            "/some/path/【译】xxx.pdf",
+        ):
+            with self.subTest(filename=filename):
+                self.assertFalse(self._attachment(filename).is_pdf)
+
+    def test_accepts_pdf_without_translation_prefix(self) -> None:
+        for filename in (
+            "金融时报-5-5.pdf",
+            "华尔街日报-5-2.pdf",
+            "wsj-2026-05-03.pdf",
+        ):
+            with self.subTest(filename=filename):
+                self.assertTrue(self._attachment(filename).is_pdf)
+
+    def test_keeps_legacy_translated_substring_patterns(self) -> None:
+        for filename in (
+            "中文-华尔街日报-2026-05-03.pdf",
+            "中文-金融时报-2026-05-03.pdf",
+            "【译】the_economist_(web_edition)_0205.pdf",
+        ):
+            with self.subTest(filename=filename):
+                self.assertFalse(self._attachment(filename).is_pdf)
 
 
 if __name__ == "__main__":

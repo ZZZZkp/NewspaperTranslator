@@ -12,6 +12,7 @@ if str(SRC_ROOT) not in sys.path:
 
 try:
     from newspaper_translator.database import run_pending_migrations
+    import newspaper_translator.ingestion as ingestion_module
     from newspaper_translator.ingestion import (
         GmailAttachment,
         GmailMessage,
@@ -21,6 +22,7 @@ try:
     )
 except ImportError:
     run_pending_migrations = None
+    ingestion_module = None
     GmailAttachment = None
     GmailMessage = None
     import_selected_messages = None
@@ -228,6 +230,85 @@ class IngestionSelectionTests(unittest.TestCase):
         self.assertEqual(first_result.raw_path, second_result.raw_path)
         self.assertEqual(document_count, 1)
         self.assertEqual(processing_run_count, 1)
+
+    def test_retry_creates_missing_processing_run_after_enqueue_failure(self) -> None:
+        self.assertIsNotNone(
+            run_pending_migrations,
+            "run_pending_migrations should be importable from newspaper_translator.database",
+        )
+        self.assertIsNotNone(
+            ingestion_module,
+            "newspaper_translator.ingestion should be importable",
+        )
+        self.assertIsNotNone(
+            import_gmail_pdf_attachment,
+            "import_gmail_pdf_attachment should be importable from newspaper_translator.ingestion",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage_root = pathlib.Path(temp_dir) / "storage"
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            message = GmailMessage(
+                message_id="message-1",
+                sender="briefing@example.com",
+                attachments=[],
+            )
+            attachment = GmailAttachment(
+                attachment_id="attachment-1",
+                filename="daily-paper.pdf",
+                mime_type="application/pdf",
+                content_bytes=b"%PDF-1.7 sample content",
+            )
+
+            original_create_processing_run = ingestion_module.create_document_processing_run
+
+            def fail_processing_run_creation(**_kwargs) -> None:
+                raise RuntimeError("enqueue unavailable")
+
+            ingestion_module.create_document_processing_run = fail_processing_run_creation
+            try:
+                with self.assertRaisesRegex(RuntimeError, "enqueue unavailable"):
+                    import_gmail_pdf_attachment(
+                        message=message,
+                        attachment=attachment,
+                        storage_root=storage_root,
+                        database_url=database_url,
+                    )
+            finally:
+                ingestion_module.create_document_processing_run = original_create_processing_run
+
+            retry_result = import_gmail_pdf_attachment(
+                message=message,
+                attachment=attachment,
+                storage_root=storage_root,
+                database_url=database_url,
+            )
+
+            connection = sqlite3.connect(database_path)
+            try:
+                document_count = connection.execute(
+                    "SELECT COUNT(*) FROM documents"
+                ).fetchone()[0]
+                stored_processing_run = connection.execute(
+                    """
+                    SELECT document_key, status, current_step
+                    FROM document_processing_runs
+                    WHERE document_key = ?
+                    """,
+                    (retry_result.document_key,),
+                ).fetchone()
+            finally:
+                connection.close()
+
+        self.assertFalse(retry_result.was_created)
+        self.assertEqual(document_count, 1)
+        self.assertEqual(
+            stored_processing_run,
+            (retry_result.document_key, "pending", "parse_persist"),
+        )
 
     def test_import_selected_messages_persists_only_matching_pdf_attachments(self) -> None:
         self.assertIsNotNone(

@@ -124,11 +124,10 @@ def import_gmail_pdf_attachment(
     finally:
         connection.close()
 
-    if was_created:
-        create_document_processing_run(
-            database_url=database_url,
-            document_key=identity.document_key,
-        )
+    create_document_processing_run(
+        database_url=database_url,
+        document_key=identity.document_key,
+    )
 
     return ImportedDocument(
         document_key=identity.document_key,

@@ -1,39 +1,51 @@
 # Newspaper Translator
 
-This repository now has a complete runnable Phase 1 foundation, a working Phase 2 Gmail ingestion slice with durable import audit, incremental checkpointing, and failed-message retry support, plus a usable Phase 3 MinerU parsing path with explicit cross-page continuation matching and durable article persistence foundations.
+This repository now has a runnable local newspaper-processing stack: Gmail PDF ingestion, durable import audit and retry tracking, MinerU-backed article reconstruction, Gemini-backed continuation matching and article enrichment, scheduled background processing, and a standalone reading/operator frontend.
 
 ## Current status
 
-As of 2026-04-28, the project has:
+As of 2026-05-06, the project has:
 
 - completed the Phase 1 local runtime baseline
-- completed the first useful Phase 2 import path from Gmail into raw PDF storage
+- completed the current Phase 2 import path from Gmail into raw PDF storage
 - added persisted import-run history and item-level audit records
 - added read-only CLI and web query surfaces for import runs and run items
 - added time-window incremental checkpointing for normal Gmail imports
 - added automatic and manual retry flows for unresolved failed Gmail messages
+- added body-link imports for direct PDF links, QQ Mail landing pages, and the current `dengtazk.xin:8282` email-download flow
+- added stable short body-link attachment identifiers so long signed URLs no longer leak into raw storage paths
+- added conservative translated-PDF filename filtering for known translated variants
 - added MinerU-backed Phase 3 PDF parsing through the batch upload API
 - added Markdown-to-article reconstruction for MinerU `full.md` outputs
 - added a direct Markdown parsing CLI entry for local `full.md` debugging
 - added explicit continuation-marker extraction for split newspaper articles
 - added optional Gemini-backed matching and merge for explicit cross-page continuations
 - added parse-run history persistence for repeated Phase 3 document parsing attempts
-- added durable fragment, continuation-match, final-article, and article-lineage storage
+- added durable fragment, continuation-match, final-article, article-image, and article-lineage storage
 - added publication-date persistence and fallback date resolution from parsed Markdown
-- added enrichment-run, enrichment-output, and article-tag history storage foundations
+- added enrichment-run, enrichment-output, and article-tag history storage
+- added executable Gemini-backed article translation, Chinese summary, and tagging
 - added current-version query rules for latest successful parsed articles and latest usable enrichment results
+- added a scheduler-driven document-processing control plane with stale-run recovery and manual retry
+- split article enrichment into article-stage processing with durable `article_key` identity, input-hash reuse, stale-run recovery, and manual retry
+- added CLI and web/API entry points for document-processing and article-processing status/retry operations
+- added dashboard APIs for overview counts, article cards, article detail, filters, and focus-tag feeds
+- added a standalone `frontend/` dashboard and operator workbench with document-processing and article-processing views
+- added Gemini direct API mode plus OpenAI-compatible gateway mode
 - validated Gmail Desktop OAuth locally
 - validated Gmail API access through a local proxy or VPN
 - validated direct PDF links such as `https://dl.dengtazk.xin/...pdf`
 - validated QQ Mail landing pages such as `https://wx.mail.qq.com/ftn/download?...`, resolved through a JSON handoff
+- validated `https://www.dengtazk.xin:8282/api/public/email-download...` body links for direct and preview-page PDF flows
 - validated real MinerU parsing end-to-end against a local Wall Street Journal sample PDF
+- validated Docker startup with writable Gmail token storage under the mounted `secrets` directory
 
-Latest live Gmail import result on 2026-04-22:
+Latest recorded live Gmail import result from the completed 2026-05-03 body-link verification:
 
 - `fetched_message_count=25`
-- `imported_attachment_count=4`
-- `created_document_count=4`
-- `skipped_document_count=0`
+- `created_document_count=6`
+- no body-link path-length failures
+- two expired `dengtazk.xin` signed URLs failed with `401 Client Error`, which is recorded as an upstream/server-side link limitation
 
 ## Phase 3 parsing status
 
@@ -74,6 +86,9 @@ Planned MinerU configuration:
 Optional continuation-matching configuration:
 
 - `GEMINI_TOKEN`
+- `GEMINI_API_COMPAT_MODE`, default `standard`
+- `GOOGLE_GEMINI_BASE_URL`, used when `GEMINI_API_COMPAT_MODE=openai_compatible`
+- `GEMINI_API_KEY`, used when `GEMINI_API_COMPAT_MODE=openai_compatible`
 - `GEMINI_MODEL`, default `gemini-2.5-flash`
 - `GEMINI_TIMEOUT_SECONDS`, default `120`
 
@@ -154,6 +169,7 @@ Current Phase 3 parser behavior:
 - auto-enables Gemini continuation matching when `GEMINI_TOKEN` is present
 - sends only continuation-bearing fragments to Gemini, then deterministically merges matched pairs and strips local marker text
 - records fragment-level, match-level, and final-article lineage data for persisted parse runs
+- persists fragment page numbers and final-article source page numbers where available
 - returns merged article results through CLI JSON output while leaving unmatched fragments as standalone articles
 
 Current Phase 3 parser limits:
@@ -161,7 +177,7 @@ Current Phase 3 parser limits:
 - advertisement and statement filtering is intentionally deferred to later LLM-based post-processing
 - only fragments with explicit continuation markers currently participate in LLM matching
 - the parser does not yet infer cross-page relationships for fragments without explicit markers
-- page numbers in Markdown-derived article JSON are parser-order indexes, not original newspaper page numbers
+- page-number fidelity depends on the MinerU output; parser-derived article JSON can still fall back to parser-order indexes when original page labels are unavailable
 
 ## Article Persistence Status
 
@@ -175,6 +191,7 @@ The current persistence model stores:
 - immutable `final_articles` plus `final_article_fragments` lineage records
 - one `article_enrichment_run` per enrichment attempt
 - `article_enrichment_outputs` and ordered `article_tags` for usable enrichment results
+- durable `article_processing_runs` for article-stage translation, summary, tagging, retry, and stale-run recovery
 
 Current version rules:
 
@@ -182,6 +199,35 @@ Current version rules:
 - a later failed parse run does not hide an older successful article set
 - the visible enrichment layer for an article comes from the latest `partial` or `succeeded` enrichment run
 - a later failed enrichment run does not hide an older usable enrichment result
+- `article_key` tracks the same logical article across repeated parses of the same document lineage when title/opening text and source pages are similar
+- unchanged article inputs can reuse a previous successful enrichment result by input hash, while manual retry forces a fresh attempt
+
+## Dashboard And Operator Workbench
+
+The standalone frontend in `frontend/` is now the primary local product surface. It is served by the Compose `frontend` service and calls the backend through Nginx.
+
+Current frontend capabilities:
+
+- reading dashboard with overview cards, source/tag/date filters, focus-tag sections, and article cards
+- article detail view with Chinese, English, and comparison modes
+- document-processing workbench list and document detail views
+- article-processing workbench list and article-processing detail views
+- manual retry actions for document and article processing
+- navigation between reading detail, owning document detail, and article-processing detail
+
+Current API surfaces include:
+
+- `GET /api/overview`
+- `GET /api/articles`
+- `GET /api/articles/<article_id>`
+- `GET /api/filters`
+- `GET /api/focus-tags/articles`
+- `GET /api/document-processing`
+- `GET /api/document-processing/<document_key>`
+- `POST /api/document-processing/<document_key>/retry`
+- `GET /api/article-processing`
+- `GET /api/article-processing/<article_key>`
+- `POST /api/article-processing/<article_key>/retry`
 
 ## Local Python workflow
 
@@ -266,19 +312,23 @@ For link-based newspaper emails:
 - Fill `allowed_link_domains` to restrict which PDF hosts are trusted
 - `download_link_keywords` is used when a mail body links to a landing page that contains a PDF download button
 - If Gmail must go through a local VPN or proxy, set `proxy_url`, for example `http://127.0.0.1:7897`
-- For the current newspaper feed, the known-good domains are `dl.dengtazk.xin` and `wx.mail.qq.com`
+- For the current newspaper feed, the known-good domains are `dl.dengtazk.xin`, `www.dengtazk.xin`, and `wx.mail.qq.com`
+- Body-link attachments use short stable `link:body-...` identifiers internally while preserving the original URL in import audit records
+- Known translated PDF filename variants are skipped conservatively and recorded as skipped import items rather than failed imports
 
 ## Docker workflow
 
-Build and start the current Phase 1 runtime skeleton:
+Build and start the current local stack:
 
 ```bash
 docker compose up --build
 ```
 
 The `frontend` service is exposed on `${FRONTEND_PORT:-3000}` and the `web` service is exposed on `${WEB_PORT:-8000}`.
-The `worker` service performs startup checks and emits structured JSON logs.
+The `worker` service performs startup checks, stale-run recovery, scheduler catch-up, Gmail import, document processing, and article processing. It emits structured JSON logs.
 Both services also expose container healthchecks through `python -m newspaper_translator.manage check`.
+
+`./config` is mounted read-only into `web` and `worker`. `./secrets` is mounted writable because Gmail OAuth credentials may refresh and write the reusable token file back to `secrets/gmail-token.json`.
 
 To avoid host-port conflicts with other local Docker projects:
 
@@ -295,12 +345,12 @@ docker compose up --build
 
 ## Current scope
 
-Implemented today:
+Implemented so far:
 
 - shared environment loading
 - SQLite migration baseline
 - standalone `migrate` and `check` management commands
-- minimal `web` and `worker` entrypoints
+- runnable `web` and `worker` entrypoints
 - health endpoint and startup checks
 - compose healthchecks and explicit startup dependencies
 - duplicate-safe raw PDF storage and document metadata persistence
@@ -309,6 +359,9 @@ Implemented today:
 - Gmail API transport through a local proxy or VPN
 - body-link import for direct PDF links in message bodies
 - body-link import for QQ Mail landing pages that require `POST f=json` before downloading the PDF
+- body-link import for the current `dengtazk.xin:8282` email-download flow
+- stable body-link identity and short storage-facing names for long signed URLs
+- conservative translated-PDF filename filtering
 - network-error tolerance for unrelated or broken body links so one bad URL does not fail the full import run
 - persisted import-run and import-item audit records
 - read-only import audit endpoints through `manage` and `web`
@@ -322,11 +375,17 @@ Implemented today:
 - fragment, continuation-match, final-article, and lineage persistence tables
 - publication-date extraction from filenames with Markdown fallback
 - read-only CLI query surfaces for latest document articles and parse-run debug artifacts
-- enrichment-run history, enrichment outputs, and ordered tag persistence foundations
+- enrichment-run history, enrichment outputs, and ordered tag persistence
+- executable Gemini-backed article translation, summary, and tagging
+- OpenAI-compatible gateway mode for Gemini-style article and continuation clients
+- scheduler-driven document-processing and article-processing control planes
+- stale-run recovery, manual retry, and CLI/web/API inspection for both document and article processing
+- dashboard query surfaces for overview, article cards, article details, filters, and focus tags
+- standalone frontend dashboard, article reader, document-processing workbench, and article-processing workbench
 
 Not implemented yet:
 
 - LLM-based advertisement and statement filtering after Markdown parsing
 - non-explicit cross-page continuation inference
-- actual AI enrichment job execution for translation, summary, and tagging
-- dashboard and richer browsing surfaces on top of the persisted article data
+- browser-driven manual QA and broader visual polish for the newest article-processing workbench
+- deeper frontend regression coverage beyond the current static-shell and API tests

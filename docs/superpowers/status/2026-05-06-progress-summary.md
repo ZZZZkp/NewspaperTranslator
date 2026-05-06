@@ -25,7 +25,9 @@ The repository currently provides:
 - durable parse-run, fragment, continuation-match, final-article, image, lineage, enrichment, and article-processing persistence
 - durable logical `article_key` identity across repeated parses of the same source document lineage
 - scheduler-driven document and article processing with stale-run recovery
+- split worker scheduling: Gmail import remains interval-driven while document/article processing polls queued work continuously
 - CLI and web/API entry points for import audit, parsing debug views, document-processing retry/status, and article-processing retry/status
+- manual Gmail import from the operator workbench through `POST /api/gmail/import`
 - direct Gemini API mode and OpenAI-compatible gateway mode
 - a standalone frontend reading dashboard with document-processing and article-processing operator workbench views
 
@@ -54,6 +56,13 @@ Implemented on 2026-05-06:
 - this allows Google OAuth token refresh to write back to `secrets/gmail-token.json`
 - the container scaffolding test now guards against accidentally restoring a read-only secrets mount
 - the local Docker stack was restarted with `WEB_PORT=8015` and `FRONTEND_PORT=3002`
+- worker orchestration was split into an import cadence and a processing cadence
+- Gmail import now uses import-run history for its 2-hour catch-up decision
+- document and article processing now run through a processing-only tick so queued work is not blocked behind the Gmail interval
+- the processing-only CLI path now handles both document and article queues without faking a Gmail import
+- the web API now exposes `POST /api/gmail/import` for manual Gmail fetches
+- the frontend processing workbench now exposes `立即拉取邮件`
+- frontend Nginx now uses a 300-second `/api/` proxy timeout after manual Gmail import initially hit a proxy `504`
 
 ## Current Test Status
 
@@ -66,7 +75,7 @@ Current command:
 Current result:
 
 ```text
-Ran 205 tests in 7.706s
+Ran 214 tests in 7.695s
 OK
 ```
 
@@ -76,6 +85,9 @@ Additional runtime checks on 2026-05-06:
 - `frontend` returned the dashboard HTML
 - `worker` restarted without the previous `Read-only file system: '/app/secrets/gmail-token.json'` error
 - Docker inspect confirmed `/app/secrets RW=true` inside `newspapertranslator-worker-1`
+- direct `POST http://127.0.0.1:8015/api/gmail/import` returned `status=succeeded`
+- proxied `POST http://127.0.0.1:3000/api/gmail/import` returned `200 OK` after the Nginx timeout increase
+- Docker services were running with `frontend` on port `3000`, `web` on port `8015`, and `worker` healthy
 
 ## Current Open Items
 

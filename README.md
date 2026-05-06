@@ -31,6 +31,9 @@ As of 2026-05-06, the project has:
 - added CLI and web/API entry points for document-processing and article-processing status/retry operations
 - added dashboard APIs for overview counts, article cards, article detail, filters, and focus-tag feeds
 - added a standalone `frontend/` dashboard and operator workbench with document-processing and article-processing views
+- split worker orchestration so Gmail import keeps its 2-hour cadence while document/article processing polls queued work continuously
+- added a manual Gmail import API and operator-workbench button for fetching latest mail attachments into the queue
+- extended the frontend Nginx API proxy timeout so slower Gmail imports do not fail with a proxy `504`
 - added Gemini direct API mode plus OpenAI-compatible gateway mode
 - validated Gmail Desktop OAuth locally
 - validated Gmail API access through a local proxy or VPN
@@ -212,6 +215,7 @@ Current frontend capabilities:
 - article detail view with Chinese, English, and comparison modes
 - document-processing workbench list and document detail views
 - article-processing workbench list and article-processing detail views
+- manual Gmail import from the processing workbench through `立即拉取邮件`
 - manual retry actions for document and article processing
 - navigation between reading detail, owning document detail, and article-processing detail
 
@@ -225,6 +229,7 @@ Current API surfaces include:
 - `GET /api/document-processing`
 - `GET /api/document-processing/<document_key>`
 - `POST /api/document-processing/<document_key>/retry`
+- `POST /api/gmail/import`
 - `GET /api/article-processing`
 - `GET /api/article-processing/<article_key>`
 - `POST /api/article-processing/<article_key>/retry`
@@ -325,7 +330,8 @@ docker compose up --build
 ```
 
 The `frontend` service is exposed on `${FRONTEND_PORT:-3000}` and the `web` service is exposed on `${WEB_PORT:-8000}`.
-The `worker` service performs startup checks, stale-run recovery, scheduler catch-up, Gmail import, document processing, and article processing. It emits structured JSON logs.
+The `worker` service performs startup checks, stale-run recovery, 2-hour Gmail import catch-up, and continuous document/article processing. It emits structured JSON logs.
+The frontend proxies `/api/` requests to `web` with an extended read timeout so manual Gmail imports can finish even when upstream mail links are slow.
 Both services also expose container healthchecks through `python -m newspaper_translator.manage check`.
 
 `./config` is mounted read-only into `web` and `worker`. `./secrets` is mounted writable because Gmail OAuth credentials may refresh and write the reusable token file back to `secrets/gmail-token.json`.

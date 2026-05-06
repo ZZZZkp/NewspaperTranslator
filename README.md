@@ -14,7 +14,9 @@ As of 2026-05-06, the project has:
 - added automatic and manual retry flows for unresolved failed Gmail messages
 - added body-link imports for direct PDF links, QQ Mail landing pages, and the current `dengtazk.xin:8282` email-download flow
 - added stable short body-link attachment identifiers so long signed URLs no longer leak into raw storage paths
-- added conservative translated-PDF filename filtering for known translated variants
+- added conservative translated-PDF filename filtering for known translated variants, including `【译】`-prefixed PDFs from attachments and body links
+- added automatic `document_processing_runs` enqueueing for imported Gmail documents so the continuous worker picks them up without a legacy queue handoff
+- removed the legacy `processing_tasks` table and backfilled missing document-processing rows during migration `0011`
 - added MinerU-backed Phase 3 PDF parsing through the batch upload API
 - added Markdown-to-article reconstruction for MinerU `full.md` outputs
 - added a direct Markdown parsing CLI entry for local `full.md` debugging
@@ -43,12 +45,16 @@ As of 2026-05-06, the project has:
 - validated real MinerU parsing end-to-end against a local Wall Street Journal sample PDF
 - validated Docker startup with writable Gmail token storage under the mounted `secrets` directory
 
-Latest recorded live Gmail import result from the completed 2026-05-03 body-link verification:
+Latest recorded live Gmail import result from the completed 2026-05-06 import/enqueue verification:
 
-- `fetched_message_count=25`
-- `created_document_count=6`
-- no body-link path-length failures
-- two expired `dengtazk.xin` signed URLs failed with `401 Client Error`, which is recorded as an upstream/server-side link limitation
+- Docker `web` and `worker` were healthy with proxy-backed network access
+- `fetched_message_count=6`
+- `imported_attachment_count=2`
+- `created_document_count=0`
+- `skipped_document_count=2`
+- `status=succeeded`
+- no imported `documents.original_filename` started with `【译】`
+- no imported document was missing a `document_processing_runs` row
 
 ## Phase 3 parsing status
 
@@ -319,7 +325,7 @@ For link-based newspaper emails:
 - If Gmail must go through a local VPN or proxy, set `proxy_url`, for example `http://127.0.0.1:7897`
 - For the current newspaper feed, the known-good domains are `dl.dengtazk.xin`, `www.dengtazk.xin`, and `wx.mail.qq.com`
 - Body-link attachments use short stable `link:body-...` identifiers internally while preserving the original URL in import audit records
-- Known translated PDF filename variants are skipped conservatively and recorded as skipped import items rather than failed imports
+- Known translated PDF filename variants are skipped conservatively and recorded as skipped import items rather than failed imports; this includes literal and percent-encoded `【译】` body-link filenames
 
 ## Docker workflow
 
@@ -367,7 +373,9 @@ Implemented so far:
 - body-link import for QQ Mail landing pages that require `POST f=json` before downloading the PDF
 - body-link import for the current `dengtazk.xin:8282` email-download flow
 - stable body-link identity and short storage-facing names for long signed URLs
-- conservative translated-PDF filename filtering
+- conservative translated-PDF filename filtering, including `【译】` prefixes and percent-encoded body-link basenames
+- import-time enqueueing into `document_processing_runs` with retry recovery for documents whose enqueue failed after metadata commit
+- migration `0011_drop_processing_tasks` that backfills missing document-processing rows and removes the legacy `processing_tasks` table
 - network-error tolerance for unrelated or broken body links so one bad URL does not fail the full import run
 - persisted import-run and import-item audit records
 - read-only import audit endpoints through `manage` and `web`

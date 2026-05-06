@@ -19,7 +19,8 @@ The repository currently provides:
 - incremental checkpointing and failed-message retry
 - body-link imports for direct PDF URLs, QQ Mail landing pages, and `dengtazk.xin:8282` email-download links
 - stable short body-link attachment IDs so long signed URLs do not become storage filenames
-- conservative translated-PDF filename filtering with skipped audit records
+- conservative translated-PDF filename filtering with skipped audit records, including `【译】` prefixes and percent-encoded body-link basenames
+- import-time enqueueing into `document_processing_runs` so new Gmail documents are visible to the continuous processing tick
 - MinerU-backed Markdown article reconstruction
 - explicit Gemini-assisted continuation matching for continuation-marked fragments
 - durable parse-run, fragment, continuation-match, final-article, image, lineage, enrichment, and article-processing persistence
@@ -63,6 +64,21 @@ Implemented on 2026-05-06:
 - the web API now exposes `POST /api/gmail/import` for manual Gmail fetches
 - the frontend processing workbench now exposes `立即拉取邮件`
 - frontend Nginx now uses a 300-second `/api/` proxy timeout after manual Gmail import initially hit a proxy `504`
+- Gmail attachment imports now create or repair idempotent `document_processing_runs` rows at the import boundary, replacing the old `processing_tasks` enqueue path
+- retrying the same Gmail attachment repairs a missing processing run if an earlier enqueue failed after the document metadata commit
+- the `【译】` translated-PDF prefix is now filtered by basename for direct attachments and body links
+- percent-encoded body-link filenames are URL-decoded before translated-filename filtering, so encoded `【译】...pdf` URLs are skipped consistently
+- migration `0011_drop_processing_tasks` backfills missing `document_processing_runs` rows for existing documents before dropping the legacy `processing_tasks` table
+- the unused `newspaper_translator.tasks` module and its tests were removed
+
+Live Docker verification on 2026-05-06 after the import/enqueue fix:
+
+- Docker `web` and `worker` were healthy with `WEB_PORT=8017`
+- container schema had 11 applied migrations and `processing_tasks` was absent
+- direct `POST http://127.0.0.1:8017/api/gmail/import` returned `status=succeeded`
+- the live import fetched 6 messages, imported 2 attachments, created 0 new documents, and skipped 2 duplicates
+- `documents.original_filename LIKE '【译】%'` returned 0 rows
+- every imported document had a corresponding `document_processing_runs` row
 
 ## Current Test Status
 
@@ -75,7 +91,7 @@ Current command:
 Current result:
 
 ```text
-Ran 214 tests in 7.695s
+Ran 218 tests in 6.817s
 OK
 ```
 
@@ -88,10 +104,10 @@ Additional runtime checks on 2026-05-06:
 - direct `POST http://127.0.0.1:8015/api/gmail/import` returned `status=succeeded`
 - proxied `POST http://127.0.0.1:3000/api/gmail/import` returned `200 OK` after the Nginx timeout increase
 - Docker services were running with `frontend` on port `3000`, `web` on port `8015`, and `worker` healthy
+- the import/enqueue fix was also verified with `web` on port `8017` and container proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`) present
 
 ## Current Open Items
 
-- The production-like filenames `【译】华尔街日报` and `【译】金融时报` have been observed but are not yet part of the conservative translated-PDF filter list.
 - Some expired `dengtazk.xin` links return `401`; these are recorded as link fetch failures unless future operator experience needs more specific detail codes.
 - The newest article-processing workbench still needs browser-driven manual QA and a small UI polish pass.
 - LLM-based advertisement/statement filtering and non-explicit cross-page continuation inference remain deferred.

@@ -50,7 +50,7 @@ TRANSLATED_FILENAME_PATTERNS = (
 - No discovery / self-healing tick that scans for orphan documents. Once the import path enqueues correctly, there is no orphan source.
 - No change to the worker scheduler cadence, concurrency, or step-retry semantics.
 - No change to MinerU / Gemini configuration, the article processing pipeline, or the dashboard surfaces.
-- No backfill script for the historical orphan documents — those were already manually backfilled into `document_processing_runs` during incident triage on 2026-05-06.
+- No standalone operator-run backfill script. Migration `0011_drop_processing_tasks` performs the deploy-time safety backfill for any `documents` rows still missing `document_processing_runs`.
 
 ## Design
 
@@ -79,7 +79,7 @@ Notes:
 - `Path(filename).name` strips any directory component so a body-link URL whose path happens to contain `【译】` cannot misclassify a non-translated final filename. The base-name normalization applies symmetrically to the legacy substring check.
 - The prefix tuple uses `str.startswith` with a tuple argument, which evaluates each prefix in order. CJK characters have no case, so no `lower()` is applied before the prefix check.
 - The legacy substring list is preserved verbatim so existing behavior is not lost.
-- Both call sites already share this function: `GmailAttachment.is_pdf` (`ingestion.py:25-29`) and the body-link branch (`gmail.py:566-576`). Neither call site changes.
+- Both call sites use this helper through `GmailAttachment.is_pdf` and the body-link branch. Body-link filenames are URL-decoded before filtering so percent-encoded `【译】...pdf` URLs are treated the same as literal Unicode URLs.
 
 ### Enqueue at import time (change B, core)
 
@@ -90,11 +90,11 @@ Notes:
 3. Delete the `create_document_processing_task` helper (lines 60-61).
 4. In the body of `import_gmail_pdf_attachment`, replace the `if was_created: ... INSERT INTO processing_tasks ...` block with:
    - Commit the existing `documents` insert first (move the existing trailing `connection.commit()` up to right after the `documents` write and the `raw_path.write_bytes(...)` call).
-   - After the commit, if `was_created`, call `create_document_processing_run(database_url=database_url, document_key=identity.document_key)`.
+   - After the commit, call `create_document_processing_run(database_url=database_url, document_key=identity.document_key)`.
 
    Sequencing rationale: `create_document_processing_run` opens its own SQLite connection and commits independently. Committing the `documents` row first ensures there is never a transient state where a `pending` processing run references a `document_key` not yet visible to other readers.
 
-   Idempotency rationale: `create_document_processing_run` already uses `INSERT OR IGNORE`, and `was_created` is only true on the first successful insert into `documents`, so retries cannot double-enqueue.
+   Idempotency and recovery rationale: `create_document_processing_run` already uses `INSERT OR IGNORE`. Calling it for both newly inserted and duplicate documents keeps normal duplicate imports from double-enqueueing, while also repairing the edge case where a previous import committed the `documents` row and then failed before the processing run was created.
 
 ### Dead-code cleanup
 
@@ -116,10 +116,23 @@ Files to modify:
 New file `src/newspaper_translator/migrations/0011_drop_processing_tasks.sql`:
 
 ```sql
+INSERT OR IGNORE INTO document_processing_runs (
+    processing_run_id,
+    document_key,
+    status,
+    current_step
+)
+SELECT
+    'legacy-processing-task:' || document_key,
+    document_key,
+    'pending',
+    'parse_persist'
+FROM documents;
+
 DROP TABLE IF EXISTS processing_tasks;
 ```
 
-The migration runner already executes files in lexicographic order. Existing SQLite deployments will drop the legacy table on the next `migrate` invocation. The container healthcheck and worker startup both run migrations, so no manual step is required after deploy.
+The migration runner already executes files in lexicographic order. Existing SQLite deployments backfill missing processing rows and then drop the legacy table on the next `migrate` invocation. The container healthcheck and worker startup both run migrations, so no manual step is required after deploy.
 
 ### Tests
 
@@ -128,9 +141,12 @@ New tests:
 - `tests/test_ingestion.py`:
   - `_is_translated_pdf_filename` accepts `【译】金融时报-5-5.pdf`, `【译】华尔街日报-5-2.pdf`, `【译】纽约时报.pdf`, and a path-prefixed `/some/dir/【译】xxx.pdf`.
   - `_is_translated_pdf_filename` rejects `金融时报-5-5.pdf` (no prefix) and `华尔街日报-5-2.pdf`.
-  - `import_gmail_pdf_attachment` writes a `pending` row into `document_processing_runs` for newly created documents, and does not write a duplicate row when the same attachment is imported twice.
+  - `import_gmail_pdf_attachment` writes a `pending` row into `document_processing_runs` for newly created documents, does not write a duplicate row when the same attachment is imported twice, and repairs a missing run on retry after an enqueue failure.
 - `tests/test_gmail.py`:
   - The body-link branch skips a resolved `【译】xxx.pdf` filename and emits a `body_link_filename_filtered` audit item, mirroring the existing `中文-` test.
+  - Percent-encoded body-link filenames for `【译】...pdf` are decoded before translated-filename filtering.
+- `tests/test_database.py`:
+  - Migration `0011` backfills pending document-processing rows for existing documents while preserving pre-existing run state, then drops `processing_tasks`.
 
 Existing tests adjusted:
 
@@ -159,4 +175,4 @@ worker tick (every PROCESSING_POLL_INTERVAL_SECONDS, default 60s)
 ## Out-of-scope follow-ups
 
 - A discovery / self-healing tick (the previously discussed Option 2) is intentionally not part of this design. If a future ingestion source is added that does not flow through `import_gmail_pdf_attachment`, the right fix is to apply the same enqueue call at that new entry point rather than re-add a global scanner.
-- The `processing_tasks` data preserved in the live database from before this change is dropped by the migration; no separate backfill is needed.
+- No separate backfill script is needed because migration `0011` backfills missing `document_processing_runs` rows before dropping `processing_tasks`.

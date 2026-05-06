@@ -6,6 +6,8 @@ const documentControlsSection = document.querySelector("#document-controls-secti
 const workbenchTabs = document.querySelector("#workbench-tabs");
 const workbenchTabDocuments = document.querySelector("#workbench-tab-documents");
 const workbenchTabArticles = document.querySelector("#workbench-tab-articles");
+const manualGmailImportButton = document.querySelector("#manual-gmail-import-button");
+const manualGmailImportStatus = document.querySelector("#manual-gmail-import-status");
 const summaryBar = document.querySelector("#summary-bar");
 const filterForm = document.querySelector("#filter-form");
 const sourceFilter = document.querySelector("#source-filter");
@@ -737,6 +739,36 @@ async function requestManualArticleRetry(articleKey) {
   setStatus("已请求文章重试。");
 }
 
+function formatManualGmailImportSummary(importRun) {
+  const createdCount = importRun?.created_document_count ?? 0;
+  const skippedCount = importRun?.skipped_document_count ?? 0;
+  const attachmentCount = importRun?.imported_attachment_count ?? 0;
+  if (createdCount === 0) {
+    return `已检查邮件，没有新增文档；跳过 ${skippedCount} 项。`;
+  }
+  return `已导入 ${createdCount} 个新文档、${attachmentCount} 个附件；跳过 ${skippedCount} 项。`;
+}
+
+async function requestManualGmailImport() {
+  manualGmailImportButton.disabled = true;
+  manualGmailImportButton.textContent = "拉取中...";
+  manualGmailImportStatus.textContent = "正在检查最新邮件附件...";
+  setStatus("正在手动拉取邮件...");
+  try {
+    const payload = await fetchJson("/api/gmail/import", { method: "POST" });
+    manualGmailImportStatus.textContent = formatManualGmailImportSummary(payload.import_run);
+    await loadDocumentProcessing();
+    setStatus("邮件拉取完成，处理队列会自动接手。");
+  } catch (error) {
+    console.error(error);
+    manualGmailImportStatus.textContent = "邮件拉取失败，请稍后重试。";
+    setStatus("邮件拉取失败，请检查后端服务和 Gmail 配置。");
+  } finally {
+    manualGmailImportButton.disabled = false;
+    manualGmailImportButton.textContent = "立即拉取邮件";
+  }
+}
+
 async function syncRouteFromHash() {
   const hash = window.location.hash.replace(/^#/, "").trim();
   if (!hash || hash === "dashboard") {
@@ -857,6 +889,10 @@ documentRefreshButton.addEventListener("click", async () => {
     console.error(error);
     setStatus("文档处理列表刷新失败。");
   }
+});
+
+manualGmailImportButton.addEventListener("click", () => {
+  requestManualGmailImport();
 });
 
 documentStatusFilter.addEventListener("change", async () => {

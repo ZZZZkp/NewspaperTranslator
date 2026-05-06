@@ -31,6 +31,9 @@ class FrontendStaticTests(unittest.TestCase):
         self.assertIn('id="detail-image-gallery"', index_text)
         self.assertIn('id="detail-open-document-button"', index_text)
         self.assertIn('id="document-processing-section"', index_text)
+        self.assertIn('id="workbench-action-row"', index_text)
+        self.assertIn('id="manual-gmail-import-button"', index_text)
+        self.assertIn('id="manual-gmail-import-status"', index_text)
         self.assertIn('id="document-detail-view"', index_text)
         self.assertIn('id="workbench-tabs"', index_text)
         self.assertIn('id="workbench-tab-documents"', index_text)
@@ -73,6 +76,7 @@ class FrontendStaticTests(unittest.TestCase):
         self.assertIn("/api/articles/", app_text)
         self.assertIn("/api/document-processing", app_text)
         self.assertIn("/api/article-processing", app_text)
+        self.assertIn("/api/gmail/import", app_text)
         self.assertIn("articles-processing", app_text)
         self.assertIn("article-processing/", app_text)
         self.assertIn("buildArticleProcessingQueryString", app_text)
@@ -97,9 +101,24 @@ class FrontendStaticTests(unittest.TestCase):
         self.assertIn("documentErrorSummary", app_text)
         self.assertIn("openSourceDocumentFromArticleDetail", app_text)
         self.assertIn("requestManualRetry", app_text)
+        self.assertIn("requestManualGmailImport", app_text)
+        self.assertIn("manualGmailImportButton.disabled = true", app_text)
+        self.assertIn("manualGmailImportButton.disabled = false", app_text)
+        self.assertIn("manualGmailImportStatus", app_text)
+        self.assertIn("await loadDocumentProcessing()", app_text)
         self.assertIn("document/", app_text)
         self.assertIn("window.location.hash", app_text)
         self.assertIn("showArticleDetail", app_text)
+
+    def test_frontend_styles_workbench_manual_import_action(self) -> None:
+        styles_path = PROJECT_ROOT / "frontend" / "styles.css"
+        self.assertTrue(styles_path.exists(), "frontend/styles.css should exist")
+
+        styles_text = styles_path.read_text()
+
+        self.assertIn(".workbench-action-row", styles_text)
+        self.assertIn(".manual-gmail-import-status", styles_text)
+        self.assertIn(".manual-gmail-import-button", styles_text)
 
     def test_compose_includes_a_frontend_service(self) -> None:
         compose_path = PROJECT_ROOT / "docker-compose.yml"

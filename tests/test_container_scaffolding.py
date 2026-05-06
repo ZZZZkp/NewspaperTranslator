@@ -66,14 +66,15 @@ class ContainerScaffoldingTests(unittest.TestCase):
         self.assertIn("ALL_PROXY: ${ALL_PROXY:-socks5://host.docker.internal:7897}", compose_text)
         self.assertIn("NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,db}", compose_text)
 
-    def test_compose_mounts_local_gmail_config_and_secrets_into_web_and_worker(self) -> None:
+    def test_compose_mounts_local_gmail_config_and_writable_secrets_into_web_and_worker(self) -> None:
         compose_path = PROJECT_ROOT / "docker-compose.yml"
         self.assertTrue(compose_path.exists(), "docker-compose.yml should exist at the project root")
 
         compose_text = compose_path.read_text()
 
         self.assertIn("./config:/app/config:ro", compose_text)
-        self.assertIn("./secrets:/app/secrets:ro", compose_text)
+        self.assertIn("./secrets:/app/secrets", compose_text)
+        self.assertNotIn("./secrets:/app/secrets:ro", compose_text)
 
     def test_project_includes_an_env_example_for_container_runtime(self) -> None:
         env_example_path = PROJECT_ROOT / ".env.example"

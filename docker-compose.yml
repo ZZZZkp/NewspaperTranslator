@@ -54,7 +54,7 @@ services:
     volumes:
       - app-data:/data
       - ./config:/app/config:ro
-      - ./secrets:/app/secrets:ro
+      - ./secrets:/app/secrets
     healthcheck:
       test: ["CMD", "python", "-m", "newspaper_translator.manage", "check", "--service", "web"]
       interval: 30s
@@ -102,7 +102,7 @@ services:
     volumes:
       - app-data:/data
       - ./config:/app/config:ro
-      - ./secrets:/app/secrets:ro
+      - ./secrets:/app/secrets
     healthcheck:
       test: ["CMD", "python", "-m", "newspaper_translator.manage", "check", "--service", "worker"]
       interval: 30s

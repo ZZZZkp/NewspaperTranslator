@@ -279,7 +279,7 @@ class ArticlePipelineTests(unittest.TestCase):
             "2024-01-01",
         )
 
-    def test_rejects_invalid_month_day_filename_dates(self) -> None:
+    def test_falls_back_to_markdown_for_invalid_month_day_filename_dates(self) -> None:
         self.assertEqual(
             resolve_publication_date(
                 original_filename="金融时报-2-30.pdf",
@@ -287,10 +287,10 @@ class ArticlePipelineTests(unittest.TestCase):
                 source_message_internal_date="1778102400000",
                 fallback_year=2026,
             ),
-            "",
+            "2026-04-20",
         )
 
-    def test_invalid_month_day_filename_still_fails_parse_run_when_markdown_has_date(
+    def test_invalid_month_day_filename_can_still_use_markdown_date(
         self,
     ) -> None:
         self.assertIsNotNone(persist_document_articles)
@@ -315,32 +315,32 @@ class ArticlePipelineTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(ValueError, "publication date"):
-                persist_document_articles(
-                    database_url=database_url,
-                    document_key=document_key,
-                    output_root=pathlib.Path(temp_dir) / "phase3-output",
-                    mineru_client=_FakeMineruClient(
-                        parsed_document=MineruParsedDocument(
-                            batch_id="batch-1",
-                            file_id="file-1",
-                            file_name="金融时报-2-30.pdf",
-                            markdown_path=markdown_path,
-                            markdown_text=markdown_path.read_text(encoding="utf-8"),
-                        )
-                    ),
-                    continuation_matcher=None,
-                    parser_name="mineru",
-                    parser_version="vlm",
-                    continuation_matcher_name="",
-                    continuation_matcher_version="",
-                )
+            parse_run = persist_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+                output_root=pathlib.Path(temp_dir) / "phase3-output",
+                mineru_client=_FakeMineruClient(
+                    parsed_document=MineruParsedDocument(
+                        batch_id="batch-1",
+                        file_id="file-1",
+                        file_name="金融时报-2-30.pdf",
+                        markdown_path=markdown_path,
+                        markdown_text=markdown_path.read_text(encoding="utf-8"),
+                    )
+                ),
+                continuation_matcher=None,
+                parser_name="mineru",
+                parser_version="vlm",
+                continuation_matcher_name="",
+                continuation_matcher_version="",
+            )
 
             parse_runs = list_parse_runs(database_url=database_url, document_key=document_key)
 
         self.assertEqual(len(parse_runs), 1)
-        self.assertEqual(parse_runs[0].status, "failed")
-        self.assertIn("publication date", parse_runs[0].error_message)
+        self.assertEqual(parse_run.status, "succeeded")
+        self.assertEqual(parse_run.publication_date, "2026-04-20")
+        self.assertEqual(parse_runs[0].status, "succeeded")
 
     def _insert_document(
         self,

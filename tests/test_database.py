@@ -310,6 +310,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 "0010_article_processing_runs",
                 "0011_drop_processing_tasks",
                 "0012_article_enrichment_classification",
+                "0013_documents_source_metadata",
             ],
         )
 
@@ -503,6 +504,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 "0010_article_processing_runs",
                 "0011_drop_processing_tasks",
                 "0012_article_enrichment_classification",
+                "0013_documents_source_metadata",
             ],
         )
 

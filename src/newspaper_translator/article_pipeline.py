@@ -183,7 +183,7 @@ def _extract_month_day_date_from_filename(
             day=int(match.group(2)),
         )
     except ValueError:
-        return True, ""
+        return False, ""
 
     _log_publication_date_resolution(
         event="publication_date_resolved",

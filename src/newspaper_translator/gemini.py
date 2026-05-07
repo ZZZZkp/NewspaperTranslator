@@ -17,6 +17,8 @@ class GeminiError(RuntimeError):
 
 @dataclass(frozen=True)
 class ArticleTranslationResult:
+    content_type: str
+    classification_reason: str
     translated_title_zh: str
     translated_body_zh: str
 
@@ -147,29 +149,56 @@ class GeminiArticleTranslator:
 
         try:
             result = json.loads(_extract_response_text(response.body))
+            content_type = result["content_type"]
+            classification_reason = result["classification_reason"]
             translated_title_zh = result["translated_title_zh"]
             translated_body_zh = result["translated_body_zh"]
         except (KeyError, TypeError, json.JSONDecodeError) as exc:
             raise GeminiError("Gemini response did not contain a valid translation payload") from exc
 
-        if not isinstance(translated_title_zh, str) or not translated_title_zh.strip():
-            raise GeminiError("Gemini translation payload must include translated_title_zh")
-        if not isinstance(translated_body_zh, str) or not translated_body_zh.strip():
-            raise GeminiError("Gemini translation payload must include translated_body_zh")
+        if content_type not in ("article", "advertisement", "uncertain"):
+            raise GeminiError(
+                f"Gemini translation payload has unsupported content_type: {content_type!r}"
+            )
+        if not isinstance(classification_reason, str):
+            raise GeminiError("Gemini translation payload classification_reason must be a string")
+        if not isinstance(translated_title_zh, str) or not isinstance(translated_body_zh, str):
+            raise GeminiError("Gemini translation payload must include string title and body fields")
+
+        if content_type in ("article", "uncertain"):
+            if not translated_title_zh.strip() or not translated_body_zh.strip():
+                raise GeminiError(
+                    "Gemini translation payload must include translated_title_zh and translated_body_zh"
+                )
 
         return ArticleTranslationResult(
+            content_type=content_type,
+            classification_reason=classification_reason.strip(),
             translated_title_zh=translated_title_zh.strip(),
             translated_body_zh=translated_body_zh.strip(),
         )
 
     def _build_prompt(self, article: StoredFinalArticle) -> str:
         return (
-            "Translate this English newspaper article into Simplified Chinese. "
-            "This may be a continuation fragment from a printed newspaper layout rather than a clean standalone article. "
+            "You are translating English newspaper content into Simplified Chinese AND classifying it. "
+            "The source text is parsed from a printed newspaper page. "
+            "Most parsed items are normal newspaper content and must be classified as \"article\". "
+            "Only classify content as \"advertisement\" when it is very obviously a newspaper "
+            "advertisement, sponsored or promotional block, subscription offer, display ad, or "
+            "advertorial block. Business news, market coverage, product reporting, reviews, opinion "
+            "columns, book reviews, real-estate reporting, job-market reporting, and company profiles "
+            "are NOT advertisements just because they mention companies, products, prices, or services. "
+            "When you are not sure, classify as \"uncertain\" and still provide the translation. "
             "return JSON only. "
             "Do not use Markdown code fences. "
-            "Do not include explanations. "
-            'Return exactly these fields: {"translated_title_zh":"...","translated_body_zh":"..."}. '
+            "Do not include explanations outside the JSON. "
+            'Return exactly these fields: '
+            '{"content_type":"article|advertisement|uncertain",'
+            '"classification_reason":"...",'
+            '"translated_title_zh":"...",'
+            '"translated_body_zh":"..."}. '
+            "For \"article\" or \"uncertain\", translated_title_zh and translated_body_zh must be non-empty. "
+            "For \"advertisement\", translated_title_zh and translated_body_zh may be empty strings. "
             "Preserve continuation markers and jump words exactly when they appear in the source, "
             'such as "Please turn to page A7" or "Continued from Page One". '
             "Do not silently remove, summarize, or normalize those navigation markers. "

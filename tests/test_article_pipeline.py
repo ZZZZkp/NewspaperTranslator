@@ -3,6 +3,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -11,7 +12,10 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 try:
-    from newspaper_translator.article_pipeline import persist_document_articles
+    from newspaper_translator.article_pipeline import (
+        persist_document_articles,
+        resolve_publication_date,
+    )
     from newspaper_translator.article_store import (
         list_latest_document_articles,
         list_parse_runs,
@@ -20,6 +24,7 @@ try:
     from newspaper_translator.mineru import MineruParsedDocument
 except ImportError:
     persist_document_articles = None
+    resolve_publication_date = None
     list_latest_document_articles = None
     list_parse_runs = None
     run_pending_migrations = None
@@ -181,12 +186,95 @@ class ArticlePipelineTests(unittest.TestCase):
         self.assertEqual(parse_runs[0].status, "failed")
         self.assertIn("publication date", parse_runs[0].error_message)
 
+    @patch("builtins.print")
+    def test_logs_when_filename_date_and_gmail_date_disagree(self, print_mock) -> None:
+        resolved = resolve_publication_date(
+            original_filename="金融时报-5-6.pdf",
+            markdown_text="",
+            source_message_internal_date="1778198400000",
+            fallback_year=2026,
+        )
+
+        self.assertEqual(resolved, "2026-05-06")
+        self.assertIn(
+            "publication_date_filename_gmail_mismatch",
+            print_mock.call_args[0][0],
+        )
+
+    def test_uses_gmail_message_year_for_month_day_filename_dates(self) -> None:
+        self.assertIsNotNone(persist_document_articles)
+        self.assertIsNotNone(run_pending_migrations)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            document_key = self._insert_document(
+                database_path,
+                original_filename="金融时报-5-6.pdf",
+                raw_path=str(pathlib.Path(temp_dir) / "金融时报-5-6.pdf"),
+                source_message_internal_date="1778102400000",
+            )
+            pathlib.Path(temp_dir, "金融时报-5-6.pdf").write_bytes(b"%PDF-1.4 sample")
+            markdown_path = pathlib.Path(temp_dir) / "phase3-output" / "ft" / "full.md"
+            markdown_path.parent.mkdir(parents=True, exist_ok=True)
+            markdown_path.write_text(
+                "# Lead Story\n\nBody text.\n",
+                encoding="utf-8",
+            )
+
+            parse_run = persist_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+                output_root=pathlib.Path(temp_dir) / "phase3-output",
+                mineru_client=_FakeMineruClient(
+                    parsed_document=MineruParsedDocument(
+                        batch_id="batch-1",
+                        file_id="file-1",
+                        file_name="金融时报-5-6.pdf",
+                        markdown_path=markdown_path,
+                        markdown_text=markdown_path.read_text(encoding="utf-8"),
+                    )
+                ),
+                continuation_matcher=None,
+                parser_name="mineru",
+                parser_version="vlm",
+                continuation_matcher_name="",
+                continuation_matcher_version="",
+            )
+
+        self.assertEqual(parse_run.publication_date, "2026-05-06")
+
+    def test_falls_back_to_runtime_year_for_month_day_filename_without_gmail_date(self) -> None:
+        self.assertEqual(
+            resolve_publication_date(
+                original_filename="金融时报-5-6.pdf",
+                markdown_text="",
+                source_message_internal_date=None,
+                fallback_year=2026,
+            ),
+            "2026-05-06",
+        )
+
+    def test_rejects_invalid_month_day_filename_dates(self) -> None:
+        self.assertEqual(
+            resolve_publication_date(
+                original_filename="金融时报-2-30.pdf",
+                markdown_text="",
+                source_message_internal_date="1778102400000",
+                fallback_year=2026,
+            ),
+            "",
+        )
+
     def _insert_document(
         self,
         database_path: pathlib.Path,
         *,
         original_filename: str,
         raw_path: str,
+        source_message_internal_date: str | None = None,
     ) -> str:
         document_key = "message-1:attachment-1:hash-1"
         connection = sqlite3.connect(database_path)
@@ -202,12 +290,13 @@ class ArticlePipelineTests(unittest.TestCase):
                     original_filename,
                     content_hash,
                     raw_path,
-                    import_status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    import_status,
+                    source_message_internal_date
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     document_key,
-                    "gmail",
+                    "金融时报",
                     "message-1",
                     "attachment-1",
                     "news@example.com",
@@ -215,6 +304,7 @@ class ArticlePipelineTests(unittest.TestCase):
                     "hash-1",
                     raw_path,
                     "imported",
+                    source_message_internal_date,
                 ),
             )
             connection.commit()

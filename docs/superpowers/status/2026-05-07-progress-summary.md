@@ -100,6 +100,8 @@ OK
 - changed Gmail PDF dedupe from attachment-instance identity to `content_hash`
 - resolved publication dates from month-day filenames such as `金融时报-5-6.pdf`
 - changed `documents.source_name` to store filename prefixes while keeping import-audit `source_name = gmail`
+- invalid numeric filename suffixes such as `-2-30` now fall back to markdown date resolution instead of blocking parse completion
+- updated database migration expectations so schema tests include `0013_documents_source_metadata`
 
 ### Verification
 

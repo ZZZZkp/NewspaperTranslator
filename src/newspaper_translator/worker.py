@@ -141,6 +141,7 @@ def build_run_scheduler_tick_from_env(env: dict[str, str]):
             document_limit=document_limit,
             process_one_article=process_one_article,
             article_limit=article_limit,
+            article_batch_size=article_batch_size,
         )
         return scheduler_run.scheduler_run_id
 
@@ -181,16 +182,16 @@ def build_run_processing_tick_from_env(env: dict[str, str]):
     process_one_document = build_process_one_document_from_env(env)
     process_one_article = build_process_one_article_from_env(env)
 
-    def run_tick() -> str:
-        scheduler_run = run_processing_tick(
+    def run_tick():
+        return run_processing_tick(
             database_url=app_settings.database_url,
             trigger_type="processing",
             process_one_document=process_one_document,
             document_limit=document_limit,
             process_one_article=process_one_article,
             article_limit=article_limit,
+            article_batch_size=article_batch_size,
         )
-        return scheduler_run.scheduler_run_id
 
     return run_tick
 

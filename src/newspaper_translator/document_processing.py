@@ -12,6 +12,15 @@ from newspaper_translator.database import sqlite_path_from_database_url
 
 
 @dataclass(frozen=True)
+class ProcessingTickResult:
+    scheduler_run_id: str | None
+    did_work: bool
+    selected_document_count: int
+    completed_document_count: int
+    failed_document_count: int
+
+
+@dataclass(frozen=True)
 class SchedulerRun:
     scheduler_run_id: str
     trigger_type: str
@@ -1474,34 +1483,16 @@ def run_scheduler_tick(
     document_limit: int,
     process_one_article=None,
     article_limit: int = 0,
+    article_batch_size: int | None = None,
     locked_by_prefix: str = "scheduler-worker",
     article_locked_by_prefix: str = "article-worker",
     log_event=None,
-) -> SchedulerRun:
-    _log_event(
-        log_event,
-        event="scheduler.tick.started",
-        details={
-            "trigger_type": trigger_type,
-        },
-    )
-    _log_event(
-        log_event,
-        event="scheduler.import.started",
-        details={
-            "trigger_type": trigger_type,
-        },
-    )
+) -> "ProcessingTickResult":
+    _log_event(log_event, event="scheduler.tick.started", details={"trigger_type": trigger_type})
+    _log_event(log_event, event="scheduler.import.started", details={"trigger_type": trigger_type})
     import_result = import_documents()
     import_run_id = getattr(import_result, "run_id", None)
-    _log_event(
-        log_event,
-        event="scheduler.import.finished",
-        details={
-            "trigger_type": trigger_type,
-            "import_run_id": import_run_id,
-        },
-    )
+    _log_event(log_event, event="scheduler.import.finished", details={"trigger_type": trigger_type, "import_run_id": import_run_id})
     finalized_run = run_processing_tick(
         database_url=database_url,
         trigger_type=trigger_type,
@@ -1509,6 +1500,7 @@ def run_scheduler_tick(
         document_limit=document_limit,
         process_one_article=process_one_article,
         article_limit=article_limit,
+        article_batch_size=article_batch_size,
         import_run_id=import_run_id,
         locked_by_prefix=locked_by_prefix,
         article_locked_by_prefix=article_locked_by_prefix,
@@ -1519,7 +1511,7 @@ def run_scheduler_tick(
         event="scheduler.tick.finished",
         details={
             "scheduler_run_id": finalized_run.scheduler_run_id,
-            "status": finalized_run.status,
+            "did_work": finalized_run.did_work,
             "selected_document_count": finalized_run.selected_document_count,
             "completed_document_count": finalized_run.completed_document_count,
             "failed_document_count": finalized_run.failed_document_count,
@@ -1536,11 +1528,42 @@ def run_processing_tick(
     document_limit: int,
     process_one_article=None,
     article_limit: int = 0,
+    article_batch_size: int | None = None,
     import_run_id: str | None = None,
     locked_by_prefix: str = "scheduler-worker",
     article_locked_by_prefix: str = "article-worker",
     log_event=None,
-) -> SchedulerRun:
+) -> "ProcessingTickResult":
+    if article_batch_size is None:
+        article_batch_size = article_limit
+
+    eligible_runs = list_eligible_document_processing_runs(
+        database_url=database_url,
+        limit=document_limit,
+    )
+    eligible_article_runs = (
+        list_eligible_article_processing_runs(
+            database_url=database_url,
+            limit=article_batch_size,
+        )
+        if process_one_article is not None and article_batch_size > 0
+        else []
+    )
+
+    if not eligible_runs and not eligible_article_runs:
+        _log_event(
+            log_event,
+            event="scheduler.processing.idle",
+            details={"trigger_type": trigger_type},
+        )
+        return ProcessingTickResult(
+            scheduler_run_id=None,
+            did_work=False,
+            selected_document_count=0,
+            completed_document_count=0,
+            failed_document_count=0,
+        )
+
     scheduler_run = create_scheduler_run(
         database_url=database_url,
         trigger_type=trigger_type,
@@ -1553,68 +1576,58 @@ def run_processing_tick(
             "trigger_type": trigger_type,
         },
     )
-    eligible_runs = list_eligible_document_processing_runs(
-        database_url=database_url,
-        limit=document_limit,
-    )
 
     completed_document_count = 0
     failed_document_count = 0
     error_messages: list[str] = []
-    max_workers = max(1, len(eligible_runs))
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_document_key = {
-            executor.submit(
-                process_one_document,
-                document_key=eligible_run.document_key,
-                scheduler_run_id=scheduler_run.scheduler_run_id,
-                locked_by=f"{locked_by_prefix}-{index}",
-            ): eligible_run.document_key
-            for index, eligible_run in enumerate(eligible_runs, start=1)
-        }
-        for future in as_completed(future_to_document_key):
-            try:
-                result = future.result()
-            except Exception as exc:  # noqa: BLE001
-                failed_document_count += 1
-                error_messages.append(str(exc))
-                continue
+    if eligible_runs:
+        max_workers = max(1, len(eligible_runs))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_document_key = {
+                executor.submit(
+                    process_one_document,
+                    document_key=eligible_run.document_key,
+                    scheduler_run_id=scheduler_run.scheduler_run_id,
+                    locked_by=f"{locked_by_prefix}-{index}",
+                ): eligible_run.document_key
+                for index, eligible_run in enumerate(eligible_runs, start=1)
+            }
+            for future in as_completed(future_to_document_key):
+                try:
+                    result = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    failed_document_count += 1
+                    error_messages.append(str(exc))
+                    continue
 
-            if getattr(result, "status", "") == "succeeded":
-                completed_document_count += 1
-            else:
-                failed_document_count += 1
+                if getattr(result, "status", "") == "succeeded":
+                    completed_document_count += 1
+                else:
+                    failed_document_count += 1
 
-    eligible_article_runs = (
-        list_eligible_article_processing_runs(
-            database_url=database_url,
-            limit=article_limit,
-        )
-        if process_one_article is not None and article_limit > 0
-        else []
-    )
-    max_article_workers = max(1, len(eligible_article_runs))
-    with ThreadPoolExecutor(max_workers=max_article_workers) as executor:
-        future_to_article_key = {
-            executor.submit(
-                process_one_article,
-                article_key=eligible_run.article_key,
-                locked_by=f"{article_locked_by_prefix}-{index}",
-            ): eligible_run.article_key
-            for index, eligible_run in enumerate(eligible_article_runs, start=1)
-        }
-        for future in as_completed(future_to_article_key):
-            try:
-                result = future.result()
-            except Exception as exc:  # noqa: BLE001
-                failed_document_count += 1
-                error_messages.append(str(exc))
-                continue
+    if eligible_article_runs:
+        max_article_workers = max(1, min(article_limit, len(eligible_article_runs)))
+        with ThreadPoolExecutor(max_workers=max_article_workers) as executor:
+            future_to_article_key = {
+                executor.submit(
+                    process_one_article,
+                    article_key=eligible_run.article_key,
+                    locked_by=f"{article_locked_by_prefix}-{index}",
+                ): eligible_run.article_key
+                for index, eligible_run in enumerate(eligible_article_runs, start=1)
+            }
+            for future in as_completed(future_to_article_key):
+                try:
+                    result = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    failed_document_count += 1
+                    error_messages.append(str(exc))
+                    continue
 
-            if getattr(result, "status", "") == "succeeded":
-                completed_document_count += 1
-            else:
-                failed_document_count += 1
+                if getattr(result, "status", "") == "succeeded":
+                    completed_document_count += 1
+                else:
+                    failed_document_count += 1
 
     final_status = "succeeded"
     if failed_document_count and completed_document_count:
@@ -1622,12 +1635,13 @@ def run_processing_tick(
     elif failed_document_count:
         final_status = "failed"
 
+    selected_document_count = len(eligible_runs) + len(eligible_article_runs)
     finalize_scheduler_run(
         database_url=database_url,
         scheduler_run_id=scheduler_run.scheduler_run_id,
         status=final_status,
         import_run_id=import_run_id,
-        selected_document_count=len(eligible_runs) + len(eligible_article_runs),
+        selected_document_count=selected_document_count,
         completed_document_count=completed_document_count,
         failed_document_count=failed_document_count,
         error_message="; ".join(error_messages) if error_messages else None,
@@ -1647,7 +1661,13 @@ def run_processing_tick(
             "failed_document_count": finalized_run.failed_document_count,
         },
     )
-    return finalized_run
+    return ProcessingTickResult(
+        scheduler_run_id=finalized_run.scheduler_run_id,
+        did_work=True,
+        selected_document_count=finalized_run.selected_document_count,
+        completed_document_count=finalized_run.completed_document_count,
+        failed_document_count=finalized_run.failed_document_count,
+    )
 
 
 def _row_to_scheduler_run(row) -> SchedulerRun:

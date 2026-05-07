@@ -1,6 +1,5 @@
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
-import inspect
 from pathlib import Path
 import sqlite3
 import uuid
@@ -415,7 +414,10 @@ def claim_article_processing_run(
             """
             UPDATE article_processing_runs
             SET
-                status = 'running',
+                status = CASE
+                    WHEN status = 'manual_retry_requested' THEN 'running_manual_retry'
+                    ELSE 'running'
+                END,
                 locked_by = ?,
                 lock_expires_at = datetime(CURRENT_TIMESTAMP, '+' || ? || ' seconds'),
                 last_attempt_started_at = CURRENT_TIMESTAMP,
@@ -1052,7 +1054,8 @@ def process_article_processing_run(
         model_name=model_name,
         prompt_version=prompt_version,
         force_reenrich=bool(
-            existing_run is not None and existing_run.status == "manual_retry_requested"
+            existing_run is not None
+            and existing_run.status in ("manual_retry_requested", "running_manual_retry")
         ),
     )
     if enrichment_run.status in ("succeeded", "skipped_advertisement"):
@@ -1117,7 +1120,7 @@ def _article_processing_run_is_owned_by(
     locked_by: str,
 ) -> bool:
     return (
-        run.status == "running"
+        run.status in ("running", "running_manual_retry")
         and run.locked_by == locked_by
     )
 
@@ -1595,7 +1598,7 @@ def recover_stale_article_runs(
             """
             SELECT article_key
             FROM article_processing_runs
-            WHERE status = 'running'
+            WHERE status IN ('running', 'running_manual_retry')
               AND last_attempt_started_at IS NOT NULL
               AND last_attempt_started_at <= datetime(
                     CURRENT_TIMESTAMP,
@@ -1787,7 +1790,6 @@ def run_article_processing_drain(
     failed_count = 0
     error_messages: list[str] = []
     worker_counter = 0
-    supports_preclaimed_run = _callable_accepts_preclaimed_run(process_one_article)
 
     with ThreadPoolExecutor(max_workers=article_limit) as executor:
         in_flight = {}
@@ -1827,16 +1829,10 @@ def run_article_processing_drain(
                 if claimed_run is None:
                     continue
 
-                submit_kwargs = {
-                    "article_key": claimed_run.article_key,
-                    "locked_by": locked_by,
-                }
-                if supports_preclaimed_run:
-                    submit_kwargs["preclaimed_run"] = next_run
-
                 future = executor.submit(
                     process_one_article,
-                    **submit_kwargs,
+                    article_key=claimed_run.article_key,
+                    locked_by=locked_by,
                 )
                 in_flight[future] = (claimed_run.article_key, locked_by)
                 selected_count += 1
@@ -1887,6 +1883,11 @@ def run_processing_tick(
 ) -> "ProcessingTickResult":
     if article_batch_size is None:
         article_batch_size = article_limit
+    article_work_enabled = (
+        process_one_article is not None
+        and article_limit > 0
+        and article_batch_size > 0
+    )
 
     has_document_work = bool(
         list_eligible_document_processing_runs(
@@ -1901,7 +1902,7 @@ def run_processing_tick(
                 limit=1,
             )
         )
-        if process_one_article is not None and article_limit > 0
+        if article_work_enabled
         else False
     )
 
@@ -1932,9 +1933,35 @@ def run_processing_tick(
         },
     )
 
+    def process_tick_document_callback(*, document_key: str, scheduler_run_id: str, locked_by: str):
+        result = process_one_document(
+            document_key=document_key,
+            scheduler_run_id=scheduler_run_id,
+            locked_by=locked_by,
+        )
+        if isinstance(result, DocumentProcessingRun):
+            return result
+        if getattr(result, "status", "") != "succeeded":
+            return result
+
+        current_run = get_document_processing_run(
+            database_url=database_url,
+            document_key=document_key,
+        )
+        if _document_processing_run_is_owned_by(
+            current_run,
+            locked_by=locked_by,
+            scheduler_run_id=scheduler_run_id,
+        ):
+            return succeed_document_processing_run(
+                database_url=database_url,
+                document_key=document_key,
+            )
+        return result
+
     document_drain_result = run_document_processing_drain(
         database_url=database_url,
-        process_one_document=process_one_document,
+        process_one_document=process_tick_document_callback,
         document_limit=document_limit,
         scheduler_run_id=scheduler_run.scheduler_run_id,
         locked_by_prefix=locked_by_prefix,
@@ -1946,7 +1973,7 @@ def run_processing_tick(
             article_limit=article_limit,
             locked_by_prefix=article_locked_by_prefix,
         )
-        if process_one_article is not None and article_limit > 0
+        if article_work_enabled
         else DrainResult(
             did_work=False,
             selected_count=0,
@@ -2012,19 +2039,6 @@ def run_processing_tick(
         selected_document_count=finalized_run.selected_document_count,
         completed_document_count=finalized_run.completed_document_count,
         failed_document_count=finalized_run.failed_document_count,
-    )
-
-
-def _callable_accepts_preclaimed_run(callback) -> bool:
-    try:
-        parameters = inspect.signature(callback).parameters.values()
-    except (TypeError, ValueError):
-        return False
-
-    return any(
-        parameter.name == "preclaimed_run"
-        or parameter.kind == inspect.Parameter.VAR_KEYWORD
-        for parameter in parameters
     )
 
 

@@ -1819,6 +1819,42 @@ class SchedulerRunStoreTests(unittest.TestCase):
         self.assertEqual(stored_scheduler_run.failed_document_count, 0)
         self.assertEqual(stored_scheduler_run.status, "succeeded")
 
+    def test_processing_tick_finalizes_claimed_document_run_for_generic_success_callback(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_document_processing_run)
+        self.assertIsNotNone(run_processing_tick)
+        self.assertIsNotNone(get_document_processing_run)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            create_document_processing_run(
+                database_url=database_url,
+                document_key=document_key,
+            )
+
+            scheduler_run = run_processing_tick(
+                database_url=database_url,
+                trigger_type="processing",
+                process_one_document=lambda **kwargs: SimpleNamespace(status="succeeded"),
+                document_limit=1,
+            )
+            stored_document_run = get_document_processing_run(
+                database_url=database_url,
+                document_key=document_key,
+            )
+
+        self.assertTrue(scheduler_run.did_work)
+        self.assertEqual(stored_document_run.status, "succeeded")
+        self.assertEqual(stored_document_run.current_step, "completed")
+        self.assertIsNone(stored_document_run.locked_by)
+        self.assertIsNone(stored_document_run.lock_expires_at)
+
     def test_processing_tick_processes_documents_before_articles(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
         self.assertIsNotNone(create_document_processing_run)
@@ -2007,6 +2043,54 @@ class SchedulerRunStoreTests(unittest.TestCase):
         self.assertEqual(stored_scheduler_run.failed_document_count, 1)
         self.assertEqual(stored_scheduler_run.status, "partial")
         self.assertIn("parse timeout", stored_scheduler_run.error_message)
+
+    def test_processing_tick_suppresses_article_work_when_article_batch_size_is_zero(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_article_processing_run)
+        self.assertIsNotNone(run_processing_tick)
+        self.assertIsNotNone(get_article_processing_run)
+        self.assertIsNotNone(list_latest_document_articles)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            self._persist_parsed_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            article = list_latest_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )[0]
+            create_article_processing_run(
+                database_url=database_url,
+                article_id=article.article_id,
+            )
+            processed_article_keys: list[str] = []
+
+            scheduler_run = run_processing_tick(
+                database_url=database_url,
+                trigger_type="processing",
+                process_one_document=lambda **kwargs: SimpleNamespace(status="succeeded"),
+                document_limit=1,
+                process_one_article=lambda **kwargs: processed_article_keys.append(kwargs["article_key"]),
+                article_limit=4,
+                article_batch_size=0,
+            )
+            stored_run = get_article_processing_run(
+                database_url=database_url,
+                article_key=article.article_key,
+            )
+
+        self.assertIsNone(scheduler_run.scheduler_run_id)
+        self.assertFalse(scheduler_run.did_work)
+        self.assertEqual(processed_article_keys, [])
+        self.assertEqual(stored_run.status, "pending")
 
     def test_document_processing_drain_refills_free_slots_until_queue_is_empty(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
@@ -2294,12 +2378,7 @@ class SchedulerRunStoreTests(unittest.TestCase):
             peak_in_flight = 0
             lock = threading.Lock()
 
-            def process_one_article(
-                *,
-                article_key: str,
-                locked_by: str,
-                preclaimed_run=None,
-            ):
+            def process_one_article(*, article_key: str, locked_by: str):
                 nonlocal peak_in_flight
                 with lock:
                     in_flight.append(article_key)
@@ -2324,7 +2403,6 @@ class SchedulerRunStoreTests(unittest.TestCase):
                         model_name="gemini-2.5-flash",
                         prompt_version="article-enrichment-v2",
                         lock_timeout_seconds=600,
-                        preclaimed_run=preclaimed_run,
                     )
                     processed.append(article_key)
                     return result
@@ -2356,6 +2434,96 @@ class SchedulerRunStoreTests(unittest.TestCase):
             [stored_run.status for stored_run in stored_runs],
             ["succeeded"] * 5,
         )
+
+    def test_article_processing_drain_preserves_manual_retry_override_with_stable_callback_shape(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(run_article_processing_drain)
+        self.assertIsNotNone(create_article_processing_run)
+        self.assertIsNotNone(request_manual_article_retry)
+        self.assertIsNotNone(get_article_processing_run)
+        self.assertIsNotNone(process_article_processing_run)
+        self.assertIsNotNone(list_latest_document_articles)
+        self.assertIsNotNone(ArticleTranslationResult)
+        self.assertIsNotNone(ArticleSummaryTagResult)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            self._persist_parsed_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            article = list_latest_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )[0]
+            create_article_processing_run(
+                database_url=database_url,
+                article_id=article.article_id,
+            )
+            translator_calls: list[str] = []
+
+            def translator(_article):
+                translator_calls.append("called")
+                return ArticleTranslationResult(
+                    content_type="article",
+                    classification_reason="Regular newspaper article.",
+                    translated_title_zh="标题",
+                    translated_body_zh="正文",
+                )
+
+            summarizer = lambda **kwargs: ArticleSummaryTagResult(
+                summary_zh="摘要",
+                tags=["能源", "市场", "国际"],
+            )
+
+            first_run = process_article_processing_run(
+                database_url=database_url,
+                article_key=article.article_key,
+                locked_by="article-worker-1",
+                translator=translator,
+                summarizer_tagger=summarizer,
+                provider_name="gemini",
+                model_name="gemini-2.5-flash",
+                prompt_version="article-enrichment-v2",
+                lock_timeout_seconds=600,
+            )
+            request_manual_article_retry(
+                database_url=database_url,
+                article_key=article.article_key,
+            )
+            drain_result = run_article_processing_drain(
+                database_url=database_url,
+                process_one_article=lambda *, article_key, locked_by: process_article_processing_run(
+                    database_url=database_url,
+                    article_key=article_key,
+                    locked_by=locked_by,
+                    translator=translator,
+                    summarizer_tagger=summarizer,
+                    provider_name="gemini",
+                    model_name="gemini-2.5-flash",
+                    prompt_version="article-enrichment-v2",
+                    lock_timeout_seconds=600,
+                ),
+                article_limit=1,
+            )
+            stored_run = get_article_processing_run(
+                database_url=database_url,
+                article_key=article.article_key,
+            )
+
+        self.assertEqual(first_run.status, "succeeded")
+        self.assertTrue(drain_result.did_work)
+        self.assertEqual(drain_result.selected_count, 1)
+        self.assertEqual(drain_result.completed_count, 1)
+        self.assertEqual(drain_result.failed_count, 0)
+        self.assertEqual(stored_run.status, "succeeded")
+        self.assertEqual(len(translator_calls), 2)
 
     def test_article_processing_drain_skips_contended_claim_before_submit(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
@@ -2406,12 +2574,7 @@ class SchedulerRunStoreTests(unittest.TestCase):
                     )
                 return original_claim_article_processing_run(**kwargs)
 
-            def process_one_article(
-                *,
-                article_key: str,
-                locked_by: str,
-                preclaimed_run=None,
-            ):
+            def process_one_article(*, article_key: str, locked_by: str):
                 processed.append(article_key)
                 return process_article_processing_run(
                     database_url=database_url,
@@ -2431,7 +2594,6 @@ class SchedulerRunStoreTests(unittest.TestCase):
                     model_name="gemini-2.5-flash",
                     prompt_version="article-enrichment-v2",
                     lock_timeout_seconds=600,
-                    preclaimed_run=preclaimed_run,
                 )
 
             with mock.patch.object(

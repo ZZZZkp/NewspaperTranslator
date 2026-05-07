@@ -252,6 +252,61 @@ class GmailIntegrationTests(unittest.TestCase):
         self.assertEqual(summary.skipped_document_count, 0)
         self.assertEqual(document_count, 1)
 
+    def test_import_keeps_audit_source_as_gmail_but_stores_filename_prefix_on_document(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(import_from_gmail)
+        self.assertIsNotNone(get_import_run)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = pathlib.Path(temp_dir)
+            config_path = temp_path / "gmail-config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "oauth_client_secrets_path": "./secrets/google-client.json",
+                        "oauth_token_path": "./secrets/gmail-token.json",
+                        "allowed_senders": ["briefing@example.com"],
+                        "query": "has:attachment filename:pdf",
+                        "label_ids": ["INBOX"],
+                        "max_results": 10,
+                        "include_spam_trash": False,
+                    }
+                )
+            )
+
+            storage_root = temp_path / "storage"
+            database_path = temp_path / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            summary = import_from_gmail(
+                config_path=config_path,
+                storage_root=storage_root,
+                database_url=database_url,
+                service=_FakeFinancialTimesGmailService(),
+            )
+            stored_run = get_import_run(
+                database_url=database_url,
+                run_id=summary.run_id,
+            )
+
+            connection = sqlite3.connect(database_path)
+            try:
+                document_row = connection.execute(
+                    """
+                    SELECT source_name, original_filename, source_message_internal_date
+                    FROM documents
+                    """
+                ).fetchone()
+            finally:
+                connection.close()
+
+        self.assertEqual(stored_run.source_name, "gmail")
+        self.assertEqual(
+            document_row,
+            ("金融时报", "金融时报-5-6.pdf", "1778083200000"),
+        )
+
     def test_imports_pdf_documents_linked_from_message_bodies(self) -> None:
         self.assertIsNotNone(
             run_pending_migrations,
@@ -1128,6 +1183,51 @@ class _CheckpointAwareMessagesResource:
 class _CheckpointAwareAttachmentsResource:
     def get(self, *, userId: str, messageId: str, id: str):
         return _FakeRequest({"data": "JVBERi0xLjcgaW5jcmVtZW50YWw="})
+
+
+class _FakeFinancialTimesGmailService:
+    def users(self):
+        return _FakeFinancialTimesUsersResource()
+
+
+class _FakeFinancialTimesUsersResource:
+    def messages(self):
+        return _FakeFinancialTimesMessagesResource()
+
+
+class _FakeFinancialTimesMessagesResource:
+    def list(self, **_kwargs):
+        return _FakeRequest(
+            {"messages": [{"id": "ft-message-1", "threadId": "thread-1"}]}
+        )
+
+    def get(self, *, userId: str, id: str, format: str):
+        return _FakeRequest(
+            {
+                "id": id,
+                "payload": {
+                    "headers": [{"name": "From", "value": "briefing@example.com"}],
+                    "parts": [
+                        {
+                            "filename": "金融时报-5-6.pdf",
+                            "mimeType": "application/pdf",
+                            "body": {"attachmentId": "attachment-1"},
+                        }
+                    ],
+                },
+                "internalDate": "1778083200000",
+            }
+        )
+
+    def attachments(self):
+        return _FakeFinancialTimesAttachmentsResource()
+
+
+class _FakeFinancialTimesAttachmentsResource:
+    def get(self, *, userId: str, messageId: str, id: str):
+        return _FakeRequest(
+            {"data": base64.urlsafe_b64encode(b"%PDF-1.7 ft bytes").decode("ascii")}
+        )
 
 
 class _FakeUsersResource:

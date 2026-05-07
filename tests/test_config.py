@@ -35,21 +35,18 @@ class AppSettingsTests(unittest.TestCase):
         self.assertEqual(settings.storage_root, "/tmp/newspaper-translator-data")
         self.assertEqual(settings.gmail_config_path, "/tmp/gmail-config.json")
 
-    def test_fails_fast_when_required_gmail_config_path_is_missing(self) -> None:
+    def test_gmail_config_path_is_optional_and_defaults_to_empty(self) -> None:
         self.assertIsNotNone(AppSettings, "AppSettings should be importable from newspaper_translator.config")
-        self.assertIsNotNone(ConfigurationError, "ConfigurationError should be importable from newspaper_translator.config")
 
         env = {
             "APP_ENV": "test",
             "DATABASE_URL": "sqlite:///tmp/newspaper-translator.db",
             "STORAGE_ROOT": "/tmp/newspaper-translator-data",
-            "GMAIL_CONFIG_PATH": "",
         }
 
-        with self.assertRaises(ConfigurationError) as context:
-            AppSettings.from_env(env)
+        settings = AppSettings.from_env(env)
 
-        self.assertIn("GMAIL_CONFIG_PATH", str(context.exception))
+        self.assertEqual(settings.gmail_config_path, "")
 
     def test_loads_mineru_settings_from_environment(self) -> None:
         self.assertIsNotNone(MineruSettings, "MineruSettings should be importable from newspaper_translator.config")

@@ -11,7 +11,7 @@ class AppSettings:
     app_env: str
     database_url: str
     storage_root: str
-    gmail_config_path: str
+    gmail_config_path: str = ""
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "AppSettings":
@@ -19,7 +19,7 @@ class AppSettings:
             app_env=_require_setting(env, "APP_ENV"),
             database_url=_require_setting(env, "DATABASE_URL"),
             storage_root=_require_setting(env, "STORAGE_ROOT"),
-            gmail_config_path=_require_setting(env, "GMAIL_CONFIG_PATH"),
+            gmail_config_path=env.get("GMAIL_CONFIG_PATH", ""),
         )
 
 

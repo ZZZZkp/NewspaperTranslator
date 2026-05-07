@@ -1126,6 +1126,8 @@ class SchedulerRunStoreTests(unittest.TestCase):
                 article_key=article.article_key,
                 locked_by="article-worker-1",
                 translator=lambda _article: ArticleTranslationResult(
+                    content_type="article",
+                    classification_reason="Regular newspaper article.",
                     translated_title_zh="标题",
                     translated_body_zh="正文",
                 ),
@@ -1194,6 +1196,8 @@ class SchedulerRunStoreTests(unittest.TestCase):
                     article_key=article.article_key,
                     locked_by=f"article-worker:{article.article_order}",
                     translator=lambda _article: ArticleTranslationResult(
+                        content_type="article",
+                        classification_reason="Regular newspaper article.",
                         translated_title_zh="标题",
                         translated_body_zh="正文",
                     ),
@@ -1279,6 +1283,8 @@ class SchedulerRunStoreTests(unittest.TestCase):
             def translator(_article):
                 translator_calls.append("called")
                 return ArticleTranslationResult(
+                    content_type="article",
+                    classification_reason="Regular newspaper article.",
                     translated_title_zh="标题",
                     translated_body_zh="正文",
                 )
@@ -2323,6 +2329,8 @@ class SchedulerRunStoreTests(unittest.TestCase):
 class _FakeTranslator:
     def __call__(self, article):
         return ArticleTranslationResult(
+            content_type="article",
+            classification_reason="Regular newspaper article.",
             translated_title_zh="大型石油公司远赴他处避开中东动荡",
             translated_body_zh="多家能源企业正加速在非洲和南美寻找新机会。",
         )
@@ -2336,6 +2344,8 @@ class _SelectiveFailingTranslator:
         if article.title_en in self._failing_titles:
             raise RuntimeError("translation timeout")
         return ArticleTranslationResult(
+            content_type="article",
+            classification_reason="Regular newspaper article.",
             translated_title_zh=f"{article.title_en} 中文",
             translated_body_zh=f"{article.body_text_en} 中文",
         )

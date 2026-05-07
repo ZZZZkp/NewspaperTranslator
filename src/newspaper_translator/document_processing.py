@@ -1035,7 +1035,7 @@ def process_article_processing_run(
             existing_run is not None and existing_run.status == "manual_retry_requested"
         ),
     )
-    if enrichment_run.status == "succeeded":
+    if enrichment_run.status in ("succeeded", "skipped_advertisement"):
         return succeed_article_processing_run(
             database_url=database_url,
             article_key=article_key,

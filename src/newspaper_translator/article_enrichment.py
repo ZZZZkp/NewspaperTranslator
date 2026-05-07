@@ -48,47 +48,71 @@ def enrich_article(
 
     try:
         translation = translator(article)
-        try:
-            summary_and_tags = summarizer_tagger(
-                article=article,
-                translated_title_zh=translation.translated_title_zh,
-                translated_body_zh=translation.translated_body_zh,
-            )
-        except Exception as exc:
+        if translation.content_type == "advertisement":
             record_article_enrichment_outputs(
                 database_url=database_url,
                 enrichment_run_id=enrichment_run.enrichment_run_id,
-                translated_title_zh=translation.translated_title_zh,
+                translated_title_zh=None,
                 summary_zh=None,
-                translated_body_zh=translation.translated_body_zh,
-                translation_status="succeeded",
-                summary_status="failed",
-                tagging_status="failed",
+                translated_body_zh=None,
+                translation_status="skipped",
+                summary_status="skipped",
+                tagging_status="skipped",
                 tags=[],
+                content_type="advertisement",
+                classification_reason=translation.classification_reason,
             )
             finalize_article_enrichment_run(
                 database_url=database_url,
                 enrichment_run_id=enrichment_run.enrichment_run_id,
-                status="partial",
-                error_message=str(exc),
+                status="skipped_advertisement",
             )
         else:
-            record_article_enrichment_outputs(
-                database_url=database_url,
-                enrichment_run_id=enrichment_run.enrichment_run_id,
-                translated_title_zh=translation.translated_title_zh,
-                summary_zh=summary_and_tags.summary_zh,
-                translated_body_zh=translation.translated_body_zh,
-                translation_status="succeeded",
-                summary_status="succeeded",
-                tagging_status="succeeded",
-                tags=summary_and_tags.tags,
-            )
-            finalize_article_enrichment_run(
-                database_url=database_url,
-                enrichment_run_id=enrichment_run.enrichment_run_id,
-                status="succeeded",
-            )
+            try:
+                summary_and_tags = summarizer_tagger(
+                    article=article,
+                    translated_title_zh=translation.translated_title_zh,
+                    translated_body_zh=translation.translated_body_zh,
+                )
+            except Exception as exc:
+                record_article_enrichment_outputs(
+                    database_url=database_url,
+                    enrichment_run_id=enrichment_run.enrichment_run_id,
+                    translated_title_zh=translation.translated_title_zh,
+                    summary_zh=None,
+                    translated_body_zh=translation.translated_body_zh,
+                    translation_status="succeeded",
+                    summary_status="failed",
+                    tagging_status="failed",
+                    tags=[],
+                    content_type=translation.content_type,
+                    classification_reason=translation.classification_reason,
+                )
+                finalize_article_enrichment_run(
+                    database_url=database_url,
+                    enrichment_run_id=enrichment_run.enrichment_run_id,
+                    status="partial",
+                    error_message=str(exc),
+                )
+            else:
+                record_article_enrichment_outputs(
+                    database_url=database_url,
+                    enrichment_run_id=enrichment_run.enrichment_run_id,
+                    translated_title_zh=translation.translated_title_zh,
+                    summary_zh=summary_and_tags.summary_zh,
+                    translated_body_zh=translation.translated_body_zh,
+                    translation_status="succeeded",
+                    summary_status="succeeded",
+                    tagging_status="succeeded",
+                    tags=summary_and_tags.tags,
+                    content_type=translation.content_type,
+                    classification_reason=translation.classification_reason,
+                )
+                finalize_article_enrichment_run(
+                    database_url=database_url,
+                    enrichment_run_id=enrichment_run.enrichment_run_id,
+                    status="succeeded",
+                )
     except Exception as exc:
         finalize_article_enrichment_run(
             database_url=database_url,

@@ -1,4 +1,4 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass
 from pathlib import Path
 import sqlite3
@@ -18,6 +18,15 @@ class ProcessingTickResult:
     selected_document_count: int
     completed_document_count: int
     failed_document_count: int
+
+
+@dataclass(frozen=True)
+class DrainResult:
+    did_work: bool
+    selected_count: int
+    completed_count: int
+    failed_count: int
+    error_messages: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1518,6 +1527,92 @@ def run_scheduler_tick(
         },
     )
     return finalized_run
+
+
+def run_document_processing_drain(
+    *,
+    database_url: str,
+    process_one_document,
+    document_limit: int,
+    scheduler_run_id: str,
+    locked_by_prefix: str = "scheduler-worker",
+    lock_timeout_seconds: int = 600,
+) -> DrainResult:
+    if document_limit <= 0:
+        return DrainResult(
+            did_work=False,
+            selected_count=0,
+            completed_count=0,
+            failed_count=0,
+        )
+
+    selected_count = 0
+    completed_count = 0
+    failed_count = 0
+    error_messages: list[str] = []
+    worker_counter = 0
+
+    with ThreadPoolExecutor(max_workers=document_limit) as executor:
+        in_flight = {}
+
+        while True:
+            while len(in_flight) < document_limit:
+                eligible_runs = list_eligible_document_processing_runs(
+                    database_url=database_url,
+                    limit=1,
+                )
+                if not eligible_runs:
+                    break
+
+                worker_counter += 1
+                locked_by = f"{locked_by_prefix}-{worker_counter}"
+                claimed_run = claim_document_processing_run(
+                    database_url=database_url,
+                    document_key=eligible_runs[0].document_key,
+                    locked_by=locked_by,
+                    lock_timeout_seconds=lock_timeout_seconds,
+                    scheduler_run_id=scheduler_run_id,
+                )
+                if claimed_run is None:
+                    continue
+
+                future = executor.submit(
+                    process_one_document,
+                    document_key=claimed_run.document_key,
+                    scheduler_run_id=scheduler_run_id,
+                    locked_by=locked_by,
+                )
+                in_flight[future] = claimed_run.document_key
+                selected_count += 1
+
+            if not in_flight:
+                break
+
+            completed_futures, _pending_futures = wait(
+                set(in_flight),
+                return_when=FIRST_COMPLETED,
+            )
+            for future in completed_futures:
+                in_flight.pop(future, None)
+                try:
+                    result = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    failed_count += 1
+                    error_messages.append(str(exc))
+                    continue
+
+                if getattr(result, "status", "") == "succeeded":
+                    completed_count += 1
+                else:
+                    failed_count += 1
+
+    return DrainResult(
+        did_work=selected_count > 0,
+        selected_count=selected_count,
+        completed_count=completed_count,
+        failed_count=failed_count,
+        error_messages=tuple(error_messages),
+    )
 
 
 def run_processing_tick(

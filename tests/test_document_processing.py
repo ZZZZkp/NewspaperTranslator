@@ -75,8 +75,10 @@ try:
         recover_stale_document_runs,
         request_manual_article_retry,
         run_processing_tick,
+        run_document_processing_drain,
         run_scheduler_tick,
         succeed_article_processing_run,
+        succeed_document_processing_run,
         request_manual_document_retry,
     )
 except ImportError:
@@ -103,8 +105,10 @@ except ImportError:
     recover_stale_document_runs = None
     request_manual_article_retry = None
     run_processing_tick = None
+    run_document_processing_drain = None
     run_scheduler_tick = None
     succeed_article_processing_run = None
+    succeed_document_processing_run = None
     request_manual_document_retry = None
 
 
@@ -1873,6 +1877,144 @@ class SchedulerRunStoreTests(unittest.TestCase):
         self.assertEqual(stored_scheduler_run.failed_document_count, 1)
         self.assertEqual(stored_scheduler_run.status, "partial")
         self.assertIn("parse timeout", stored_scheduler_run.error_message)
+
+    def test_document_processing_drain_refills_free_slots_until_queue_is_empty(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_document_processing_run)
+        self.assertIsNotNone(run_document_processing_drain)
+        self.assertIsNotNone(get_document_processing_run)
+        self.assertIsNotNone(succeed_document_processing_run)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            document_keys = [
+                self._insert_document(
+                    database_path,
+                    f"message-{index}:attachment-1:hash-{index}",
+                )
+                for index in range(1, 6)
+            ]
+            for document_key in document_keys:
+                create_document_processing_run(
+                    database_url=database_url,
+                    document_key=document_key,
+                )
+
+            in_flight: list[str] = []
+            processed: list[str] = []
+            peak_in_flight = 0
+            lock = threading.Lock()
+
+            def process_one_document(*, document_key: str, scheduler_run_id: str, locked_by: str):
+                nonlocal peak_in_flight
+                with lock:
+                    in_flight.append(document_key)
+                    peak_in_flight = max(peak_in_flight, len(in_flight))
+                try:
+                    time.sleep(0.05)
+                    processed.append(document_key)
+                    return succeed_document_processing_run(
+                        database_url=database_url,
+                        document_key=document_key,
+                    )
+                finally:
+                    with lock:
+                        in_flight.remove(document_key)
+
+            drain_result = run_document_processing_drain(
+                database_url=database_url,
+                process_one_document=process_one_document,
+                document_limit=2,
+                scheduler_run_id="scheduler-run-1",
+            )
+            stored_runs = [
+                get_document_processing_run(
+                    database_url=database_url,
+                    document_key=document_key,
+                )
+                for document_key in document_keys
+            ]
+
+        self.assertCountEqual(processed, document_keys)
+        self.assertLessEqual(peak_in_flight, 2)
+        self.assertTrue(drain_result.did_work)
+        self.assertEqual(drain_result.selected_count, 5)
+        self.assertEqual(drain_result.completed_count, 5)
+        self.assertEqual(drain_result.failed_count, 0)
+        self.assertEqual(drain_result.error_messages, ())
+        self.assertEqual(
+            [stored_run.status for stored_run in stored_runs],
+            ["succeeded"] * 5,
+        )
+
+    def test_document_processing_drain_continues_after_one_task_failure(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_document_processing_run)
+        self.assertIsNotNone(run_document_processing_drain)
+        self.assertIsNotNone(get_document_processing_run)
+        self.assertIsNotNone(fail_document_processing_run)
+        self.assertIsNotNone(succeed_document_processing_run)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            document_keys = [
+                self._insert_document(
+                    database_path,
+                    f"message-{index}:attachment-1:hash-{index}",
+                )
+                for index in range(1, 4)
+            ]
+            for document_key in document_keys:
+                create_document_processing_run(
+                    database_url=database_url,
+                    document_key=document_key,
+                )
+
+            processed: list[str] = []
+
+            def process_one_document(*, document_key: str, scheduler_run_id: str, locked_by: str):
+                processed.append(document_key)
+                if document_key == document_keys[1]:
+                    return fail_document_processing_run(
+                        database_url=database_url,
+                        document_key=document_key,
+                        failed_step="parse_persist",
+                        error_message="parse timeout",
+                        automatic_failure_limit=1,
+                    )
+                return succeed_document_processing_run(
+                    database_url=database_url,
+                    document_key=document_key,
+                )
+
+            drain_result = run_document_processing_drain(
+                database_url=database_url,
+                process_one_document=process_one_document,
+                document_limit=2,
+                scheduler_run_id="scheduler-run-1",
+            )
+            stored_runs = {
+                document_key: get_document_processing_run(
+                    database_url=database_url,
+                    document_key=document_key,
+                )
+                for document_key in document_keys
+            }
+
+        self.assertCountEqual(processed, document_keys)
+        self.assertTrue(drain_result.did_work)
+        self.assertEqual(drain_result.selected_count, 3)
+        self.assertEqual(drain_result.completed_count, 2)
+        self.assertEqual(drain_result.failed_count, 1)
+        self.assertEqual(stored_runs[document_keys[1]].status, "failed_terminal")
+        self.assertEqual(stored_runs[document_keys[0]].status, "succeeded")
+        self.assertEqual(stored_runs[document_keys[2]].status, "succeeded")
 
     def test_scheduler_tick_processes_multiple_documents_concurrently(self) -> None:
         self.assertIsNotNone(run_pending_migrations)

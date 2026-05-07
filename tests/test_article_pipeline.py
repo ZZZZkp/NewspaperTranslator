@@ -257,6 +257,28 @@ class ArticlePipelineTests(unittest.TestCase):
             "2026-05-06",
         )
 
+    def test_uses_explicit_asia_shanghai_year_for_boundary_gmail_timestamp(self) -> None:
+        self.assertEqual(
+            resolve_publication_date(
+                original_filename="paper-1-1.pdf",
+                markdown_text="",
+                source_message_internal_date="1735687800000",
+                fallback_year=2024,
+            ),
+            "2025-01-01",
+        )
+
+    def test_uses_fallback_year_for_malformed_gmail_timestamp(self) -> None:
+        self.assertEqual(
+            resolve_publication_date(
+                original_filename="paper-1-1.pdf",
+                markdown_text="",
+                source_message_internal_date="not-a-number",
+                fallback_year=2024,
+            ),
+            "2024-01-01",
+        )
+
     def test_rejects_invalid_month_day_filename_dates(self) -> None:
         self.assertEqual(
             resolve_publication_date(
@@ -267,6 +289,58 @@ class ArticlePipelineTests(unittest.TestCase):
             ),
             "",
         )
+
+    def test_invalid_month_day_filename_still_fails_parse_run_when_markdown_has_date(
+        self,
+    ) -> None:
+        self.assertIsNotNone(persist_document_articles)
+        self.assertIsNotNone(run_pending_migrations)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            document_key = self._insert_document(
+                database_path,
+                original_filename="金融时报-2-30.pdf",
+                raw_path=str(pathlib.Path(temp_dir) / "金融时报-2-30.pdf"),
+                source_message_internal_date="1778102400000",
+            )
+            pathlib.Path(temp_dir, "金融时报-2-30.pdf").write_bytes(b"%PDF-1.4 sample")
+            markdown_path = pathlib.Path(temp_dir) / "phase3-output" / "ft" / "full.md"
+            markdown_path.parent.mkdir(parents=True, exist_ok=True)
+            markdown_path.write_text(
+                "The Wall Street Journal, April 20, 2026\n\n# Lead Story\n\nBody text.\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "publication date"):
+                persist_document_articles(
+                    database_url=database_url,
+                    document_key=document_key,
+                    output_root=pathlib.Path(temp_dir) / "phase3-output",
+                    mineru_client=_FakeMineruClient(
+                        parsed_document=MineruParsedDocument(
+                            batch_id="batch-1",
+                            file_id="file-1",
+                            file_name="金融时报-2-30.pdf",
+                            markdown_path=markdown_path,
+                            markdown_text=markdown_path.read_text(encoding="utf-8"),
+                        )
+                    ),
+                    continuation_matcher=None,
+                    parser_name="mineru",
+                    parser_version="vlm",
+                    continuation_matcher_name="",
+                    continuation_matcher_version="",
+                )
+
+            parse_runs = list_parse_runs(database_url=database_url, document_key=document_key)
+
+        self.assertEqual(len(parse_runs), 1)
+        self.assertEqual(parse_runs[0].status, "failed")
+        self.assertIn("publication date", parse_runs[0].error_message)
 
     def _insert_document(
         self,

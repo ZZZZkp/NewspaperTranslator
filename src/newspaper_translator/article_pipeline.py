@@ -1,8 +1,9 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 import re
 import sqlite3
+from zoneinfo import ZoneInfo
 
 from newspaper_translator.article_store import (
     create_parse_run,
@@ -13,6 +14,8 @@ from newspaper_translator.article_store import (
 from newspaper_translator.database import sqlite_path_from_database_url
 from newspaper_translator.logging_utils import format_log_event
 from newspaper_translator.pdf import build_parse_result_from_mineru_markdown
+
+_GMAIL_MESSAGE_TZ = ZoneInfo("Asia/Shanghai")
 
 
 @dataclass(frozen=True)
@@ -171,7 +174,8 @@ def _extract_month_day_date_from_filename(
     if not match:
         return False, ""
 
-    year = _year_from_message_internal_date(source_message_internal_date) or fallback_year
+    gmail_datetime = _gmail_message_datetime(source_message_internal_date)
+    year = gmail_datetime.year if gmail_datetime else fallback_year
     try:
         resolved = _normalize_date_parts(
             year=year,
@@ -187,25 +191,21 @@ def _extract_month_day_date_from_filename(
             "original_filename": filename,
             "resolution_source": (
                 "filename_month_day_gmail_year"
-                if source_message_internal_date
+                if gmail_datetime
                 else "filename_month_day_fallback_year"
             ),
             "publication_date": resolved,
         },
     )
-    if source_message_internal_date:
-        gmail_date = datetime.fromtimestamp(
-            int(source_message_internal_date) / 1000
-        ).strftime("%Y-%m-%d")
-        if gmail_date != resolved:
-            _log_publication_date_resolution(
-                event="publication_date_filename_gmail_mismatch",
-                details={
-                    "original_filename": filename,
-                    "filename_publication_date": resolved,
-                    "gmail_message_date": gmail_date,
-                },
-            )
+    if gmail_datetime and gmail_datetime.strftime("%Y-%m-%d") != resolved:
+        _log_publication_date_resolution(
+            event="publication_date_filename_gmail_mismatch",
+            details={
+                "original_filename": filename,
+                "filename_publication_date": resolved,
+                "gmail_message_date": gmail_datetime.strftime("%Y-%m-%d"),
+            },
+        )
     return True, resolved
 
 
@@ -214,9 +214,22 @@ def _normalize_date_parts(*, year: int, month: int, day: int) -> str:
 
 
 def _year_from_message_internal_date(message_internal_date: str | None) -> int | None:
+    gmail_datetime = _gmail_message_datetime(message_internal_date)
+    if gmail_datetime is None:
+        return None
+    return gmail_datetime.year
+
+
+def _gmail_message_datetime(message_internal_date: str | None) -> datetime | None:
     if not message_internal_date:
         return None
-    return datetime.fromtimestamp(int(message_internal_date) / 1000).year
+    try:
+        timestamp_ms = int(message_internal_date)
+    except ValueError:
+        return None
+    return datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC).astimezone(
+        _GMAIL_MESSAGE_TZ
+    )
 
 
 def _log_publication_date_resolution(*, event: str, details: dict[str, object]) -> None:

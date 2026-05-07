@@ -213,13 +213,6 @@ def _normalize_date_parts(*, year: int, month: int, day: int) -> str:
     return datetime(year=year, month=month, day=day).strftime("%Y-%m-%d")
 
 
-def _year_from_message_internal_date(message_internal_date: str | None) -> int | None:
-    gmail_datetime = _gmail_message_datetime(message_internal_date)
-    if gmail_datetime is None:
-        return None
-    return gmail_datetime.year
-
-
 def _gmail_message_datetime(message_internal_date: str | None) -> datetime | None:
     if not message_internal_date:
         return None

@@ -157,7 +157,7 @@ class IngestionSelectionTests(unittest.TestCase):
         self.assertEqual(
             stored_document,
             (
-                "gmail",
+                "daily-paper",
                 "message-1",
                 "attachment-1",
                 "briefing@example.com",

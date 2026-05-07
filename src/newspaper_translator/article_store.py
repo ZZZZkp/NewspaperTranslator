@@ -109,6 +109,8 @@ class LatestArticleEnrichment:
     translation_status: str
     summary_status: str
     tagging_status: str
+    content_type: str
+    classification_reason: str
     tags: list[str]
     started_at: str
     finished_at: str | None
@@ -705,6 +707,8 @@ def record_article_enrichment_outputs(
     summary_status: str,
     tagging_status: str,
     tags: list[str],
+    content_type: str = "article",
+    classification_reason: str = "",
 ) -> None:
     if translation_status == "succeeded":
         if not (translated_title_zh or "").strip() or not (translated_body_zh or "").strip():
@@ -713,6 +717,10 @@ def record_article_enrichment_outputs(
         raise ValueError("Successful summary output requires non-empty summary_zh")
     if tagging_status == "succeeded" and not 3 <= len(tags) <= 8:
         raise ValueError("Successful tagging output must produce 3 to 8 tags")
+    if content_type not in ("article", "advertisement", "uncertain"):
+        raise ValueError(
+            f"Unsupported content_type for enrichment output: {content_type!r}"
+        )
 
     connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
     try:
@@ -725,8 +733,10 @@ def record_article_enrichment_outputs(
                 translated_body_zh,
                 translation_status,
                 summary_status,
-                tagging_status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                tagging_status,
+                content_type,
+                classification_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 enrichment_run_id,
@@ -736,6 +746,8 @@ def record_article_enrichment_outputs(
                 translation_status,
                 summary_status,
                 tagging_status,
+                content_type,
+                classification_reason,
             ),
         )
         for index, tag in enumerate(tags, start=1):
@@ -813,13 +825,15 @@ def get_latest_article_enrichment(
                 o.translation_status,
                 o.summary_status,
                 o.tagging_status,
+                o.content_type,
+                o.classification_reason,
                 r.started_at,
                 r.finished_at
             FROM article_enrichment_runs r
             LEFT JOIN article_enrichment_outputs o
                 ON o.enrichment_run_id = r.enrichment_run_id
             WHERE r.article_id = ?
-                AND r.status IN ('partial', 'succeeded')
+                AND r.status IN ('partial', 'succeeded', 'skipped_advertisement')
             ORDER BY r.finished_at DESC, r.rowid DESC
             LIMIT 1
             """,
@@ -854,9 +868,11 @@ def get_latest_article_enrichment(
         translation_status=row[11],
         summary_status=row[12],
         tagging_status=row[13],
+        content_type=row[14] if row[14] is not None else "article",
+        classification_reason=row[15] if row[15] is not None else "",
         tags=[tag_row[0] for tag_row in tag_rows],
-        started_at=row[14],
-        finished_at=row[15],
+        started_at=row[16],
+        finished_at=row[17],
     )
 
 

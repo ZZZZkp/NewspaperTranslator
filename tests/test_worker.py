@@ -543,5 +543,88 @@ class WorkerThroughputDefaultsTests(unittest.TestCase):
         self.assertEqual(sleep_calls, [60])
 
 
+class WorkerRoleDispatchTests(unittest.TestCase):
+    def test_worker_loop_dispatches_import_role_to_import_and_document_processing(self) -> None:
+        calls: list[tuple[str, str | None]] = []
+        env = {
+            "APP_ENV": "test",
+            "DATABASE_URL": "sqlite:////tmp/newspaper-translator.db",
+            "STORAGE_ROOT": "/tmp/newspaper-translator-data",
+            "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+            "WORKER_ROLE": "import",
+            "GMAIL_IMPORT_INTERVAL_SECONDS": "7200",
+        }
+
+        run_worker_loop(
+            env=env,
+            now_fn=lambda: "2026-05-07T12:00:00",
+            sleep_fn=lambda seconds: None,
+            max_loops=1,
+            run_import_tick_fn=lambda *, trigger_type: calls.append(("import", trigger_type)) or "import-run-1",
+            run_processing_tick_fn=lambda: calls.append(("document-drain", None)) or SimpleNamespace(did_work=True),
+            recover_stale_document_runs_fn=lambda: [],
+            recover_stale_article_runs_fn=lambda: [],
+            get_last_scheduler_run_started_at_fn=lambda *, database_url: "2026-05-07T09:00:00",
+            run_startup_maintenance_fn=lambda **kwargs: calls.append(("startup", kwargs["last_scheduler_run_started_at"])) or {},
+        )
+
+        self.assertEqual(
+            calls,
+            [("startup", "2026-05-07T09:00:00"), ("import", "interval"), ("document-drain", None)],
+        )
+
+    def test_worker_loop_dispatches_article_role_to_idle_probe_and_article_drain(self) -> None:
+        calls: list[str] = []
+        sleep_calls: list[int] = []
+        env = {
+            "APP_ENV": "test",
+            "DATABASE_URL": "sqlite:////tmp/newspaper-translator.db",
+            "STORAGE_ROOT": "/tmp/newspaper-translator-data",
+            "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+            "WORKER_ROLE": "article",
+            "ARTICLE_WORKER_IDLE_POLL_INTERVAL_SECONDS": "60",
+        }
+
+        run_worker_loop(
+            env=env,
+            now_fn=lambda: "2026-05-07T12:00:00",
+            sleep_fn=lambda seconds: sleep_calls.append(seconds),
+            max_loops=2,
+            recover_stale_document_runs_fn=lambda: [],
+            recover_stale_article_runs_fn=lambda: calls.append("recover") or [],
+            run_article_processing_tick_fn=lambda: calls.append("article-drain") or SimpleNamespace(did_work=False),
+            article_work_exists_fn=lambda: False,
+        )
+
+        self.assertEqual(calls, ["recover"])
+        self.assertEqual(sleep_calls, [60, 60])
+
+    def test_worker_loop_article_role_drains_when_work_exists(self) -> None:
+        calls: list[str] = []
+        sleep_calls: list[int] = []
+        env = {
+            "APP_ENV": "test",
+            "DATABASE_URL": "sqlite:////tmp/newspaper-translator.db",
+            "STORAGE_ROOT": "/tmp/newspaper-translator-data",
+            "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+            "WORKER_ROLE": "article",
+            "ARTICLE_WORKER_IDLE_POLL_INTERVAL_SECONDS": "30",
+        }
+
+        run_worker_loop(
+            env=env,
+            now_fn=lambda: "2026-05-07T12:00:00",
+            sleep_fn=lambda seconds: sleep_calls.append(seconds),
+            max_loops=1,
+            recover_stale_document_runs_fn=lambda: [],
+            recover_stale_article_runs_fn=lambda: [],
+            run_article_processing_tick_fn=lambda: calls.append("article-drain") or SimpleNamespace(did_work=True),
+            article_work_exists_fn=lambda: True,
+        )
+
+        self.assertIn("article-drain", calls)
+        self.assertEqual(sleep_calls, [30])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -6,10 +6,12 @@ import time
 from newspaper_translator.config import AppSettings, GeminiSettings, MineruSettings
 from newspaper_translator.document_processing import (
     get_latest_scheduler_run,
+    list_eligible_article_processing_runs,
     process_article_processing_run,
     process_document,
     recover_stale_article_runs,
     recover_stale_document_runs,
+    run_article_processing_drain,
     run_processing_tick,
     run_scheduler_tick,
 )
@@ -295,6 +297,62 @@ def build_recover_stale_article_runs_from_env(env: dict[str, str]):
     return recover
 
 
+def build_run_article_processing_tick_from_env(env: dict[str, str]):
+    app_settings = AppSettings.from_env(env)
+    article_limit = _read_int_setting(env, "ARTICLE_WORKER_CONCURRENCY", default=4)
+    process_one_article = build_process_one_article_from_env(env)
+
+    def run_tick():
+        return run_article_processing_drain(
+            database_url=app_settings.database_url,
+            process_one_article=process_one_article,
+            article_limit=article_limit,
+        )
+
+    return run_tick
+
+
+def build_article_work_exists_fn_from_env(env: dict[str, str]):
+    app_settings = AppSettings.from_env(env)
+
+    def work_exists() -> bool:
+        return bool(list_eligible_article_processing_runs(
+            database_url=app_settings.database_url,
+            limit=1,
+        ))
+
+    return work_exists
+
+
+def run_article_worker_loop(
+    *,
+    env: dict[str, str],
+    sleep_fn=None,
+    max_loops: int | None = None,
+    recover_stale_article_runs_fn=None,
+    run_article_processing_tick_fn=None,
+    article_work_exists_fn=None,
+) -> None:
+    sleep = sleep_fn or time.sleep
+    idle_poll_interval_seconds = _read_int_setting(
+        env,
+        "ARTICLE_WORKER_IDLE_POLL_INTERVAL_SECONDS",
+        default=60,
+    )
+    recover_articles = recover_stale_article_runs_fn or build_recover_stale_article_runs_from_env(env)
+    run_tick = run_article_processing_tick_fn or build_run_article_processing_tick_from_env(env)
+    _work_exists = article_work_exists_fn or build_article_work_exists_fn_from_env(env)
+
+    recover_articles()
+
+    loop_count = 0
+    while max_loops is None or loop_count < max_loops:
+        if _work_exists():
+            run_tick()
+        sleep(idle_poll_interval_seconds)
+        loop_count += 1
+
+
 def run_worker_loop(
     *,
     env: dict[str, str],
@@ -308,7 +366,21 @@ def run_worker_loop(
     run_scheduler_tick_fn=None,
     run_import_tick_fn=None,
     run_processing_tick_fn=None,
+    run_article_processing_tick_fn=None,
+    article_work_exists_fn=None,
 ) -> None:
+    worker_role = (env.get("WORKER_ROLE", "import").strip() or "import").lower()
+    if worker_role == "article":
+        run_article_worker_loop(
+            env=env,
+            sleep_fn=sleep_fn,
+            max_loops=max_loops,
+            recover_stale_article_runs_fn=recover_stale_article_runs_fn,
+            run_article_processing_tick_fn=run_article_processing_tick_fn,
+            article_work_exists_fn=article_work_exists_fn,
+        )
+        return
+
     app_settings = AppSettings.from_env(env)
     now = now_fn or _current_timestamp
     sleep = sleep_fn or time.sleep

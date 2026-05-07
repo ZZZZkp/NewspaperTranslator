@@ -3,6 +3,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+import uuid
 
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -29,8 +30,10 @@ try:
         list_parse_run_final_articles,
         record_article_enrichment_outputs,
         record_parse_run_result,
+        StoredFinalArticle,
     )
     from newspaper_translator.database import run_pending_migrations
+    from newspaper_translator.document_processing import create_document_processing_run
     from newspaper_translator.pdf import (
         ArticleFragment,
         ArticleSource,
@@ -55,6 +58,8 @@ except ImportError:
     record_article_enrichment_outputs = None
     record_parse_run_result = None
     run_pending_migrations = None
+    StoredFinalArticle = None
+    create_document_processing_run = None
     ArticleFragment = None
     ArticleSource = None
     ParseMatchDecision = None
@@ -1092,6 +1097,317 @@ class ArticleQueryTests(unittest.TestCase):
             cards = list_article_card_views(database_url=database_url)
 
         self.assertEqual([card.article_id for card in cards], [newer_article_id, older_article_id])
+
+    def _seed_article_with_enrichment(
+        self,
+        *,
+        database_url: str,
+        title_en: str,
+        content_type: str,
+        run_status: str,
+        classification_reason: str = "auto.",
+        tags: list[str] | None = None,
+        document_key: str | None = None,
+    ) -> "StoredFinalArticle":
+        if document_key is None:
+            document_key = f"message-{uuid.uuid4()}:attachment-1:hash-1"
+            self._insert_document(
+                pathlib.Path(database_url.replace("sqlite:///", "")),
+                original_filename="seeded-doc.pdf",
+                source_name="Seeded Source",
+                document_key=document_key,
+            )
+        parse_run = create_parse_run(
+            database_url=database_url,
+            document_key=document_key,
+            parser_name="mineru",
+            parser_version="vlm",
+            publication_date="2026-04-20",
+        )
+        record_parse_run_result(
+            database_url=database_url,
+            parse_run_id=parse_run.parse_run_id,
+            parse_result=self._build_parse_result(title=title_en, body_suffix="body."),
+            document_key=document_key,
+            publication_date="2026-04-20",
+        )
+        finalize_parse_run(
+            database_url=database_url,
+            parse_run_id=parse_run.parse_run_id,
+            status="succeeded",
+        )
+        article = list_parse_run_final_articles(
+            database_url=database_url,
+            parse_run_id=parse_run.parse_run_id,
+        )[0]
+
+        enrichment = create_article_enrichment_run(
+            database_url=database_url,
+            article_id=article.article_id,
+            parse_run_id=parse_run.parse_run_id,
+            provider_name="gemini",
+            model_name="gemini-2.5-flash",
+            prompt_version="article-enrichment-v3",
+            input_hash=f"hash-{article.article_id}",
+        )
+        if content_type == "advertisement":
+            record_article_enrichment_outputs(
+                database_url=database_url,
+                enrichment_run_id=enrichment.enrichment_run_id,
+                translated_title_zh=None,
+                summary_zh=None,
+                translated_body_zh=None,
+                translation_status="skipped",
+                summary_status="skipped",
+                tagging_status="skipped",
+                tags=[],
+                content_type=content_type,
+                classification_reason=classification_reason,
+            )
+        else:
+            record_article_enrichment_outputs(
+                database_url=database_url,
+                enrichment_run_id=enrichment.enrichment_run_id,
+                translated_title_zh="标题",
+                summary_zh="摘要。",
+                translated_body_zh="正文。",
+                translation_status="succeeded",
+                summary_status="succeeded",
+                tagging_status="succeeded",
+                tags=tags or ["标签一", "标签二", "标签三"],
+                content_type=content_type,
+                classification_reason=classification_reason,
+            )
+        finalize_article_enrichment_run(
+            database_url=database_url,
+            enrichment_run_id=enrichment.enrichment_run_id,
+            status=run_status,
+        )
+        return article
+
+    def test_list_article_card_views_excludes_skipped_advertisements(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            article_visible = self._seed_article_with_enrichment(
+                database_url=database_url,
+                title_en="Visible Article",
+                content_type="article",
+                run_status="succeeded",
+            )
+            self._seed_article_with_enrichment(
+                database_url=database_url,
+                title_en="Hidden Advertisement",
+                content_type="advertisement",
+                run_status="skipped_advertisement",
+            )
+
+            cards = list_article_card_views(database_url=database_url)
+
+        titles = [card.title_en for card in cards]
+        self.assertIn("Visible Article", titles)
+        self.assertNotIn("Hidden Advertisement", titles)
+        self.assertEqual(cards[0].article_id, article_visible.article_id)
+
+    def test_get_overview_article_count_excludes_skipped_advertisements(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            self._seed_article_with_enrichment(
+                database_url=database_url,
+                title_en="Visible Article",
+                content_type="article",
+                run_status="succeeded",
+            )
+            self._seed_article_with_enrichment(
+                database_url=database_url,
+                title_en="Hidden Advertisement",
+                content_type="advertisement",
+                run_status="skipped_advertisement",
+            )
+
+            overview = get_overview_view(database_url=database_url)
+
+        self.assertEqual(overview.article_count, 1)
+
+    def test_get_filter_options_excludes_advertisement_only_tags(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            self._seed_article_with_enrichment(
+                database_url=database_url,
+                title_en="Normal",
+                content_type="article",
+                run_status="succeeded",
+                tags=["T1", "T2", "T3"],
+            )
+            self._seed_article_with_enrichment(
+                database_url=database_url,
+                title_en="Ad",
+                content_type="advertisement",
+                run_status="skipped_advertisement",
+            )
+
+            filters = get_filter_options_view(database_url=database_url)
+
+        self.assertIn("T1", filters.tags)
+
+    def test_get_document_processing_detail_visible_articles_excludes_advertisements(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            shared_document_key = "message-shared:attachment-1:hash-1"
+            self._insert_document(
+                pathlib.Path(str(database_path)),
+                original_filename="shared-doc.pdf",
+                source_name="Shared Source",
+                document_key=shared_document_key,
+            )
+
+            # Create a single parse run with two articles so both appear in
+            # list_latest_document_articles.
+            parse_run = create_parse_run(
+                database_url=database_url,
+                document_key=shared_document_key,
+                parser_name="mineru",
+                parser_version="vlm",
+                publication_date="2026-04-20",
+            )
+            two_article_parse_result = ParseResult(
+                fragments=[
+                    ArticleFragment(
+                        title="Normal Article",
+                        body_text="Normal body text.",
+                        source_order=1,
+                        continued_to_page="",
+                        continued_from_page="",
+                    ),
+                    ArticleFragment(
+                        title="Hidden Ad",
+                        body_text="Ad body text.",
+                        source_order=2,
+                        continued_to_page="",
+                        continued_from_page="",
+                    ),
+                ],
+                match_decisions=[],
+                articles=[
+                    ParsedArticle(
+                        article_order=1,
+                        primary_source_order=1,
+                        source_fragment_count=1,
+                        title="Normal Article",
+                        body_text="Normal body text.",
+                        source_fragments=[
+                            ArticleSource(source_order=1, fragment_role="front", sequence_index=1),
+                        ],
+                    ),
+                    ParsedArticle(
+                        article_order=2,
+                        primary_source_order=2,
+                        source_fragment_count=1,
+                        title="Hidden Ad",
+                        body_text="Ad body text.",
+                        source_fragments=[
+                            ArticleSource(source_order=2, fragment_role="front", sequence_index=1),
+                        ],
+                    ),
+                ],
+            )
+            record_parse_run_result(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                parse_result=two_article_parse_result,
+                document_key=shared_document_key,
+                publication_date="2026-04-20",
+            )
+            finalize_parse_run(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                status="succeeded",
+            )
+            articles = list_parse_run_final_articles(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+            )
+            # articles are ordered by article_order; find each by title
+            normal_article = next(a for a in articles if a.title_en == "Normal Article")
+            ad_article = next(a for a in articles if a.title_en == "Hidden Ad")
+
+            # Enrich normal article as a real article
+            enrichment_normal = create_article_enrichment_run(
+                database_url=database_url,
+                article_id=normal_article.article_id,
+                parse_run_id=parse_run.parse_run_id,
+                provider_name="gemini",
+                model_name="gemini-2.5-flash",
+                prompt_version="article-enrichment-v3",
+                input_hash=f"hash-{normal_article.article_id}",
+            )
+            record_article_enrichment_outputs(
+                database_url=database_url,
+                enrichment_run_id=enrichment_normal.enrichment_run_id,
+                translated_title_zh="正常文章",
+                summary_zh="摘要。",
+                translated_body_zh="正文。",
+                translation_status="succeeded",
+                summary_status="succeeded",
+                tagging_status="succeeded",
+                tags=["标签一", "标签二", "标签三"],
+                content_type="article",
+            )
+            finalize_article_enrichment_run(
+                database_url=database_url,
+                enrichment_run_id=enrichment_normal.enrichment_run_id,
+                status="succeeded",
+            )
+
+            # Enrich ad article as advertisement
+            enrichment_ad = create_article_enrichment_run(
+                database_url=database_url,
+                article_id=ad_article.article_id,
+                parse_run_id=parse_run.parse_run_id,
+                provider_name="gemini",
+                model_name="gemini-2.5-flash",
+                prompt_version="article-enrichment-v3",
+                input_hash=f"hash-{ad_article.article_id}",
+            )
+            record_article_enrichment_outputs(
+                database_url=database_url,
+                enrichment_run_id=enrichment_ad.enrichment_run_id,
+                translated_title_zh=None,
+                summary_zh=None,
+                translated_body_zh=None,
+                translation_status="skipped",
+                summary_status="skipped",
+                tagging_status="skipped",
+                tags=[],
+                content_type="advertisement",
+            )
+            finalize_article_enrichment_run(
+                database_url=database_url,
+                enrichment_run_id=enrichment_ad.enrichment_run_id,
+                status="skipped_advertisement",
+            )
+
+            create_document_processing_run(
+                database_url=database_url,
+                document_key=shared_document_key,
+            )
+
+            view = get_document_processing_detail_view(
+                database_url=database_url,
+                document_key=shared_document_key,
+            )
+
+        titles = [article.title_en for article in view.visible_articles]
+        self.assertIn("Normal Article", titles)
+        self.assertNotIn("Hidden Ad", titles)
+        self.assertEqual(view.visible_article_count, 1)
 
     def _insert_document(
         self,

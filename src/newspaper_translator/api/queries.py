@@ -14,6 +14,27 @@ from newspaper_translator.document_processing import (
     get_document_processing_run,
 )
 
+_LATEST_USABLE_ENRICHMENT_SUBQUERY = """
+SELECT r.article_id, r.status
+FROM article_enrichment_runs r
+WHERE r.status IN ('succeeded', 'partial', 'skipped_advertisement')
+  AND r.finished_at = (
+        SELECT MAX(r2.finished_at)
+        FROM article_enrichment_runs r2
+        WHERE r2.article_id = r.article_id
+          AND r2.status IN ('succeeded', 'partial', 'skipped_advertisement')
+  )
+"""
+
+_NOT_SKIPPED_ADVERTISEMENT_CLAUSE = """
+NOT EXISTS (
+    SELECT 1
+    FROM ({latest}) latest
+    WHERE latest.article_id = a.article_id
+      AND latest.status = 'skipped_advertisement'
+)
+""".format(latest=_LATEST_USABLE_ENRICHMENT_SUBQUERY)
+
 
 @dataclass(frozen=True)
 class ArticleCardView:
@@ -164,7 +185,8 @@ def get_overview_view(*, database_url: str) -> OverviewView:
                 WHERE p.status = 'succeeded'
                   AND DATE(p.finished_at) = DATE('now')
             )
-            """
+              AND """
+            + _NOT_SKIPPED_ADVERTISEMENT_CLAUSE
         ).fetchone()[0]
         pending_article_count = connection.execute(
             """
@@ -236,7 +258,12 @@ def get_filter_options_view(*, database_url: str) -> FilterOptionsView:
             FROM article_tags t
             JOIN article_enrichment_runs r
                 ON r.enrichment_run_id = t.enrichment_run_id
+            JOIN final_articles a
+                ON a.article_id = r.article_id
             WHERE r.status IN ('partial', 'succeeded')
+              AND """
+            + _NOT_SKIPPED_ADVERTISEMENT_CLAUSE
+            + """
             ORDER BY t.tag_text ASC
             """
         ).fetchall()
@@ -378,6 +405,10 @@ def get_document_processing_detail_view(
             )
         except LookupError:
             enrichment = None
+
+        if enrichment is not None and enrichment.status == "skipped_advertisement":
+            continue
+
         if enrichment is not None:
             title_zh = enrichment.translated_title_zh
             summary_zh = enrichment.summary_zh
@@ -576,7 +607,8 @@ def list_article_card_views(
 ) -> list[ArticleCardView]:
     connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
     try:
-        query = """
+        query = (
+            """
         SELECT
             a.article_id,
             a.document_key,
@@ -597,7 +629,9 @@ def list_article_card_views(
                 ORDER BY p2.finished_at DESC, p2.rowid DESC
                 LIMIT 1
           )
-        """
+          AND """
+            + _NOT_SKIPPED_ADVERTISEMENT_CLAUSE
+        )
         params: list[object] = []
         if source:
             query += " AND d.source_name = ?"

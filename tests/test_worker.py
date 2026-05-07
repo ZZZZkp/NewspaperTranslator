@@ -237,7 +237,7 @@ class WorkerStartupTests(unittest.TestCase):
         self.assertEqual(run_scheduler_tick.call_args.kwargs["database_url"], "sqlite:////tmp/newspaper-translator.db")
         self.assertEqual(run_scheduler_tick.call_args.kwargs["trigger_type"], "interval")
         self.assertEqual(run_scheduler_tick.call_args.kwargs["document_limit"], 2)
-        self.assertEqual(run_scheduler_tick.call_args.kwargs["article_limit"], 2)
+        self.assertEqual(run_scheduler_tick.call_args.kwargs["article_limit"], 4)
         self.assertEqual(process_document.call_args.kwargs["database_url"], "sqlite:////tmp/newspaper-translator.db")
         self.assertEqual(
             process_document.call_args.kwargs["output_root"],
@@ -438,6 +438,121 @@ class WorkerStartupTests(unittest.TestCase):
                 ("processing", None),
             ],
         )
+        self.assertEqual(sleep_calls, [60])
+
+
+class WorkerThroughputDefaultsTests(unittest.TestCase):
+    def test_default_article_worker_concurrency_is_four(self) -> None:
+        from newspaper_translator.worker import _read_int_setting
+
+        env: dict[str, str] = {}
+        article_concurrency = _read_int_setting(
+            env,
+            "ARTICLE_WORKER_CONCURRENCY",
+            default=4,
+        )
+        document_concurrency = _read_int_setting(
+            env,
+            "DOCUMENT_WORKER_CONCURRENCY",
+            default=2,
+        )
+
+        self.assertEqual(article_concurrency, 4)
+        self.assertEqual(document_concurrency, 2)
+
+    def test_default_article_worker_batch_size_is_eight(self) -> None:
+        from newspaper_translator.worker import _read_int_setting
+
+        env: dict[str, str] = {}
+        batch_size = _read_int_setting(
+            env,
+            "ARTICLE_WORKER_BATCH_SIZE",
+            default=8,
+        )
+        self.assertEqual(batch_size, 8)
+
+    def test_active_interval_is_used_when_processing_did_work(self) -> None:
+        from newspaper_translator.worker import run_worker_loop
+        from types import SimpleNamespace
+
+        sleep_calls: list[int] = []
+
+        def fake_sleep(seconds: int) -> None:
+            sleep_calls.append(seconds)
+
+        env = {
+            "APP_ENV": "test",
+            "DATABASE_URL": "sqlite:///:memory:",
+            "STORAGE_ROOT": "/tmp",
+            "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+            "PROCESSING_ACTIVE_POLL_INTERVAL_SECONDS": "10",
+            "PROCESSING_IDLE_POLL_INTERVAL_SECONDS": "60",
+        }
+
+        def stub_processing_tick():
+            return SimpleNamespace(did_work=True, scheduler_run_id="run-1")
+
+        def stub_run_startup_maintenance(**_kwargs):
+            return {}
+
+        def stub_get_last_started_at(*, database_url: str) -> str | None:
+            return "2026-05-06T12:00:00"
+
+        run_worker_loop(
+            env=env,
+            now_fn=lambda: "2026-05-06T12:00:00",
+            sleep_fn=fake_sleep,
+            max_loops=1,
+            run_startup_maintenance_fn=stub_run_startup_maintenance,
+            get_last_scheduler_run_started_at_fn=stub_get_last_started_at,
+            recover_stale_document_runs_fn=lambda: [],
+            recover_stale_article_runs_fn=lambda: [],
+            run_import_tick_fn=lambda *, trigger_type: "import-1",
+            run_processing_tick_fn=stub_processing_tick,
+        )
+
+        self.assertEqual(sleep_calls, [10])
+
+    def test_idle_interval_is_used_when_processing_finds_no_work(self) -> None:
+        from newspaper_translator.worker import run_worker_loop
+        from types import SimpleNamespace
+
+        sleep_calls: list[int] = []
+
+        def fake_sleep(seconds: int) -> None:
+            sleep_calls.append(seconds)
+
+        env = {
+            "APP_ENV": "test",
+            "DATABASE_URL": "sqlite:///:memory:",
+            "STORAGE_ROOT": "/tmp",
+            "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+            "PROCESSING_ACTIVE_POLL_INTERVAL_SECONDS": "10",
+            "PROCESSING_IDLE_POLL_INTERVAL_SECONDS": "60",
+        }
+
+        def stub_processing_tick():
+            return SimpleNamespace(did_work=False, scheduler_run_id=None)
+
+        def stub_run_startup_maintenance(**_kwargs):
+            return {}
+
+        def stub_get_last_started_at(*, database_url: str) -> str | None:
+            return "2026-05-06T12:00:00"
+
+        run_worker_loop(
+            env=env,
+            now_fn=lambda: "2026-05-06T12:00:00",
+            sleep_fn=fake_sleep,
+            max_loops=1,
+            run_startup_maintenance_fn=stub_run_startup_maintenance,
+            get_last_scheduler_run_started_at_fn=stub_get_last_started_at,
+            recover_stale_document_runs_fn=lambda: [],
+            recover_stale_article_runs_fn=lambda: [],
+            run_import_tick_fn=lambda *, trigger_type: "import-1",
+            run_processing_tick_fn=stub_processing_tick,
+        )
+
         self.assertEqual(sleep_calls, [60])
 
 

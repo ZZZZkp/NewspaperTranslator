@@ -115,7 +115,12 @@ def build_run_scheduler_tick_from_env(env: dict[str, str]):
     article_limit = _read_int_setting(
         env,
         "ARTICLE_WORKER_CONCURRENCY",
-        default=document_limit,
+        default=4,
+    )
+    article_batch_size = _read_int_setting(
+        env,
+        "ARTICLE_WORKER_BATCH_SIZE",
+        default=8,
     )
     process_one_document = build_process_one_document_from_env(env)
     process_one_article = build_process_one_article_from_env(env)
@@ -166,7 +171,12 @@ def build_run_processing_tick_from_env(env: dict[str, str]):
     article_limit = _read_int_setting(
         env,
         "ARTICLE_WORKER_CONCURRENCY",
-        default=document_limit,
+        default=4,
+    )
+    article_batch_size = _read_int_setting(
+        env,
+        "ARTICLE_WORKER_BATCH_SIZE",
+        default=8,
     )
     process_one_document = build_process_one_document_from_env(env)
     process_one_article = build_process_one_article_from_env(env)
@@ -334,10 +344,19 @@ def run_worker_loop(
         "GMAIL_IMPORT_INTERVAL_SECONDS",
         default=_read_int_setting(env, "SCHEDULER_INTERVAL_SECONDS", default=7200),
     )
-    processing_poll_interval_seconds = _read_int_setting(
+    active_poll_interval_seconds = _read_int_setting(
         env,
-        "PROCESSING_POLL_INTERVAL_SECONDS",
-        default=_read_int_setting(env, "WORKER_POLL_INTERVAL_SECONDS", default=60),
+        "PROCESSING_ACTIVE_POLL_INTERVAL_SECONDS",
+        default=10,
+    )
+    idle_poll_interval_seconds = _read_int_setting(
+        env,
+        "PROCESSING_IDLE_POLL_INTERVAL_SECONDS",
+        default=_read_int_setting(
+            env,
+            "PROCESSING_POLL_INTERVAL_SECONDS",
+            default=_read_int_setting(env, "WORKER_POLL_INTERVAL_SECONDS", default=60),
+        ),
     )
     recover = recover_stale_document_runs_fn or build_recover_stale_document_runs_from_env(env)
     recover_articles = recover_stale_article_runs_fn or build_recover_stale_article_runs_from_env(env)
@@ -361,8 +380,8 @@ def run_worker_loop(
 
     loop_count = 0
     processing_running = False
+    last_did_work = False
     while max_loops is None or loop_count < max_loops:
-        sleep(processing_poll_interval_seconds)
         if should_run_catch_up_tick(
             last_scheduler_run_started_at=get_last_scheduler_run_started_at_fn(
                 database_url=app_settings.database_url,
@@ -375,10 +394,12 @@ def run_worker_loop(
         if not processing_running:
             processing_running = True
             try:
-                run_processing_tick_callback()
+                tick_result = run_processing_tick_callback()
             finally:
                 processing_running = False
+            last_did_work = bool(getattr(tick_result, "did_work", False))
         loop_count += 1
+        sleep(active_poll_interval_seconds if last_did_work else idle_poll_interval_seconds)
 
 
 def main() -> None:

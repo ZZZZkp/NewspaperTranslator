@@ -211,7 +211,8 @@ def get_overview_view(*, database_url: str) -> OverviewView:
                     WHERE r.article_id = a.article_id
                       AND r.status = 'succeeded'
               )
-            """
+              AND """
+            + _NOT_SKIPPED_ADVERTISEMENT_CLAUSE
         ).fetchone()[0]
         processing_document_count = connection.execute(
             """

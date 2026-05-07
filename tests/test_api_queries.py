@@ -1210,6 +1210,22 @@ class ArticleQueryTests(unittest.TestCase):
         self.assertNotIn("Hidden Advertisement", titles)
         self.assertEqual(cards[0].article_id, article_visible.article_id)
 
+    def test_get_overview_pending_count_excludes_skipped_advertisements(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            self._seed_article_with_enrichment(
+                database_url=database_url,
+                title_en="Hidden Advertisement",
+                content_type="advertisement",
+                run_status="skipped_advertisement",
+            )
+
+            overview = get_overview_view(database_url=database_url)
+
+        self.assertEqual(overview.pending_article_count, 0)
+
     def test_get_overview_article_count_excludes_skipped_advertisements(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = pathlib.Path(temp_dir) / "app.db"

@@ -146,6 +146,9 @@ class ArticleProcessingDetailView:
     created_at: str
     updated_at: str
     latest_error_summary: str
+    content_type: str
+    classification_reason: str
+    latest_enrichment_status: str | None
 
 
 @dataclass(frozen=True)
@@ -491,6 +494,21 @@ def get_article_processing_detail_view(
     if run.last_error_message:
         latest_error_summary = f"{run.current_step}: {run.last_error_message}"
 
+    content_type = "article"
+    classification_reason = ""
+    latest_enrichment_status: str | None = None
+    try:
+        latest_enrichment = get_latest_article_enrichment(
+            database_url=database_url,
+            article_id=article.article_id,
+        )
+    except LookupError:
+        latest_enrichment = None
+    if latest_enrichment is not None:
+        content_type = latest_enrichment.content_type
+        classification_reason = latest_enrichment.classification_reason
+        latest_enrichment_status = latest_enrichment.status
+
     return ArticleProcessingDetailView(
         article_processing_run_id=run.article_processing_run_id,
         article_key=run.article_key,
@@ -513,6 +531,9 @@ def get_article_processing_detail_view(
         created_at=run.created_at,
         updated_at=run.updated_at,
         latest_error_summary=latest_error_summary,
+        content_type=content_type,
+        classification_reason=classification_reason,
+        latest_enrichment_status=latest_enrichment_status,
     )
 
 

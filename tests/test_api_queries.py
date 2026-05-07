@@ -27,13 +27,17 @@ try:
         create_parse_run,
         finalize_article_enrichment_run,
         finalize_parse_run,
+        get_final_article,
         list_parse_run_final_articles,
         record_article_enrichment_outputs,
         record_parse_run_result,
         StoredFinalArticle,
     )
     from newspaper_translator.database import run_pending_migrations
-    from newspaper_translator.document_processing import create_document_processing_run
+    from newspaper_translator.document_processing import (
+        create_article_processing_run,
+        create_document_processing_run,
+    )
     from newspaper_translator.pdf import (
         ArticleFragment,
         ArticleSource,
@@ -54,11 +58,13 @@ except ImportError:
     create_parse_run = None
     finalize_article_enrichment_run = None
     finalize_parse_run = None
+    get_final_article = None
     list_parse_run_final_articles = None
     record_article_enrichment_outputs = None
     record_parse_run_result = None
     run_pending_migrations = None
     StoredFinalArticle = None
+    create_article_processing_run = None
     create_document_processing_run = None
     ArticleFragment = None
     ArticleSource = None
@@ -767,6 +773,36 @@ class ArticleQueryTests(unittest.TestCase):
         self.assertEqual(detail.latest_error_summary, "enrich: summary timeout")
         self.assertEqual(detail.automatic_failure_count, 0)
         self.assertIsNone(detail.last_success_input_hash)
+
+    def test_article_processing_detail_view_exposes_advertisement_classification(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            article = self._seed_article_with_enrichment(
+                database_url=database_url,
+                title_en="Hidden Advertisement",
+                content_type="advertisement",
+                run_status="skipped_advertisement",
+                classification_reason="Display ad block.",
+            )
+            create_article_processing_run(
+                database_url=database_url,
+                article_id=article.article_id,
+            )
+            article_key = get_final_article(
+                database_url=database_url,
+                article_id=article.article_id,
+            ).article_key
+
+            view = get_article_processing_detail_view(
+                database_url=database_url,
+                article_key=article_key,
+            )
+
+        self.assertEqual(view.content_type, "advertisement")
+        self.assertEqual(view.classification_reason, "Display ad block.")
+        self.assertEqual(view.latest_enrichment_status, "skipped_advertisement")
 
     def test_article_processing_card_views_include_operator_context(self) -> None:
         self.assertIsNotNone(run_pending_migrations)

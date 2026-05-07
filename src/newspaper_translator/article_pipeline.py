@@ -110,15 +110,20 @@ def resolve_publication_date(
     source_message_internal_date: str | None = None,
     fallback_year: int | None = None,
 ) -> str:
-    return (
-        _extract_iso_date_from_text(original_filename)
-        or _extract_month_day_date_from_filename(
-            original_filename,
-            source_message_internal_date=source_message_internal_date,
-            fallback_year=fallback_year or datetime.now().year,
-        )
-        or _extract_written_date_from_text(markdown_text)
-        or _extract_iso_date_from_text(markdown_text)
+    filename_iso_date = _extract_iso_date_from_text(original_filename)
+    if filename_iso_date:
+        return filename_iso_date
+
+    month_day_candidate_found, filename_month_day_date = _extract_month_day_date_from_filename(
+        original_filename,
+        source_message_internal_date=source_message_internal_date,
+        fallback_year=fallback_year or datetime.now().year,
+    )
+    if month_day_candidate_found:
+        return filename_month_day_date
+
+    return _extract_written_date_from_text(markdown_text) or _extract_iso_date_from_text(
+        markdown_text
     )
 
 
@@ -160,11 +165,11 @@ def _extract_month_day_date_from_filename(
     *,
     source_message_internal_date: str | None,
     fallback_year: int,
-) -> str:
+) -> tuple[bool, str]:
     stem = Path(filename).stem
     match = re.search(r"[-_](\d{1,2})[-_](\d{1,2})$", stem)
     if not match:
-        return ""
+        return False, ""
 
     year = _year_from_message_internal_date(source_message_internal_date) or fallback_year
     try:
@@ -174,7 +179,7 @@ def _extract_month_day_date_from_filename(
             day=int(match.group(2)),
         )
     except ValueError:
-        return ""
+        return True, ""
 
     _log_publication_date_resolution(
         event="publication_date_resolved",
@@ -201,7 +206,7 @@ def _extract_month_day_date_from_filename(
                     "gmail_message_date": gmail_date,
                 },
             )
-    return resolved
+    return True, resolved
 
 
 def _normalize_date_parts(*, year: int, month: int, day: int) -> str:

@@ -261,7 +261,7 @@ class ArticlePipelineTests(unittest.TestCase):
         self.assertEqual(
             resolve_publication_date(
                 original_filename="金融时报-2-30.pdf",
-                markdown_text="",
+                markdown_text="The Wall Street Journal, April 20, 2026\n\nLead story\n",
                 source_message_internal_date="1778102400000",
                 fallback_year=2026,
             ),
@@ -296,7 +296,7 @@ class ArticlePipelineTests(unittest.TestCase):
                 """,
                 (
                     document_key,
-                    "金融时报",
+                    "gmail",
                     "message-1",
                     "attachment-1",
                     "news@example.com",

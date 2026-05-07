@@ -17,7 +17,7 @@
     "download",
     "pdf"
   ],
-  "proxy_url": "http://127.0.0.1:7897",
+  "proxy_url": "http://host.docker.internal:7897",
   "user_id": "me",
   "scopes": [
     "https://www.googleapis.com/auth/gmail.readonly"

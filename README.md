@@ -4,6 +4,10 @@ This repository now has a runnable local newspaper-processing stack: Gmail PDF i
 
 ## Current status
 
+As of 2026-05-07, the project has:
+
+- fixed `config/gmail-config.json` `proxy_url` from `http://127.0.0.1:7897` to `http://host.docker.internal:7897` so the Docker `web` and `worker` containers can reach the host proxy when calling the Gmail API; `127.0.0.1` inside a container resolves to the container's own loopback, not the host
+
 As of 2026-05-06, the project has:
 
 - completed the Phase 1 local runtime baseline
@@ -322,7 +326,7 @@ For link-based newspaper emails:
 - Use a query that matches the emails themselves, not only attachments
 - Fill `allowed_link_domains` to restrict which PDF hosts are trusted
 - `download_link_keywords` is used when a mail body links to a landing page that contains a PDF download button
-- If Gmail must go through a local VPN or proxy, set `proxy_url`, for example `http://127.0.0.1:7897`
+- If Gmail must go through a local VPN or proxy, set `proxy_url`. Use `http://127.0.0.1:7897` when running locally outside Docker; use `http://host.docker.internal:7897` when running inside Docker so the container can reach the proxy on the host.
 - For the current newspaper feed, the known-good domains are `dl.dengtazk.xin`, `www.dengtazk.xin`, and `wx.mail.qq.com`
 - Body-link attachments use short stable `link:body-...` identifiers internally while preserving the original URL in import audit records
 - Known translated PDF filename variants are skipped conservatively and recorded as skipped import items rather than failed imports; this includes literal and percent-encoded `【译】` body-link filenames

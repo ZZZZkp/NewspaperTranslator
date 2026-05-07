@@ -534,23 +534,21 @@ class ManagementCommandTests(unittest.TestCase):
         )
 
         with patch("newspaper_translator.manage.build_process_one_document_from_env") as build_document:
-            with patch("newspaper_translator.manage.build_process_one_article_from_env") as build_article:
-                with patch("newspaper_translator.manage.run_processing_tick") as run_processing_tick:
-                    build_document.return_value = lambda **kwargs: None
-                    build_article.return_value = lambda **kwargs: None
-                    run_processing_tick.return_value = SimpleNamespace(
-                        scheduler_run_id="processing-run-1",
-                        status="succeeded",
-                        trigger_type="processing",
-                    )
+            with patch("newspaper_translator.manage.run_processing_tick") as run_processing_tick:
+                build_document.return_value = lambda **kwargs: None
+                run_processing_tick.return_value = SimpleNamespace(
+                    scheduler_run_id="processing-run-1",
+                    status="succeeded",
+                    trigger_type="processing",
+                )
 
-                    exit_code, output = run_cli(
-                        [
-                            "process-pending-documents",
-                            "--database-url",
-                            "sqlite:////tmp/newspaper-translator.db",
-                        ]
-                    )
+                exit_code, output = run_cli(
+                    [
+                        "process-pending-documents",
+                        "--database-url",
+                        "sqlite:////tmp/newspaper-translator.db",
+                    ]
+                )
 
         payload = json.loads(output)
 
@@ -558,6 +556,7 @@ class ManagementCommandTests(unittest.TestCase):
         self.assertEqual(payload["scheduler_run_id"], "processing-run-1")
         self.assertEqual(run_processing_tick.call_args.kwargs["trigger_type"], "processing")
         self.assertNotIn("import_documents", run_processing_tick.call_args.kwargs)
+        self.assertNotIn("process_one_article", run_processing_tick.call_args.kwargs)
 
     def test_retry_document_command_requests_manual_retry_for_document(self) -> None:
         self.assertIsNotNone(

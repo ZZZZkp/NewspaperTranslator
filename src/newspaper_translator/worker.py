@@ -112,18 +112,7 @@ def build_run_scheduler_tick_from_env(env: dict[str, str]):
         "DOCUMENT_WORKER_CONCURRENCY",
         default=2,
     )
-    article_limit = _read_int_setting(
-        env,
-        "ARTICLE_WORKER_CONCURRENCY",
-        default=4,
-    )
-    article_batch_size = _read_int_setting(
-        env,
-        "ARTICLE_WORKER_BATCH_SIZE",
-        default=8,
-    )
     process_one_document = build_process_one_document_from_env(env)
-    process_one_article = build_process_one_article_from_env(env)
 
     def import_documents():
         return import_from_gmail(
@@ -139,9 +128,6 @@ def build_run_scheduler_tick_from_env(env: dict[str, str]):
             import_documents=import_documents,
             process_one_document=process_one_document,
             document_limit=document_limit,
-            process_one_article=process_one_article,
-            article_limit=article_limit,
-            article_batch_size=article_batch_size,
         )
         return scheduler_run.scheduler_run_id
 
@@ -169,18 +155,7 @@ def build_run_processing_tick_from_env(env: dict[str, str]):
         "DOCUMENT_WORKER_CONCURRENCY",
         default=2,
     )
-    article_limit = _read_int_setting(
-        env,
-        "ARTICLE_WORKER_CONCURRENCY",
-        default=4,
-    )
-    article_batch_size = _read_int_setting(
-        env,
-        "ARTICLE_WORKER_BATCH_SIZE",
-        default=8,
-    )
     process_one_document = build_process_one_document_from_env(env)
-    process_one_article = build_process_one_article_from_env(env)
 
     def run_tick():
         return run_processing_tick(
@@ -188,9 +163,6 @@ def build_run_processing_tick_from_env(env: dict[str, str]):
             trigger_type="processing",
             process_one_document=process_one_document,
             document_limit=document_limit,
-            process_one_article=process_one_article,
-            article_limit=article_limit,
-            article_batch_size=article_batch_size,
         )
 
     return run_tick

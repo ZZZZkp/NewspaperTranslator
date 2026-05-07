@@ -1632,11 +1632,7 @@ def run_scheduler_tick(
     import_documents,
     process_one_document,
     document_limit: int,
-    process_one_article=None,
-    article_limit: int = 0,
-    article_batch_size: int | None = None,
     locked_by_prefix: str = "scheduler-worker",
-    article_locked_by_prefix: str = "article-worker",
     log_event=None,
 ) -> "ProcessingTickResult":
     _log_event(log_event, event="scheduler.tick.started", details={"trigger_type": trigger_type})
@@ -1649,12 +1645,8 @@ def run_scheduler_tick(
         trigger_type=trigger_type,
         process_one_document=process_one_document,
         document_limit=document_limit,
-        process_one_article=process_one_article,
-        article_limit=article_limit,
-        article_batch_size=article_batch_size,
         import_run_id=import_run_id,
         locked_by_prefix=locked_by_prefix,
-        article_locked_by_prefix=article_locked_by_prefix,
         log_event=log_event,
     )
     _log_event(
@@ -1873,40 +1865,18 @@ def run_processing_tick(
     trigger_type: str,
     process_one_document,
     document_limit: int,
-    process_one_article=None,
-    article_limit: int = 0,
-    article_batch_size: int | None = None,
     import_run_id: str | None = None,
     locked_by_prefix: str = "scheduler-worker",
-    article_locked_by_prefix: str = "article-worker",
     log_event=None,
 ) -> "ProcessingTickResult":
-    if article_batch_size is None:
-        article_batch_size = article_limit
-    article_work_enabled = (
-        process_one_article is not None
-        and article_limit > 0
-        and article_batch_size > 0
-    )
-
     has_document_work = bool(
         list_eligible_document_processing_runs(
             database_url=database_url,
             limit=1,
         )
     ) if document_limit > 0 else False
-    has_article_work = (
-        bool(
-            list_eligible_article_processing_runs(
-                database_url=database_url,
-                limit=1,
-            )
-        )
-        if article_work_enabled
-        else False
-    )
 
-    if not has_document_work and not has_article_work:
+    if not has_document_work:
         _log_event(
             log_event,
             event="scheduler.processing.idle",
@@ -1966,34 +1936,10 @@ def run_processing_tick(
         scheduler_run_id=scheduler_run.scheduler_run_id,
         locked_by_prefix=locked_by_prefix,
     )
-    article_drain_result = (
-        run_article_processing_drain(
-            database_url=database_url,
-            process_one_article=process_one_article,
-            article_limit=article_limit,
-            locked_by_prefix=article_locked_by_prefix,
-        )
-        if article_work_enabled
-        else DrainResult(
-            did_work=False,
-            selected_count=0,
-            completed_count=0,
-            failed_count=0,
-        )
-    )
 
-    completed_document_count = (
-        document_drain_result.completed_count
-        + article_drain_result.completed_count
-    )
-    failed_document_count = (
-        document_drain_result.failed_count
-        + article_drain_result.failed_count
-    )
-    error_messages = [
-        *document_drain_result.error_messages,
-        *article_drain_result.error_messages,
-    ]
+    completed_document_count = document_drain_result.completed_count
+    failed_document_count = document_drain_result.failed_count
+    error_messages = list(document_drain_result.error_messages)
 
     final_status = "succeeded"
     if failed_document_count and completed_document_count:
@@ -2001,10 +1947,7 @@ def run_processing_tick(
     elif failed_document_count:
         final_status = "failed"
 
-    selected_document_count = (
-        document_drain_result.selected_count
-        + article_drain_result.selected_count
-    )
+    selected_document_count = document_drain_result.selected_count
     finalize_scheduler_run(
         database_url=database_url,
         scheduler_run_id=scheduler_run.scheduler_run_id,
@@ -2032,10 +1975,7 @@ def run_processing_tick(
     )
     return ProcessingTickResult(
         scheduler_run_id=finalized_run.scheduler_run_id,
-        did_work=(
-            document_drain_result.did_work
-            or article_drain_result.did_work
-        ),
+        did_work=document_drain_result.did_work,
         selected_document_count=finalized_run.selected_document_count,
         completed_document_count=finalized_run.completed_document_count,
         failed_document_count=finalized_run.failed_document_count,

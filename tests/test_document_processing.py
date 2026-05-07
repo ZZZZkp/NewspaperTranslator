@@ -1883,7 +1883,7 @@ class SchedulerRunStoreTests(unittest.TestCase):
         self.assertIsNotNone(create_document_processing_run)
         self.assertIsNotNone(run_document_processing_drain)
         self.assertIsNotNone(get_document_processing_run)
-        self.assertIsNotNone(succeed_document_processing_run)
+        self.assertIsNotNone(process_document)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = pathlib.Path(temp_dir) / "app.db"
@@ -1908,7 +1908,7 @@ class SchedulerRunStoreTests(unittest.TestCase):
             peak_in_flight = 0
             lock = threading.Lock()
 
-            def process_one_document(*, document_key: str, scheduler_run_id: str, locked_by: str):
+            def parse_persist_document(*, document_key: str):
                 nonlocal peak_in_flight
                 with lock:
                     in_flight.append(document_key)
@@ -1916,17 +1916,22 @@ class SchedulerRunStoreTests(unittest.TestCase):
                 try:
                     time.sleep(0.05)
                     processed.append(document_key)
-                    return succeed_document_processing_run(
-                        database_url=database_url,
-                        document_key=document_key,
-                    )
+                    return None
                 finally:
                     with lock:
                         in_flight.remove(document_key)
 
+            def enrich_document(*, document_key: str):
+                return None
+
             drain_result = run_document_processing_drain(
                 database_url=database_url,
-                process_one_document=process_one_document,
+                process_one_document=lambda **kwargs: process_document(
+                    database_url=database_url,
+                    parse_persist_document=parse_persist_document,
+                    enrich_document=enrich_document,
+                    **kwargs,
+                ),
                 document_limit=2,
                 scheduler_run_id="scheduler-run-1",
             )
@@ -1955,8 +1960,7 @@ class SchedulerRunStoreTests(unittest.TestCase):
         self.assertIsNotNone(create_document_processing_run)
         self.assertIsNotNone(run_document_processing_drain)
         self.assertIsNotNone(get_document_processing_run)
-        self.assertIsNotNone(fail_document_processing_run)
-        self.assertIsNotNone(succeed_document_processing_run)
+        self.assertIsNotNone(process_document)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = pathlib.Path(temp_dir) / "app.db"
@@ -1975,27 +1979,40 @@ class SchedulerRunStoreTests(unittest.TestCase):
                     database_url=database_url,
                     document_key=document_key,
                 )
+            connection = sqlite3.connect(database_path)
+            try:
+                connection.execute(
+                    """
+                    UPDATE document_processing_runs
+                    SET automatic_failure_count = 1, updated_at = CURRENT_TIMESTAMP
+                    WHERE document_key = ?
+                    """,
+                    (document_keys[1],),
+                )
+                connection.commit()
+            finally:
+                connection.close()
 
             processed: list[str] = []
 
-            def process_one_document(*, document_key: str, scheduler_run_id: str, locked_by: str):
+            def parse_persist_document(*, document_key: str):
                 processed.append(document_key)
                 if document_key == document_keys[1]:
-                    return fail_document_processing_run(
-                        database_url=database_url,
-                        document_key=document_key,
-                        failed_step="parse_persist",
-                        error_message="parse timeout",
-                        automatic_failure_limit=1,
-                    )
-                return succeed_document_processing_run(
-                    database_url=database_url,
-                    document_key=document_key,
-                )
+                    raise RuntimeError("parse timeout")
+                return None
+
+            def enrich_document(*, document_key: str):
+                return None
 
             drain_result = run_document_processing_drain(
                 database_url=database_url,
-                process_one_document=process_one_document,
+                process_one_document=lambda **kwargs: process_document(
+                    database_url=database_url,
+                    parse_persist_document=parse_persist_document,
+                    enrich_document=enrich_document,
+                    step_retry_limit=0,
+                    **kwargs,
+                ),
                 document_limit=2,
                 scheduler_run_id="scheduler-run-1",
             )
@@ -2013,6 +2030,7 @@ class SchedulerRunStoreTests(unittest.TestCase):
         self.assertEqual(drain_result.completed_count, 2)
         self.assertEqual(drain_result.failed_count, 1)
         self.assertEqual(stored_runs[document_keys[1]].status, "failed_terminal")
+        self.assertEqual(stored_runs[document_keys[1]].last_error_message, "parse timeout")
         self.assertEqual(stored_runs[document_keys[0]].status, "succeeded")
         self.assertEqual(stored_runs[document_keys[2]].status, "succeeded")
 

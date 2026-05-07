@@ -1536,7 +1536,6 @@ def run_document_processing_drain(
     document_limit: int,
     scheduler_run_id: str,
     locked_by_prefix: str = "scheduler-worker",
-    lock_timeout_seconds: int = 600,
 ) -> DrainResult:
     if document_limit <= 0:
         return DrainResult(
@@ -1559,30 +1558,32 @@ def run_document_processing_drain(
             while len(in_flight) < document_limit:
                 eligible_runs = list_eligible_document_processing_runs(
                     database_url=database_url,
-                    limit=1,
+                    limit=document_limit,
                 )
                 if not eligible_runs:
                     break
 
+                in_flight_document_keys = set(in_flight.values())
+                next_run = next(
+                    (
+                        eligible_run
+                        for eligible_run in eligible_runs
+                        if eligible_run.document_key not in in_flight_document_keys
+                    ),
+                    None,
+                )
+                if next_run is None:
+                    break
+
                 worker_counter += 1
                 locked_by = f"{locked_by_prefix}-{worker_counter}"
-                claimed_run = claim_document_processing_run(
-                    database_url=database_url,
-                    document_key=eligible_runs[0].document_key,
-                    locked_by=locked_by,
-                    lock_timeout_seconds=lock_timeout_seconds,
-                    scheduler_run_id=scheduler_run_id,
-                )
-                if claimed_run is None:
-                    continue
-
                 future = executor.submit(
                     process_one_document,
-                    document_key=claimed_run.document_key,
+                    document_key=next_run.document_key,
                     scheduler_run_id=scheduler_run_id,
                     locked_by=locked_by,
                 )
-                in_flight[future] = claimed_run.document_key
+                in_flight[future] = next_run.document_key
                 selected_count += 1
 
             if not in_flight:

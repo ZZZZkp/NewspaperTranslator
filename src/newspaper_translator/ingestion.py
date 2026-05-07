@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import date
 import hashlib
 from pathlib import Path
 import re
@@ -88,10 +89,10 @@ def import_gmail_pdf_attachment(
 
     database_path = sqlite_path_from_database_url(database_url)
     database_path.parent.mkdir(parents=True, exist_ok=True)
-    raw_path.parent.mkdir(parents=True, exist_ok=True)
 
     connection = sqlite3.connect(database_path)
     try:
+        connection.execute("BEGIN IMMEDIATE")
         existing_row = connection.execute(
             """
             SELECT document_key, raw_path
@@ -160,6 +161,7 @@ def import_gmail_pdf_attachment(
         was_created = cursor.rowcount == 1
 
         if was_created and not raw_path.exists():
+            raw_path.parent.mkdir(parents=True, exist_ok=True)
             raw_path.write_bytes(attachment.content_bytes)
 
         connection.commit()
@@ -239,11 +241,30 @@ def _extract_source_name_from_filename(filename: str) -> str:
         r"^(?P<prefix>.*?)[-_](\d{4})[-_](\d{1,2})[-_](\d{1,2})$",
         stem,
     )
-    if full_date_match:
+    if full_date_match and _is_valid_date_suffix(
+        year=int(full_date_match.group(2)),
+        month=int(full_date_match.group(3)),
+        day=int(full_date_match.group(4)),
+    ):
         prefix = full_date_match.group("prefix").rstrip("-_ ").strip()
         return prefix or stem
     month_day_match = re.search(r"^(?P<prefix>.*?)[-_](\d{1,2})[-_](\d{1,2})$", stem)
-    if month_day_match:
+    if month_day_match and _is_valid_month_day_suffix(
+        month=int(month_day_match.group(2)),
+        day=int(month_day_match.group(3)),
+    ):
         prefix = month_day_match.group("prefix").rstrip("-_ ").strip()
         return prefix or stem
     return stem
+
+
+def _is_valid_date_suffix(*, year: int, month: int, day: int) -> bool:
+    try:
+        date(year, month, day)
+    except ValueError:
+        return False
+    return True
+
+
+def _is_valid_month_day_suffix(*, month: int, day: int) -> bool:
+    return _is_valid_date_suffix(year=2000, month=month, day=day)

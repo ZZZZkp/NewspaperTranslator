@@ -231,6 +231,159 @@ class IngestionSelectionTests(unittest.TestCase):
         self.assertEqual(document_count, 1)
         self.assertEqual(processing_run_count, 1)
 
+    def test_import_stores_filename_prefix_and_message_internal_date(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(import_gmail_pdf_attachment)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage_root = pathlib.Path(temp_dir) / "storage"
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            message = GmailMessage(
+                message_id="message-1",
+                sender="briefing@example.com",
+                attachments=[],
+                internal_date="1778083200000",
+            )
+            attachment = GmailAttachment(
+                attachment_id="attachment-1",
+                filename="金融时报-5-6.pdf",
+                mime_type="application/pdf",
+                content_bytes=b"%PDF-1.7 ft content",
+            )
+
+            result = import_gmail_pdf_attachment(
+                message=message,
+                attachment=attachment,
+                storage_root=storage_root,
+                database_url=database_url,
+            )
+
+            connection = sqlite3.connect(database_path)
+            try:
+                stored_row = connection.execute(
+                    """
+                    SELECT source_name, original_filename, source_message_internal_date
+                    FROM documents
+                    WHERE document_key = ?
+                    """,
+                    (result.document_key,),
+                ).fetchone()
+            finally:
+                connection.close()
+
+        self.assertEqual(
+            stored_row,
+            ("金融时报", "金融时报-5-6.pdf", "1778083200000"),
+        )
+
+    def test_reuses_existing_document_for_same_pdf_bytes_from_different_messages(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(import_gmail_pdf_attachment)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage_root = pathlib.Path(temp_dir) / "storage"
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            first_result = import_gmail_pdf_attachment(
+                message=GmailMessage(
+                    message_id="message-1",
+                    sender="briefing@example.com",
+                    attachments=[],
+                    internal_date="1778083200000",
+                ),
+                attachment=GmailAttachment(
+                    attachment_id="attachment-1",
+                    filename="金融时报-5-6.pdf",
+                    mime_type="application/pdf",
+                    content_bytes=b"%PDF-1.7 same content",
+                ),
+                storage_root=storage_root,
+                database_url=database_url,
+            )
+            second_result = import_gmail_pdf_attachment(
+                message=GmailMessage(
+                    message_id="message-2",
+                    sender="briefing@example.com",
+                    attachments=[],
+                    internal_date="1778169600000",
+                ),
+                attachment=GmailAttachment(
+                    attachment_id="attachment-9",
+                    filename="FT-5-6.pdf",
+                    mime_type="application/pdf",
+                    content_bytes=b"%PDF-1.7 same content",
+                ),
+                storage_root=storage_root,
+                database_url=database_url,
+            )
+
+            connection = sqlite3.connect(database_path)
+            try:
+                document_rows = connection.execute(
+                    """
+                    SELECT document_key, source_name, original_filename, source_message_internal_date
+                    FROM documents
+                    ORDER BY created_at, rowid
+                    """
+                ).fetchall()
+                processing_run_count = connection.execute(
+                    "SELECT COUNT(*) FROM document_processing_runs"
+                ).fetchone()[0]
+            finally:
+                connection.close()
+
+        self.assertTrue(first_result.was_created)
+        self.assertFalse(second_result.was_created)
+        self.assertEqual(first_result.document_key, second_result.document_key)
+        self.assertEqual(
+            document_rows,
+            [(first_result.document_key, "金融时报", "金融时报-5-6.pdf", "1778083200000")],
+        )
+        self.assertEqual(processing_run_count, 1)
+
+    def test_uses_full_filename_stem_when_no_trailing_date_segment_exists(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(import_gmail_pdf_attachment)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage_root = pathlib.Path(temp_dir) / "storage"
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            result = import_gmail_pdf_attachment(
+                message=GmailMessage(
+                    message_id="message-3",
+                    sender="briefing@example.com",
+                    attachments=[],
+                    internal_date="1778256000000",
+                ),
+                attachment=GmailAttachment(
+                    attachment_id="attachment-3",
+                    filename="special-edition.pdf",
+                    mime_type="application/pdf",
+                    content_bytes=b"%PDF-1.7 no date",
+                ),
+                storage_root=storage_root,
+                database_url=database_url,
+            )
+
+            connection = sqlite3.connect(database_path)
+            try:
+                stored_source_name = connection.execute(
+                    "SELECT source_name FROM documents WHERE document_key = ?",
+                    (result.document_key,),
+                ).fetchone()[0]
+            finally:
+                connection.close()
+
+        self.assertEqual(stored_source_name, "special-edition")
+
     def test_retry_creates_missing_processing_run_after_enqueue_failure(self) -> None:
         self.assertIsNotNone(
             run_pending_migrations,

@@ -1,11 +1,13 @@
 from dataclasses import dataclass
 import hashlib
 from pathlib import Path
+import re
 import sqlite3
 
 from newspaper_translator.database import sqlite_path_from_database_url
 from newspaper_translator.document_processing import create_document_processing_run
 from newspaper_translator.documents import DocumentIdentity
+from newspaper_translator.logging_utils import format_log_event
 
 TRANSLATION_PREFIXES = ("【译】",)
 TRANSLATED_FILENAME_PATTERNS = (
@@ -74,6 +76,7 @@ def import_gmail_pdf_attachment(
         attachment_id=attachment.attachment_id,
         content_hash=content_hash,
     )
+    filename_source_name = _extract_source_name_from_filename(attachment.filename)
 
     raw_path = _build_raw_pdf_path(
         storage_root=Path(storage_root),
@@ -89,9 +92,46 @@ def import_gmail_pdf_attachment(
 
     connection = sqlite3.connect(database_path)
     try:
+        existing_row = connection.execute(
+            """
+            SELECT document_key, raw_path
+            FROM documents
+            WHERE content_hash = ?
+            ORDER BY created_at ASC, rowid ASC
+            LIMIT 1
+            """,
+            (content_hash,),
+        ).fetchone()
+        if existing_row is not None:
+            connection.commit()
+            print(
+                format_log_event(
+                    level="INFO",
+                    event="duplicate_document_reused",
+                    service="worker",
+                    details={
+                        "content_hash": content_hash,
+                        "canonical_document_key": existing_row[0],
+                        "message_id": message.message_id,
+                        "attachment_id": attachment.attachment_id,
+                    },
+                ),
+                flush=True,
+            )
+            create_document_processing_run(
+                database_url=database_url,
+                document_key=existing_row[0],
+            )
+            return ImportedDocument(
+                document_key=existing_row[0],
+                content_hash=content_hash,
+                raw_path=Path(existing_row[1]),
+                was_created=False,
+            )
+
         cursor = connection.execute(
             """
-            INSERT OR IGNORE INTO documents (
+            INSERT INTO documents (
                 document_key,
                 source_name,
                 source_message_id,
@@ -100,12 +140,13 @@ def import_gmail_pdf_attachment(
                 original_filename,
                 content_hash,
                 raw_path,
-                import_status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                import_status,
+                source_message_internal_date
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 identity.document_key,
-                "gmail",
+                filename_source_name,
                 message.message_id,
                 attachment.attachment_id,
                 message.sender,
@@ -113,6 +154,7 @@ def import_gmail_pdf_attachment(
                 content_hash,
                 str(raw_path),
                 "imported",
+                message.internal_date,
             ),
         )
         was_created = cursor.rowcount == 1
@@ -188,3 +230,20 @@ def _is_translated_pdf_filename(filename: str) -> bool:
         return True
     lowered_base = base.lower()
     return any(pattern in lowered_base for pattern in TRANSLATED_FILENAME_PATTERNS)
+
+
+def _extract_source_name_from_filename(filename: str) -> str:
+    stem = Path(filename).name
+    stem = Path(stem).stem
+    full_date_match = re.search(
+        r"^(?P<prefix>.*?)[-_](\d{4})[-_](\d{1,2})[-_](\d{1,2})$",
+        stem,
+    )
+    if full_date_match:
+        prefix = full_date_match.group("prefix").rstrip("-_ ").strip()
+        return prefix or stem
+    month_day_match = re.search(r"^(?P<prefix>.*?)[-_](\d{1,2})[-_](\d{1,2})$", stem)
+    if month_day_match:
+        prefix = month_day_match.group("prefix").rstrip("-_ ").strip()
+        return prefix or stem
+    return stem

@@ -1,5 +1,6 @@
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
+import inspect
 from pathlib import Path
 import sqlite3
 import uuid
@@ -1020,26 +1021,27 @@ def process_article_processing_run(
     prompt_version: str,
     lock_timeout_seconds: int = 600,
     automatic_failure_limit: int = 2,
+    preclaimed_run: ArticleProcessingRun | None = None,
 ) -> ArticleProcessingRun:
-    existing_run = None
-    try:
-        existing_run = get_article_processing_run(
-            database_url=database_url,
-            article_key=article_key,
-        )
-    except LookupError:
-        existing_run = None
-    claimed_run = claim_article_processing_run(
+    existing_run = preclaimed_run
+    if existing_run is None:
+        try:
+            existing_run = get_article_processing_run(
+                database_url=database_url,
+                article_key=article_key,
+            )
+        except LookupError:
+            existing_run = None
+
+    claimed_run, owns_run = _resolve_article_processing_run_for_execution(
         database_url=database_url,
         article_key=article_key,
         locked_by=locked_by,
         lock_timeout_seconds=lock_timeout_seconds,
+        preclaimed_run=preclaimed_run,
     )
-    if claimed_run is None:
-        return get_article_processing_run(
-            database_url=database_url,
-            article_key=article_key,
-        )
+    if not owns_run:
+        return claimed_run
 
     enrichment_run = enrich_article(
         database_url=database_url,
@@ -1066,6 +1068,57 @@ def process_article_processing_run(
         failed_step="enrich",
         error_message=enrichment_run.error_message or f"article enrichment ended with status {enrichment_run.status}",
         automatic_failure_limit=automatic_failure_limit,
+    )
+
+
+def _resolve_article_processing_run_for_execution(
+    *,
+    database_url: str,
+    article_key: str,
+    locked_by: str,
+    lock_timeout_seconds: int,
+    preclaimed_run: ArticleProcessingRun | None = None,
+) -> tuple[ArticleProcessingRun, bool]:
+    current_run = get_article_processing_run(
+        database_url=database_url,
+        article_key=article_key,
+    )
+
+    if preclaimed_run is not None:
+        if preclaimed_run.article_key != article_key:
+            raise ValueError("preclaimed run article_key does not match request")
+        if current_run.article_processing_run_id != preclaimed_run.article_processing_run_id:
+            return current_run, False
+
+    if _article_processing_run_is_owned_by(
+        current_run,
+        locked_by=locked_by,
+    ):
+        return current_run, True
+
+    claimed_run = claim_article_processing_run(
+        database_url=database_url,
+        article_key=article_key,
+        locked_by=locked_by,
+        lock_timeout_seconds=lock_timeout_seconds,
+    )
+    if claimed_run is not None:
+        return claimed_run, True
+
+    return get_article_processing_run(
+        database_url=database_url,
+        article_key=article_key,
+    ), False
+
+
+def _article_processing_run_is_owned_by(
+    run: ArticleProcessingRun,
+    *,
+    locked_by: str,
+) -> bool:
+    return (
+        run.status == "running"
+        and run.locked_by == locked_by
     )
 
 
@@ -1714,6 +1767,110 @@ def run_document_processing_drain(
     )
 
 
+def run_article_processing_drain(
+    *,
+    database_url: str,
+    process_one_article,
+    article_limit: int,
+    locked_by_prefix: str = "article-worker",
+) -> DrainResult:
+    if article_limit <= 0:
+        return DrainResult(
+            did_work=False,
+            selected_count=0,
+            completed_count=0,
+            failed_count=0,
+        )
+
+    selected_count = 0
+    completed_count = 0
+    failed_count = 0
+    error_messages: list[str] = []
+    worker_counter = 0
+    supports_preclaimed_run = _callable_accepts_preclaimed_run(process_one_article)
+
+    with ThreadPoolExecutor(max_workers=article_limit) as executor:
+        in_flight = {}
+
+        while True:
+            while len(in_flight) < article_limit:
+                eligible_runs = list_eligible_article_processing_runs(
+                    database_url=database_url,
+                    limit=article_limit,
+                )
+                if not eligible_runs:
+                    break
+
+                in_flight_article_keys = {
+                    article_key
+                    for article_key, _locked_by in in_flight.values()
+                }
+                next_run = next(
+                    (
+                        eligible_run
+                        for eligible_run in eligible_runs
+                        if eligible_run.article_key not in in_flight_article_keys
+                    ),
+                    None,
+                )
+                if next_run is None:
+                    break
+
+                worker_counter += 1
+                locked_by = f"{locked_by_prefix}-{worker_counter}"
+                claimed_run = claim_article_processing_run(
+                    database_url=database_url,
+                    article_key=next_run.article_key,
+                    locked_by=locked_by,
+                    lock_timeout_seconds=600,
+                )
+                if claimed_run is None:
+                    continue
+
+                submit_kwargs = {
+                    "article_key": claimed_run.article_key,
+                    "locked_by": locked_by,
+                }
+                if supports_preclaimed_run:
+                    submit_kwargs["preclaimed_run"] = next_run
+
+                future = executor.submit(
+                    process_one_article,
+                    **submit_kwargs,
+                )
+                in_flight[future] = (claimed_run.article_key, locked_by)
+                selected_count += 1
+
+            if not in_flight:
+                break
+
+            completed_futures, _pending_futures = wait(
+                set(in_flight),
+                return_when=FIRST_COMPLETED,
+            )
+            for future in completed_futures:
+                in_flight.pop(future, None)
+                try:
+                    result = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    failed_count += 1
+                    error_messages.append(str(exc))
+                    continue
+
+                if getattr(result, "status", "") == "succeeded":
+                    completed_count += 1
+                else:
+                    failed_count += 1
+
+    return DrainResult(
+        did_work=selected_count > 0,
+        selected_count=selected_count,
+        completed_count=completed_count,
+        failed_count=failed_count,
+        error_messages=tuple(error_messages),
+    )
+
+
 def run_processing_tick(
     *,
     database_url: str,
@@ -1731,20 +1888,24 @@ def run_processing_tick(
     if article_batch_size is None:
         article_batch_size = article_limit
 
-    eligible_runs = list_eligible_document_processing_runs(
-        database_url=database_url,
-        limit=document_limit,
-    )
-    eligible_article_runs = (
-        list_eligible_article_processing_runs(
+    has_document_work = bool(
+        list_eligible_document_processing_runs(
             database_url=database_url,
-            limit=article_batch_size,
+            limit=1,
         )
-        if process_one_article is not None and article_batch_size > 0
-        else []
+    ) if document_limit > 0 else False
+    has_article_work = (
+        bool(
+            list_eligible_article_processing_runs(
+                database_url=database_url,
+                limit=1,
+            )
+        )
+        if process_one_article is not None and article_limit > 0
+        else False
     )
 
-    if not eligible_runs and not eligible_article_runs:
+    if not has_document_work and not has_article_work:
         _log_event(
             log_event,
             event="scheduler.processing.idle",
@@ -1771,57 +1932,41 @@ def run_processing_tick(
         },
     )
 
-    completed_document_count = 0
-    failed_document_count = 0
-    error_messages: list[str] = []
-    if eligible_runs:
-        max_workers = max(1, len(eligible_runs))
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_document_key = {
-                executor.submit(
-                    process_one_document,
-                    document_key=eligible_run.document_key,
-                    scheduler_run_id=scheduler_run.scheduler_run_id,
-                    locked_by=f"{locked_by_prefix}-{index}",
-                ): eligible_run.document_key
-                for index, eligible_run in enumerate(eligible_runs, start=1)
-            }
-            for future in as_completed(future_to_document_key):
-                try:
-                    result = future.result()
-                except Exception as exc:  # noqa: BLE001
-                    failed_document_count += 1
-                    error_messages.append(str(exc))
-                    continue
+    document_drain_result = run_document_processing_drain(
+        database_url=database_url,
+        process_one_document=process_one_document,
+        document_limit=document_limit,
+        scheduler_run_id=scheduler_run.scheduler_run_id,
+        locked_by_prefix=locked_by_prefix,
+    )
+    article_drain_result = (
+        run_article_processing_drain(
+            database_url=database_url,
+            process_one_article=process_one_article,
+            article_limit=article_limit,
+            locked_by_prefix=article_locked_by_prefix,
+        )
+        if process_one_article is not None and article_limit > 0
+        else DrainResult(
+            did_work=False,
+            selected_count=0,
+            completed_count=0,
+            failed_count=0,
+        )
+    )
 
-                if getattr(result, "status", "") == "succeeded":
-                    completed_document_count += 1
-                else:
-                    failed_document_count += 1
-
-    if eligible_article_runs:
-        max_article_workers = max(1, min(article_limit, len(eligible_article_runs)))
-        with ThreadPoolExecutor(max_workers=max_article_workers) as executor:
-            future_to_article_key = {
-                executor.submit(
-                    process_one_article,
-                    article_key=eligible_run.article_key,
-                    locked_by=f"{article_locked_by_prefix}-{index}",
-                ): eligible_run.article_key
-                for index, eligible_run in enumerate(eligible_article_runs, start=1)
-            }
-            for future in as_completed(future_to_article_key):
-                try:
-                    result = future.result()
-                except Exception as exc:  # noqa: BLE001
-                    failed_document_count += 1
-                    error_messages.append(str(exc))
-                    continue
-
-                if getattr(result, "status", "") == "succeeded":
-                    completed_document_count += 1
-                else:
-                    failed_document_count += 1
+    completed_document_count = (
+        document_drain_result.completed_count
+        + article_drain_result.completed_count
+    )
+    failed_document_count = (
+        document_drain_result.failed_count
+        + article_drain_result.failed_count
+    )
+    error_messages = [
+        *document_drain_result.error_messages,
+        *article_drain_result.error_messages,
+    ]
 
     final_status = "succeeded"
     if failed_document_count and completed_document_count:
@@ -1829,7 +1974,10 @@ def run_processing_tick(
     elif failed_document_count:
         final_status = "failed"
 
-    selected_document_count = len(eligible_runs) + len(eligible_article_runs)
+    selected_document_count = (
+        document_drain_result.selected_count
+        + article_drain_result.selected_count
+    )
     finalize_scheduler_run(
         database_url=database_url,
         scheduler_run_id=scheduler_run.scheduler_run_id,
@@ -1857,10 +2005,26 @@ def run_processing_tick(
     )
     return ProcessingTickResult(
         scheduler_run_id=finalized_run.scheduler_run_id,
-        did_work=True,
+        did_work=(
+            document_drain_result.did_work
+            or article_drain_result.did_work
+        ),
         selected_document_count=finalized_run.selected_document_count,
         completed_document_count=finalized_run.completed_document_count,
         failed_document_count=finalized_run.failed_document_count,
+    )
+
+
+def _callable_accepts_preclaimed_run(callback) -> bool:
+    try:
+        parameters = inspect.signature(callback).parameters.values()
+    except (TypeError, ValueError):
+        return False
+
+    return any(
+        parameter.name == "preclaimed_run"
+        or parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
     )
 
 

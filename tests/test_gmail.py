@@ -292,20 +292,17 @@ class GmailIntegrationTests(unittest.TestCase):
 
             connection = sqlite3.connect(database_path)
             try:
-                document_row = connection.execute(
+                document_rows = connection.execute(
                     """
                     SELECT source_name, original_filename, source_message_internal_date
                     FROM documents
                     """
-                ).fetchone()
+                ).fetchall()
             finally:
                 connection.close()
 
         self.assertEqual(stored_run.source_name, "gmail")
-        self.assertEqual(
-            document_row,
-            ("金融时报", "金融时报-5-6.pdf", "1778083200000"),
-        )
+        self.assertEqual(document_rows, [("金融时报", "金融时报-5-6.pdf", "1778083200000")])
 
     def test_imports_pdf_documents_linked_from_message_bodies(self) -> None:
         self.assertIsNotNone(

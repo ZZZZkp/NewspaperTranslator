@@ -88,6 +88,60 @@ Ran 239 tests in 6.470s
 OK
 ```
 
+## Dual Worker And Article Drain Follow-up
+
+Implemented and verified the dual-worker article drain:
+
+### Worker Role Split
+
+- `run_worker_loop()` reads `WORKER_ROLE` env var at startup and dispatches to `run_article_worker_loop()` when set to `"article"`; otherwise falls through to the existing import+document loop
+- `run_article_worker_loop()` calls `recover_articles()` once at startup, then loops: checks a work-exists probe before calling the drain (idle probe pattern), then sleeps `ARTICLE_WORKER_IDLE_POLL_INTERVAL_SECONDS`
+- `build_run_article_processing_tick_from_env()` and `build_article_work_exists_fn_from_env()` capture settings at build time and return zero-argument closures
+
+### Article Processing Drain
+
+- `run_processing_tick()` no longer handles article processing; it now handles only document processing
+- `run_scheduler_tick()` likewise drops article-specific parameters — they were dead code forwarded from callers
+- `run_article_processing_drain()` drives article throughput as a standalone drain — fills a `ThreadPoolExecutor` slot pool until the article queue is empty
+- `manage.run_process_pending_documents_from_env()` simplified to build only document parameters
+
+### Docker Compose
+
+- `worker` service: sets `WORKER_ROLE=import` by default, adds `GMAIL_IMPORT_INTERVAL_SECONDS`, removes the now-unused article batch and poll-interval settings
+- New `article-worker` service: `WORKER_ROLE=article`, same build/volume/depends_on config, exposes `ARTICLE_WORKER_CONCURRENCY` and `ARTICLE_WORKER_IDLE_POLL_INTERVAL_SECONDS`, includes healthcheck, no `GMAIL_CONFIG_PATH`
+- `.env.example` updated accordingly
+
+### Test File Split
+
+`tests/test_document_processing.py` (3022 lines, 43 tests) was split into focused files to stay within tool read limits:
+
+| New file | Contents |
+|---|---|
+| `tests/_document_processing_helpers.py` | `DocumentProcessingTestMixin` shared helpers + fake collaborators |
+| `tests/test_scheduler_run_store.py` | Scheduler run store operations (2 tests) |
+| `tests/test_document_run_store.py` | Document + article run store operations (10 tests) |
+| `tests/test_process_document.py` | Document processing and article enrichment (10 tests) |
+| `tests/test_process_article.py` | Article processing runs, enqueueing, stale recovery (6 tests) |
+| `tests/test_drain.py` | Document and article processing drains (6 tests) |
+| `tests/test_scheduler_tick.py` | Scheduler and processing tick integration (9 tests) |
+
+Each file imports helpers via `sys.path.insert(0, ...)` since `tests/` has no `__init__.py`. Each test class inherits `DocumentProcessingTestMixin, unittest.TestCase`.
+
+## Current Test Status
+
+Current command:
+
+```bash
+./.venv/bin/python -m unittest discover -s tests -p "test_*.py"
+```
+
+Current result:
+
+```text
+Ran 264 tests in 6.969s
+OK
+```
+
 ## Current Open Items
 
 - Some expired `dengtazk.xin` links return `401`; recorded as link fetch failures.

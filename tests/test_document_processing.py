@@ -6,6 +6,7 @@ import threading
 import time
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -51,6 +52,7 @@ except ImportError:
     ParsedArticle = None
 
 try:
+    import newspaper_translator.document_processing as document_processing_module
     from newspaper_translator.document_processing import (
         claim_article_processing_run,
         claim_document_processing_run,
@@ -82,6 +84,7 @@ try:
         request_manual_document_retry,
     )
 except ImportError:
+    document_processing_module = None
     claim_article_processing_run = None
     claim_document_processing_run = None
     create_article_processing_run = None
@@ -722,6 +725,57 @@ class SchedulerRunStoreTests(unittest.TestCase):
         self.assertEqual(stored_run.status, "succeeded")
         self.assertEqual(stored_run.current_step, "completed")
         self.assertEqual(stored_run.automatic_failure_count, 0)
+        self.assertIsNone(stored_run.locked_by)
+        self.assertIsNone(stored_run.lock_expires_at)
+
+    def test_process_document_uses_explicit_preclaimed_run_without_reclaiming(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_document_processing_run)
+        self.assertIsNotNone(claim_document_processing_run)
+        self.assertIsNotNone(process_document)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            create_document_processing_run(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            preclaimed_run = claim_document_processing_run(
+                database_url=database_url,
+                document_key=document_key,
+                locked_by="worker-1",
+                lock_timeout_seconds=600,
+                scheduler_run_id="scheduler-run-1",
+            )
+            parse_calls: list[str] = []
+            enrich_calls: list[str] = []
+
+            def parse_persist_document(*, document_key: str) -> None:
+                parse_calls.append(document_key)
+
+            def enrich_document(*, document_key: str) -> None:
+                enrich_calls.append(document_key)
+
+            stored_run = process_document(
+                database_url=database_url,
+                document_key=document_key,
+                locked_by="worker-1",
+                scheduler_run_id="scheduler-run-1",
+                preclaimed_run=preclaimed_run,
+                parse_persist_document=parse_persist_document,
+                enrich_document=enrich_document,
+            )
+
+        self.assertEqual(parse_calls, [document_key])
+        self.assertEqual(enrich_calls, [document_key])
+        self.assertEqual(stored_run.status, "succeeded")
+        self.assertEqual(stored_run.current_step, "completed")
         self.assertIsNone(stored_run.locked_by)
         self.assertIsNone(stored_run.lock_expires_at)
 
@@ -2034,13 +2088,14 @@ class SchedulerRunStoreTests(unittest.TestCase):
         self.assertEqual(stored_runs[document_keys[0]].status, "succeeded")
         self.assertEqual(stored_runs[document_keys[2]].status, "succeeded")
 
-    def test_document_processing_drain_skips_contended_claim_without_counting_failure(self) -> None:
+    def test_document_processing_drain_skips_contended_claim_before_submit(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
         self.assertIsNotNone(create_document_processing_run)
         self.assertIsNotNone(run_document_processing_drain)
         self.assertIsNotNone(get_document_processing_run)
         self.assertIsNotNone(process_document)
         self.assertIsNotNone(claim_document_processing_run)
+        self.assertIsNotNone(document_processing_module)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = pathlib.Path(temp_dir) / "app.db"
@@ -2065,6 +2120,18 @@ class SchedulerRunStoreTests(unittest.TestCase):
             )
 
             processed: list[str] = []
+            original_claim_document_processing_run = claim_document_processing_run
+
+            def contend_second_claim(**kwargs):
+                if kwargs["document_key"] == second_document_key:
+                    original_claim_document_processing_run(
+                        database_url=database_url,
+                        document_key=second_document_key,
+                        locked_by="other-worker",
+                        lock_timeout_seconds=600,
+                        scheduler_run_id="other-scheduler-run",
+                    )
+                return original_claim_document_processing_run(**kwargs)
 
             def parse_persist_document(*, document_key: str):
                 processed.append(document_key)
@@ -2074,14 +2141,6 @@ class SchedulerRunStoreTests(unittest.TestCase):
                 return None
 
             def process_one_document(*, document_key: str, scheduler_run_id: str, locked_by: str):
-                if document_key == second_document_key:
-                    claim_document_processing_run(
-                        database_url=database_url,
-                        document_key=document_key,
-                        locked_by="other-worker",
-                        lock_timeout_seconds=600,
-                        scheduler_run_id="other-scheduler-run",
-                    )
                 return process_document(
                     database_url=database_url,
                     document_key=document_key,
@@ -2091,12 +2150,17 @@ class SchedulerRunStoreTests(unittest.TestCase):
                     enrich_document=enrich_document,
                 )
 
-            drain_result = run_document_processing_drain(
-                database_url=database_url,
-                process_one_document=process_one_document,
-                document_limit=2,
-                scheduler_run_id="scheduler-run-1",
-            )
+            with mock.patch.object(
+                document_processing_module,
+                "claim_document_processing_run",
+                side_effect=contend_second_claim,
+            ):
+                drain_result = run_document_processing_drain(
+                    database_url=database_url,
+                    process_one_document=process_one_document,
+                    document_limit=2,
+                    scheduler_run_id="scheduler-run-1",
+                )
             first_stored_run = get_document_processing_run(
                 database_url=database_url,
                 document_key=first_document_key,
@@ -2108,7 +2172,7 @@ class SchedulerRunStoreTests(unittest.TestCase):
 
         self.assertEqual(processed, [first_document_key])
         self.assertTrue(drain_result.did_work)
-        self.assertEqual(drain_result.selected_count, 2)
+        self.assertEqual(drain_result.selected_count, 1)
         self.assertEqual(drain_result.completed_count, 1)
         self.assertEqual(drain_result.failed_count, 0)
         self.assertEqual(drain_result.error_messages, ())

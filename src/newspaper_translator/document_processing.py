@@ -1091,24 +1091,19 @@ def process_document(
     step_retry_limit: int = 2,
     lock_timeout_seconds: int = 600,
     scheduler_run_id: str | None = None,
+    preclaimed_run: DocumentProcessingRun | None = None,
     log_event=None,
 ) -> DocumentProcessingRun:
-    create_document_processing_run(
-        database_url=database_url,
-        document_key=document_key,
-    )
-    claimed_run = claim_document_processing_run(
+    claimed_run, owns_run = _resolve_document_processing_run_for_execution(
         database_url=database_url,
         document_key=document_key,
         locked_by=locked_by,
         lock_timeout_seconds=lock_timeout_seconds,
         scheduler_run_id=scheduler_run_id,
+        preclaimed_run=preclaimed_run,
     )
-    if claimed_run is None:
-        return get_document_processing_run(
-            database_url=database_url,
-            document_key=document_key,
-        )
+    if not owns_run:
+        return claimed_run
     _log_event(
         log_event,
         event="document.claimed",
@@ -1211,6 +1206,97 @@ def process_document(
     return succeed_document_processing_run(
         database_url=database_url,
         document_key=document_key,
+    )
+
+
+def _resolve_document_processing_run_for_execution(
+    *,
+    database_url: str,
+    document_key: str,
+    locked_by: str,
+    lock_timeout_seconds: int,
+    scheduler_run_id: str | None,
+    preclaimed_run: DocumentProcessingRun | None = None,
+) -> tuple[DocumentProcessingRun, bool]:
+    create_document_processing_run(
+        database_url=database_url,
+        document_key=document_key,
+    )
+
+    if preclaimed_run is not None:
+        _validate_preclaimed_document_processing_run(
+            document_key=document_key,
+            locked_by=locked_by,
+            scheduler_run_id=scheduler_run_id,
+            preclaimed_run=preclaimed_run,
+        )
+        current_run = get_document_processing_run(
+            database_url=database_url,
+            document_key=document_key,
+        )
+        return current_run, (
+            current_run.processing_run_id == preclaimed_run.processing_run_id
+            and _document_processing_run_is_owned_by(
+                current_run,
+                locked_by=locked_by,
+                scheduler_run_id=scheduler_run_id,
+            )
+        )
+
+    current_run = get_document_processing_run(
+        database_url=database_url,
+        document_key=document_key,
+    )
+    if _document_processing_run_is_owned_by(
+        current_run,
+        locked_by=locked_by,
+        scheduler_run_id=scheduler_run_id,
+    ):
+        return current_run, True
+
+    claimed_run = claim_document_processing_run(
+        database_url=database_url,
+        document_key=document_key,
+        locked_by=locked_by,
+        lock_timeout_seconds=lock_timeout_seconds,
+        scheduler_run_id=scheduler_run_id,
+    )
+    if claimed_run is not None:
+        return claimed_run, True
+
+    return get_document_processing_run(
+        database_url=database_url,
+        document_key=document_key,
+    ), False
+
+
+def _validate_preclaimed_document_processing_run(
+    *,
+    document_key: str,
+    locked_by: str,
+    scheduler_run_id: str | None,
+    preclaimed_run: DocumentProcessingRun,
+) -> None:
+    if preclaimed_run.document_key != document_key:
+        raise ValueError("preclaimed run document_key does not match request")
+    if not _document_processing_run_is_owned_by(
+        preclaimed_run,
+        locked_by=locked_by,
+        scheduler_run_id=scheduler_run_id,
+    ):
+        raise ValueError("preclaimed run ownership does not match request")
+
+
+def _document_processing_run_is_owned_by(
+    run: DocumentProcessingRun,
+    *,
+    locked_by: str,
+    scheduler_run_id: str | None,
+) -> bool:
+    return (
+        run.status == "running"
+        and run.locked_by == locked_by
+        and run.scheduler_run_id == scheduler_run_id
     )
 
 
@@ -1580,13 +1666,22 @@ def run_document_processing_drain(
 
                 worker_counter += 1
                 locked_by = f"{locked_by_prefix}-{worker_counter}"
+                claimed_run = claim_document_processing_run(
+                    database_url=database_url,
+                    document_key=next_run.document_key,
+                    locked_by=locked_by,
+                    lock_timeout_seconds=600,
+                    scheduler_run_id=scheduler_run_id,
+                )
+                if claimed_run is None:
+                    continue
                 future = executor.submit(
                     process_one_document,
-                    document_key=next_run.document_key,
+                    document_key=claimed_run.document_key,
                     scheduler_run_id=scheduler_run_id,
                     locked_by=locked_by,
                 )
-                in_flight[future] = (next_run.document_key, locked_by)
+                in_flight[future] = (claimed_run.document_key, locked_by)
                 selected_count += 1
 
             if not in_flight:
@@ -1605,12 +1700,6 @@ def run_document_processing_drain(
                     error_messages.append(str(exc))
                     continue
 
-                if future_metadata is not None and _is_document_processing_drain_skip(
-                    result=result,
-                    locked_by=future_metadata[1],
-                ):
-                    continue
-
                 if getattr(result, "status", "") == "succeeded":
                     completed_count += 1
                 else:
@@ -1622,15 +1711,6 @@ def run_document_processing_drain(
         completed_count=completed_count,
         failed_count=failed_count,
         error_messages=tuple(error_messages),
-    )
-
-
-def _is_document_processing_drain_skip(*, result, locked_by: str) -> bool:
-    return (
-        isinstance(result, DocumentProcessingRun)
-        and result.status == "running"
-        and result.locked_by is not None
-        and result.locked_by != locked_by
     )
 
 

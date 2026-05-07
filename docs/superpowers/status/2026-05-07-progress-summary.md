@@ -93,3 +93,10 @@ OK
 - Some expired `dengtazk.xin` links return `401`; recorded as link fetch failures.
 - The newest article-processing workbench still needs browser-driven manual QA and a small UI polish pass.
 - LLM-based cross-page continuation inference remains deferred.
+
+## Publication Date, Dedupe, And Source Name Follow-up
+
+- added `documents.source_message_internal_date` for first-seen Gmail metadata
+- changed Gmail PDF dedupe from attachment-instance identity to `content_hash`
+- resolved publication dates from month-day filenames such as `金融时报-5-6.pdf`
+- changed `documents.source_name` to store filename prefixes while keeping import-audit `source_name = gmail`

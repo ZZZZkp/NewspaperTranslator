@@ -304,6 +304,8 @@ class GeminiArticleTranslatorTests(unittest.TestCase):
                                 {
                                     "text": json.dumps(
                                         {
+                                            "content_type": "article",
+                                            "classification_reason": "Regular newspaper article, not an advertisement.",
                                             "translated_title_zh": "大型石油公司远赴他处避开中东动荡",
                                             "translated_body_zh": "多家能源企业正加速在非洲和南美寻找新机会。",
                                         }
@@ -355,8 +357,8 @@ class GeminiArticleTranslatorTests(unittest.TestCase):
         self.assertEqual(payload["generationConfig"]["temperature"], 0)
         prompt_text = payload["contents"][0]["parts"][0]["text"]
         self.assertIn("return JSON only", prompt_text)
-        self.assertIn("newspaper article", prompt_text)
-        self.assertIn("continuation fragment", prompt_text)
+        self.assertIn("newspaper content", prompt_text)
+        self.assertIn("content_type", prompt_text)
         self.assertIn("Preserve continuation markers", prompt_text)
         self.assertIn("Please turn to page A7", prompt_text)
         self.assertIn("translated_title_zh", prompt_text)
@@ -374,6 +376,8 @@ class GeminiArticleTranslatorTests(unittest.TestCase):
                         "message": {
                             "content": json.dumps(
                                 {
+                                    "content_type": "article",
+                                    "classification_reason": "Regular newspaper article, not an advertisement.",
                                     "translated_title_zh": "测试标题",
                                     "translated_body_zh": "这是一段测试翻译。",
                                 }
@@ -423,6 +427,184 @@ class GeminiArticleTranslatorTests(unittest.TestCase):
         self.assertEqual(payload["response_format"]["type"], "json_object")
         self.assertEqual(payload["messages"][0]["role"], "user")
         self.assertIn("return JSON only", payload["messages"][0]["content"])
+
+    def _minimal_article(self) -> "StoredFinalArticle":
+        return StoredFinalArticle(
+            article_id="article-1",
+            parse_run_id="parse-run-1",
+            document_key="message-1:attachment-1:hash-1",
+            publication_date="2026-04-20",
+            article_order=1,
+            primary_source_order=1,
+            source_fragment_count=1,
+            title_en="Headline",
+            body_text_en="Body.",
+            created_at="2026-04-28 00:00:00",
+        )
+
+    def test_returns_classification_for_normal_article(self) -> None:
+        transport = _FakeTransport(
+            response_payload={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": json.dumps(
+                                        {
+                                            "content_type": "article",
+                                            "classification_reason": "Regular newspaper coverage.",
+                                            "translated_title_zh": "测试标题",
+                                            "translated_body_zh": "正文",
+                                        }
+                                    )
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+        translator = GeminiArticleTranslator(
+            settings=GeminiSettings(api_token="t", model="gemini-2.5-flash", timeout_seconds=45),
+            transport=transport,
+        )
+
+        result = translator(self._minimal_article())
+
+        self.assertEqual(result.content_type, "article")
+        self.assertEqual(result.classification_reason, "Regular newspaper coverage.")
+        self.assertEqual(result.translated_title_zh, "测试标题")
+        self.assertEqual(result.translated_body_zh, "正文")
+
+    def test_allows_empty_translation_for_advertisement(self) -> None:
+        transport = _FakeTransport(
+            response_payload={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": json.dumps(
+                                        {
+                                            "content_type": "advertisement",
+                                            "classification_reason": "Display ad block.",
+                                            "translated_title_zh": "",
+                                            "translated_body_zh": "",
+                                        }
+                                    )
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+        translator = GeminiArticleTranslator(
+            settings=GeminiSettings(api_token="t", model="gemini-2.5-flash", timeout_seconds=45),
+            transport=transport,
+        )
+
+        result = translator(self._minimal_article())
+
+        self.assertEqual(result.content_type, "advertisement")
+        self.assertEqual(result.translated_title_zh, "")
+        self.assertEqual(result.translated_body_zh, "")
+
+    def test_treats_uncertain_as_translation_required(self) -> None:
+        transport = _FakeTransport(
+            response_payload={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": json.dumps(
+                                        {
+                                            "content_type": "uncertain",
+                                            "classification_reason": "Borderline case.",
+                                            "translated_title_zh": "标题",
+                                            "translated_body_zh": "正文",
+                                        }
+                                    )
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+        translator = GeminiArticleTranslator(
+            settings=GeminiSettings(api_token="t", model="gemini-2.5-flash", timeout_seconds=45),
+            transport=transport,
+        )
+
+        result = translator(self._minimal_article())
+
+        self.assertEqual(result.content_type, "uncertain")
+        self.assertEqual(result.translated_title_zh, "标题")
+
+    def test_rejects_article_with_missing_translation(self) -> None:
+        transport = _FakeTransport(
+            response_payload={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": json.dumps(
+                                        {
+                                            "content_type": "article",
+                                            "classification_reason": "",
+                                            "translated_title_zh": "",
+                                            "translated_body_zh": "",
+                                        }
+                                    )
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+        translator = GeminiArticleTranslator(
+            settings=GeminiSettings(api_token="t", model="gemini-2.5-flash", timeout_seconds=45),
+            transport=transport,
+        )
+
+        with self.assertRaises(GeminiError):
+            translator(self._minimal_article())
+
+    def test_rejects_unknown_content_type(self) -> None:
+        transport = _FakeTransport(
+            response_payload={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": json.dumps(
+                                        {
+                                            "content_type": "promo",
+                                            "classification_reason": "",
+                                            "translated_title_zh": "标题",
+                                            "translated_body_zh": "正文",
+                                        }
+                                    )
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+        translator = GeminiArticleTranslator(
+            settings=GeminiSettings(api_token="t", model="gemini-2.5-flash", timeout_seconds=45),
+            transport=transport,
+        )
+
+        with self.assertRaises(GeminiError):
+            translator(self._minimal_article())
 
 
 class GeminiArticleSummarizerTaggerTests(unittest.TestCase):

@@ -3,6 +3,7 @@ import sqlite3
 import sys
 import tempfile
 import threading
+import time
 from types import SimpleNamespace
 import unittest
 
@@ -69,6 +70,7 @@ try:
         list_eligible_document_processing_runs,
         process_article_processing_run,
         process_document,
+        ProcessingTickResult,
         recover_stale_article_runs,
         recover_stale_document_runs,
         request_manual_article_retry,
@@ -96,6 +98,7 @@ except ImportError:
     list_eligible_document_processing_runs = None
     process_article_processing_run = None
     process_document = None
+    ProcessingTickResult = None
     recover_stale_article_runs = None
     recover_stale_document_runs = None
     request_manual_article_retry = None
@@ -1126,6 +1129,8 @@ class SchedulerRunStoreTests(unittest.TestCase):
                 article_key=article.article_key,
                 locked_by="article-worker-1",
                 translator=lambda _article: ArticleTranslationResult(
+                    content_type="article",
+                    classification_reason="Regular newspaper article.",
                     translated_title_zh="标题",
                     translated_body_zh="正文",
                 ),
@@ -1194,6 +1199,8 @@ class SchedulerRunStoreTests(unittest.TestCase):
                     article_key=article.article_key,
                     locked_by=f"article-worker:{article.article_order}",
                     translator=lambda _article: ArticleTranslationResult(
+                        content_type="article",
+                        classification_reason="Regular newspaper article.",
                         translated_title_zh="标题",
                         translated_body_zh="正文",
                     ),
@@ -1279,6 +1286,8 @@ class SchedulerRunStoreTests(unittest.TestCase):
             def translator(_article):
                 translator_calls.append("called")
                 return ArticleTranslationResult(
+                    content_type="article",
+                    classification_reason="Regular newspaper article.",
                     translated_title_zh="标题",
                     translated_body_zh="正文",
                 )
@@ -1588,7 +1597,7 @@ class SchedulerRunStoreTests(unittest.TestCase):
                 article_key=article.article_key,
             )
 
-        self.assertEqual(scheduler_run.status, "succeeded")
+        self.assertTrue(scheduler_run.did_work)
         self.assertEqual(processed_article_keys, [article.article_key])
         self.assertEqual(stored_run.status, "succeeded")
         self.assertEqual(stored_run.last_success_input_hash, "hash:article-worker-1")
@@ -1966,7 +1975,7 @@ class SchedulerRunStoreTests(unittest.TestCase):
                 log_event=lambda *, event, details: log_events.append(event),
             )
 
-        self.assertEqual(scheduler_run.status, "succeeded")
+        self.assertTrue(scheduler_run.did_work)
         self.assertEqual(
             log_events,
             [
@@ -2025,7 +2034,14 @@ class SchedulerRunStoreTests(unittest.TestCase):
         *,
         database_url: str,
         document_key: str,
+        article_count: int = 1,
     ) -> None:
+        if article_count == 1:
+            parse_result = self._build_parse_result()
+        elif article_count == 2:
+            parse_result = self._build_multi_article_parse_result()
+        else:
+            parse_result = self._build_n_article_parse_result(article_count)
         parse_run = create_parse_run(
             database_url=database_url,
             document_key=document_key,
@@ -2038,7 +2054,7 @@ class SchedulerRunStoreTests(unittest.TestCase):
         record_parse_run_result(
             database_url=database_url,
             parse_run_id=parse_run.parse_run_id,
-            parse_result=self._build_parse_result(),
+            parse_result=parse_result,
             document_key=document_key,
             publication_date="2026-04-20",
         )
@@ -2225,6 +2241,132 @@ class SchedulerRunStoreTests(unittest.TestCase):
         finally:
             connection.close()
 
+    def _build_n_article_parse_result(self, n: int) -> "ParseResult":
+        from newspaper_translator.pdf import ArticleFragment, ArticleSource, ParseMatchDecision, ParsedArticle, ParseResult
+        fragments = [
+            ArticleFragment(
+                title=f"Article {i} title",
+                body_text=f"Article {i} body.",
+                source_order=i,
+                continued_to_page="",
+                continued_from_page="",
+            )
+            for i in range(1, n + 1)
+        ]
+        articles = [
+            ParsedArticle(
+                article_order=i,
+                primary_source_order=i,
+                source_fragment_count=1,
+                title=f"Article {i} title",
+                body_text=f"Article {i} body.",
+                source_fragments=[
+                    ArticleSource(
+                        source_order=i,
+                        fragment_role="single",
+                        sequence_index=1,
+                    )
+                ],
+            )
+            for i in range(1, n + 1)
+        ]
+        return ParseResult(fragments=fragments, match_decisions=[], articles=articles)
+
+    def test_article_tick_runs_batch_size_with_bounded_concurrency(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            create_document_processing_run(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            self._persist_parsed_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+                article_count=8,
+            )
+            for article in list_latest_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            ):
+                create_article_processing_run(
+                    database_url=database_url,
+                    article_id=article.article_id,
+                )
+
+            in_flight: list[int] = []
+            in_flight_lock = threading.Lock()
+            peak_in_flight = 0
+            processed: list[str] = []
+
+            def process_one_document(*, document_key, scheduler_run_id, locked_by):
+                return SimpleNamespace(status="succeeded")
+
+            def process_one_article(*, article_key, locked_by):
+                nonlocal peak_in_flight
+                with in_flight_lock:
+                    in_flight.append(article_key)
+                    peak_in_flight = max(peak_in_flight, len(in_flight))
+                try:
+                    time.sleep(0.05)
+                    return succeed_article_processing_run(
+                        database_url=database_url,
+                        article_key=article_key,
+                        last_success_input_hash="hash-x",
+                    )
+                finally:
+                    with in_flight_lock:
+                        in_flight.remove(article_key)
+                        processed.append(article_key)
+
+            scheduler_run = run_processing_tick(
+                database_url=database_url,
+                trigger_type="processing",
+                process_one_document=process_one_document,
+                document_limit=2,
+                process_one_article=process_one_article,
+                article_limit=4,
+                article_batch_size=8,
+            )
+
+        self.assertEqual(len(processed), 8)
+        self.assertLessEqual(peak_in_flight, 4)
+        self.assertEqual(scheduler_run.selected_document_count, 1 + 8)
+        self.assertTrue(scheduler_run.did_work)
+
+    def test_processing_tick_skips_scheduler_run_when_no_eligible_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            scheduler_run = run_processing_tick(
+                database_url=database_url,
+                trigger_type="processing",
+                process_one_document=lambda **_kw: SimpleNamespace(status="succeeded"),
+                document_limit=4,
+                process_one_article=lambda **_kw: SimpleNamespace(status="succeeded"),
+                article_limit=4,
+                article_batch_size=8,
+            )
+
+            connection = sqlite3.connect(database_path)
+            try:
+                scheduler_run_count = connection.execute(
+                    "SELECT COUNT(*) FROM scheduler_runs"
+                ).fetchone()[0]
+            finally:
+                connection.close()
+
+        self.assertFalse(scheduler_run.did_work)
+        self.assertEqual(scheduler_run.scheduler_run_id, None)
+        self.assertEqual(scheduler_run_count, 0)
+
     def _build_parse_result(self) -> ParseResult:
         return ParseResult(
             fragments=[
@@ -2323,6 +2465,8 @@ class SchedulerRunStoreTests(unittest.TestCase):
 class _FakeTranslator:
     def __call__(self, article):
         return ArticleTranslationResult(
+            content_type="article",
+            classification_reason="Regular newspaper article.",
             translated_title_zh="大型石油公司远赴他处避开中东动荡",
             translated_body_zh="多家能源企业正加速在非洲和南美寻找新机会。",
         )
@@ -2336,6 +2480,8 @@ class _SelectiveFailingTranslator:
         if article.title_en in self._failing_titles:
             raise RuntimeError("translation timeout")
         return ArticleTranslationResult(
+            content_type="article",
+            classification_reason="Regular newspaper article.",
             translated_title_zh=f"{article.title_en} 中文",
             translated_body_zh=f"{article.body_text_en} 中文",
         )

@@ -426,6 +426,127 @@ class ArticleEnrichmentTests(unittest.TestCase):
         self.assertEqual(translator.call_count, 1)
         self.assertEqual(summarizer.call_count, 1)
 
+    def test_marks_advertisement_classifications_as_skipped_advertisement(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                original_filename="wsj-2026-04-20.pdf",
+            )
+            parse_run = create_parse_run(
+                database_url=database_url,
+                document_key=document_key,
+                parser_name="mineru",
+                parser_version="vlm",
+                publication_date="2026-04-20",
+                continuation_matcher_name="gemini",
+                continuation_matcher_version="2.5-flash",
+            )
+            record_parse_run_result(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                parse_result=self._build_parse_result(
+                    title="Diamond Sale Today",
+                    body_suffix="50% off all jewelry, this weekend only.",
+                ),
+                document_key=document_key,
+                publication_date="2026-04-20",
+            )
+            finalize_parse_run(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                status="succeeded",
+            )
+            article = list_parse_run_final_articles(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+            )[0]
+
+            summarizer = _CountingSummarizerTagger()
+            run = enrich_article(
+                database_url=database_url,
+                article_id=article.article_id,
+                translator=_AdvertisementTranslator(),
+                summarizer_tagger=summarizer,
+                provider_name="gemini",
+                model_name="gemini-2.5-flash",
+                prompt_version="article-enrichment-v3",
+            )
+            latest = get_latest_article_enrichment(
+                database_url=database_url,
+                article_id=article.article_id,
+            )
+
+        self.assertEqual(run.status, "skipped_advertisement")
+        self.assertEqual(summarizer.call_count, 0)
+        self.assertEqual(latest.content_type, "advertisement")
+        self.assertEqual(latest.translation_status, "skipped")
+        self.assertEqual(latest.summary_status, "skipped")
+        self.assertEqual(latest.tagging_status, "skipped")
+        self.assertEqual(latest.tags, [])
+
+    def test_uncertain_classifications_continue_with_summary_and_tags(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                original_filename="wsj-2026-04-20.pdf",
+            )
+            parse_run = create_parse_run(
+                database_url=database_url,
+                document_key=document_key,
+                parser_name="mineru",
+                parser_version="vlm",
+                publication_date="2026-04-20",
+                continuation_matcher_name="gemini",
+                continuation_matcher_version="2.5-flash",
+            )
+            record_parse_run_result(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                parse_result=self._build_parse_result(
+                    title="Borderline Headline",
+                    body_suffix="Some body text.",
+                ),
+                document_key=document_key,
+                publication_date="2026-04-20",
+            )
+            finalize_parse_run(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                status="succeeded",
+            )
+            article = list_parse_run_final_articles(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+            )[0]
+
+            summarizer = _CountingSummarizerTagger()
+            run = enrich_article(
+                database_url=database_url,
+                article_id=article.article_id,
+                translator=_UncertainTranslator(),
+                summarizer_tagger=summarizer,
+                provider_name="gemini",
+                model_name="gemini-2.5-flash",
+                prompt_version="article-enrichment-v3",
+            )
+            latest = get_latest_article_enrichment(
+                database_url=database_url,
+                article_id=article.article_id,
+            )
+
+        self.assertEqual(run.status, "succeeded")
+        self.assertEqual(summarizer.call_count, 1)
+        self.assertEqual(latest.content_type, "uncertain")
+        self.assertEqual(latest.translation_status, "succeeded")
+        self.assertEqual(latest.summary_status, "succeeded")
+        self.assertEqual(latest.tagging_status, "succeeded")
+
     def _insert_document(self, database_path: pathlib.Path, *, original_filename: str) -> str:
         document_key = "message-1:attachment-1:hash-1"
         connection = sqlite3.connect(database_path)
@@ -513,6 +634,8 @@ class ArticleEnrichmentTests(unittest.TestCase):
 class _FakeTranslator:
     def __call__(self, article):
         return ArticleTranslationResult(
+            content_type="article",
+            classification_reason="Regular newspaper article.",
             translated_title_zh="大型石油公司远赴他处避开中东动荡",
             translated_body_zh="多家能源企业正加速在非洲和南美寻找新机会。",
         )
@@ -525,6 +648,8 @@ class _CountingTranslator:
     def __call__(self, article):
         self.call_count += 1
         return ArticleTranslationResult(
+            content_type="article",
+            classification_reason="Regular newspaper article.",
             translated_title_zh="大型石油公司远赴他处避开中东动荡",
             translated_body_zh="多家能源企业正加速在非洲和南美寻找新机会。",
         )
@@ -537,6 +662,8 @@ class _CapturingTranslator:
     def __call__(self, article):
         self.article = article
         return ArticleTranslationResult(
+            content_type="article",
+            classification_reason="Regular newspaper article.",
             translated_title_zh="大型石油公司远赴他处避开中东动荡",
             translated_body_zh="多家能源企业正加速在非洲和南美寻找新机会。",
         )
@@ -576,6 +703,26 @@ class _FailingSummarizerTagger:
 
     def __call__(self, *, article, translated_title_zh: str, translated_body_zh: str):
         raise RuntimeError(self._message)
+
+
+class _AdvertisementTranslator:
+    def __call__(self, article):
+        return ArticleTranslationResult(
+            content_type="advertisement",
+            classification_reason="Display ad for jewelry retailer.",
+            translated_title_zh="",
+            translated_body_zh="",
+        )
+
+
+class _UncertainTranslator:
+    def __call__(self, article):
+        return ArticleTranslationResult(
+            content_type="uncertain",
+            classification_reason="Borderline newspaper item.",
+            translated_title_zh="不确定标题",
+            translated_body_zh="不确定正文。",
+        )
 
 
 if __name__ == "__main__":

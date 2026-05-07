@@ -598,6 +598,53 @@ class ArticleStoreTests(unittest.TestCase):
             loaded_article.body_text_en,
         )
 
+    def test_records_content_type_and_classification_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            article = self._create_article(database_url=database_url)
+
+            run = create_article_enrichment_run(
+                database_url=database_url,
+                article_id=article.article_id,
+                parse_run_id=article.parse_run_id,
+                provider_name="gemini",
+                model_name="gemini-2.5-flash",
+                prompt_version="article-enrichment-v3",
+                input_hash="hash-1",
+            )
+            record_article_enrichment_outputs(
+                database_url=database_url,
+                enrichment_run_id=run.enrichment_run_id,
+                translated_title_zh=None,
+                summary_zh=None,
+                translated_body_zh=None,
+                translation_status="skipped",
+                summary_status="skipped",
+                tagging_status="skipped",
+                tags=[],
+                content_type="advertisement",
+                classification_reason="Display ad for jewelry retailer.",
+            )
+            finalize_article_enrichment_run(
+                database_url=database_url,
+                enrichment_run_id=run.enrichment_run_id,
+                status="skipped_advertisement",
+            )
+
+            latest = get_latest_article_enrichment(
+                database_url=database_url,
+                article_id=article.article_id,
+            )
+
+        self.assertEqual(latest.status, "skipped_advertisement")
+        self.assertEqual(latest.content_type, "advertisement")
+        self.assertEqual(
+            latest.classification_reason,
+            "Display ad for jewelry retailer.",
+        )
+
     def test_rejects_successful_tagging_outside_allowed_range(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
         self.assertIsNotNone(create_article_enrichment_run)
@@ -662,6 +709,41 @@ class ArticleStoreTests(unittest.TestCase):
                     tagging_status="succeeded",
                     tags=["能源", "石油"],
                 )
+
+    def _create_article(self, *, database_url: str):
+        database_path = pathlib.Path(database_url.replace("sqlite:///", ""))
+        document_key = self._insert_document(
+            database_path,
+            original_filename="wsj-2026-04-20.pdf",
+        )
+        parse_run = create_parse_run(
+            database_url=database_url,
+            document_key=document_key,
+            parser_name="mineru",
+            parser_version="vlm",
+            publication_date="2026-04-20",
+            continuation_matcher_name="gemini",
+            continuation_matcher_version="2.5-flash",
+        )
+        record_parse_run_result(
+            database_url=database_url,
+            parse_run_id=parse_run.parse_run_id,
+            parse_result=self._build_parse_result(
+                title="Big Oil Explores Farther Afield To Dodge Middle East Turmoil",
+                body_suffix="The oil companies want to maximize their production.",
+            ),
+            document_key=document_key,
+            publication_date="2026-04-20",
+        )
+        finalize_parse_run(
+            database_url=database_url,
+            parse_run_id=parse_run.parse_run_id,
+            status="succeeded",
+        )
+        return list_parse_run_final_articles(
+            database_url=database_url,
+            parse_run_id=parse_run.parse_run_id,
+        )[0]
 
     def _insert_document(self, database_path: pathlib.Path, *, original_filename: str) -> str:
         document_key = "message-1:attachment-1:hash-1"

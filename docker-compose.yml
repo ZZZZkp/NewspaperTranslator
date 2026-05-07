@@ -95,11 +95,10 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
       GEMINI_TIMEOUT_SECONDS: ${GEMINI_TIMEOUT_SECONDS:-120}
+      WORKER_ROLE: ${WORKER_ROLE:-import}
+      GMAIL_IMPORT_INTERVAL_SECONDS: ${GMAIL_IMPORT_INTERVAL_SECONDS:-7200}
       ARTICLE_WORKER_CONCURRENCY: ${ARTICLE_WORKER_CONCURRENCY:-4}
       DOCUMENT_WORKER_CONCURRENCY: ${DOCUMENT_WORKER_CONCURRENCY:-2}
-      ARTICLE_WORKER_BATCH_SIZE: ${ARTICLE_WORKER_BATCH_SIZE:-8}
-      PROCESSING_ACTIVE_POLL_INTERVAL_SECONDS: ${PROCESSING_ACTIVE_POLL_INTERVAL_SECONDS:-10}
-      PROCESSING_IDLE_POLL_INTERVAL_SECONDS: ${PROCESSING_IDLE_POLL_INTERVAL_SECONDS:-60}
       HTTP_PROXY: ${HTTP_PROXY:-http://host.docker.internal:7897}
       HTTPS_PROXY: ${HTTPS_PROXY:-http://host.docker.internal:7897}
       ALL_PROXY: ${ALL_PROXY:-socks5://host.docker.internal:7897}
@@ -116,6 +115,46 @@ services:
     depends_on:
       db:
         condition: service_started
+
+  article-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-http://host.docker.internal:7897}
+        HTTPS_PROXY: ${HTTPS_PROXY:-http://host.docker.internal:7897}
+        ALL_PROXY: ${ALL_PROXY:-socks5://host.docker.internal:7897}
+        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,db}
+    command: ["python", "-m", "newspaper_translator.worker"]
+    environment:
+      WORKER_ROLE: article
+      APP_ENV: ${APP_ENV:-development}
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////data/newspaper-translator.db}
+      STORAGE_ROOT: ${STORAGE_ROOT:-/data}
+      GEMINI_TOKEN: ${GEMINI_TOKEN:-}
+      GEMINI_API_COMPAT_MODE: ${GEMINI_API_COMPAT_MODE:-standard}
+      GOOGLE_GEMINI_BASE_URL: ${GOOGLE_GEMINI_BASE_URL:-https://generativelanguage.googleapis.com/v1beta}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      GEMINI_TIMEOUT_SECONDS: ${GEMINI_TIMEOUT_SECONDS:-120}
+      ARTICLE_WORKER_CONCURRENCY: ${ARTICLE_WORKER_CONCURRENCY:-4}
+      ARTICLE_WORKER_IDLE_POLL_INTERVAL_SECONDS: ${ARTICLE_WORKER_IDLE_POLL_INTERVAL_SECONDS:-60}
+      HTTP_PROXY: ${HTTP_PROXY:-http://host.docker.internal:7897}
+      HTTPS_PROXY: ${HTTPS_PROXY:-http://host.docker.internal:7897}
+      ALL_PROXY: ${ALL_PROXY:-socks5://host.docker.internal:7897}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,db}
+    volumes:
+      - app-data:/data
+      - ./config:/app/config:ro
+      - ./secrets:/app/secrets
+    depends_on:
+      db:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-m", "newspaper_translator.manage", "check", "--service", "worker"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   db:
     image: postgres:16-alpine

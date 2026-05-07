@@ -157,6 +157,20 @@ class ContainerScaffoldingTests(unittest.TestCase):
             self.assertIn("ARG ALL_PROXY", dockerfile_text)
             self.assertIn("ARG NO_PROXY", dockerfile_text)
 
+    def test_project_includes_compose_file_with_web_worker_article_worker_and_db_services(self) -> None:
+        compose_text = (PROJECT_ROOT / "docker-compose.yml").read_text()
+        self.assertIn("web:", compose_text)
+        self.assertIn("worker:", compose_text)
+        self.assertIn("article-worker:", compose_text)
+        self.assertIn("db:", compose_text)
+
+    def test_env_example_includes_article_idle_poll_setting(self) -> None:
+        env_text = (PROJECT_ROOT / ".env.example").read_text()
+        self.assertIn("ARTICLE_WORKER_IDLE_POLL_INTERVAL_SECONDS=", env_text)
+        self.assertNotIn("ARTICLE_WORKER_BATCH_SIZE=", env_text)
+        self.assertNotIn("PROCESSING_ACTIVE_POLL_INTERVAL_SECONDS=", env_text)
+        self.assertNotIn("PROCESSING_IDLE_POLL_INTERVAL_SECONDS=", env_text)
+
     def test_docker_compose_configuration_is_valid(self) -> None:
         compose_path = PROJECT_ROOT / "docker-compose.yml"
         self.assertTrue(compose_path.exists(), "docker-compose.yml should exist before compose validation")

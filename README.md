@@ -336,7 +336,11 @@ docker compose up --build
 ```
 
 The `frontend` service is exposed on `${FRONTEND_PORT:-3000}` and the `web` service is exposed on `${WEB_PORT:-8000}`.
-The `worker` service performs startup checks, stale-run recovery, 2-hour Gmail import catch-up, and continuous document/article processing. It emits structured JSON logs.
+The `worker` service performs startup checks, stale-run recovery, 2-hour Gmail import catch-up, and continuous document processing. It emits structured JSON logs.
+The `article-worker` service handles article enrichment independently on the same image. The two-worker model means:
+- `worker` runs the import/document role (`WORKER_ROLE=import` or unset)
+- `article-worker` runs the article enrichment role (`WORKER_ROLE=article`)
+- Article processing drains queued work until empty, then returns to idle polling
 The frontend proxies `/api/` requests to `web` with an extended read timeout so manual Gmail imports can finish even when upstream mail links are slow.
 Both services also expose container healthchecks through `python -m newspaper_translator.manage check`.
 

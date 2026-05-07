@@ -1563,7 +1563,10 @@ def run_document_processing_drain(
                 if not eligible_runs:
                     break
 
-                in_flight_document_keys = set(in_flight.values())
+                in_flight_document_keys = {
+                    document_key
+                    for document_key, _locked_by in in_flight.values()
+                }
                 next_run = next(
                     (
                         eligible_run
@@ -1583,7 +1586,7 @@ def run_document_processing_drain(
                     scheduler_run_id=scheduler_run_id,
                     locked_by=locked_by,
                 )
-                in_flight[future] = next_run.document_key
+                in_flight[future] = (next_run.document_key, locked_by)
                 selected_count += 1
 
             if not in_flight:
@@ -1594,12 +1597,18 @@ def run_document_processing_drain(
                 return_when=FIRST_COMPLETED,
             )
             for future in completed_futures:
-                in_flight.pop(future, None)
+                future_metadata = in_flight.pop(future, None)
                 try:
                     result = future.result()
                 except Exception as exc:  # noqa: BLE001
                     failed_count += 1
                     error_messages.append(str(exc))
+                    continue
+
+                if future_metadata is not None and _is_document_processing_drain_skip(
+                    result=result,
+                    locked_by=future_metadata[1],
+                ):
                     continue
 
                 if getattr(result, "status", "") == "succeeded":
@@ -1613,6 +1622,15 @@ def run_document_processing_drain(
         completed_count=completed_count,
         failed_count=failed_count,
         error_messages=tuple(error_messages),
+    )
+
+
+def _is_document_processing_drain_skip(*, result, locked_by: str) -> bool:
+    return (
+        isinstance(result, DocumentProcessingRun)
+        and result.status == "running"
+        and result.locked_by is not None
+        and result.locked_by != locked_by
     )
 
 

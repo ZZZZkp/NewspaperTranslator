@@ -2034,6 +2034,88 @@ class SchedulerRunStoreTests(unittest.TestCase):
         self.assertEqual(stored_runs[document_keys[0]].status, "succeeded")
         self.assertEqual(stored_runs[document_keys[2]].status, "succeeded")
 
+    def test_document_processing_drain_skips_contended_claim_without_counting_failure(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_document_processing_run)
+        self.assertIsNotNone(run_document_processing_drain)
+        self.assertIsNotNone(get_document_processing_run)
+        self.assertIsNotNone(process_document)
+        self.assertIsNotNone(claim_document_processing_run)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            first_document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            second_document_key = self._insert_document(
+                database_path,
+                "message-2:attachment-1:hash-2",
+            )
+            create_document_processing_run(
+                database_url=database_url,
+                document_key=first_document_key,
+            )
+            create_document_processing_run(
+                database_url=database_url,
+                document_key=second_document_key,
+            )
+
+            processed: list[str] = []
+
+            def parse_persist_document(*, document_key: str):
+                processed.append(document_key)
+                return None
+
+            def enrich_document(*, document_key: str):
+                return None
+
+            def process_one_document(*, document_key: str, scheduler_run_id: str, locked_by: str):
+                if document_key == second_document_key:
+                    claim_document_processing_run(
+                        database_url=database_url,
+                        document_key=document_key,
+                        locked_by="other-worker",
+                        lock_timeout_seconds=600,
+                        scheduler_run_id="other-scheduler-run",
+                    )
+                return process_document(
+                    database_url=database_url,
+                    document_key=document_key,
+                    scheduler_run_id=scheduler_run_id,
+                    locked_by=locked_by,
+                    parse_persist_document=parse_persist_document,
+                    enrich_document=enrich_document,
+                )
+
+            drain_result = run_document_processing_drain(
+                database_url=database_url,
+                process_one_document=process_one_document,
+                document_limit=2,
+                scheduler_run_id="scheduler-run-1",
+            )
+            first_stored_run = get_document_processing_run(
+                database_url=database_url,
+                document_key=first_document_key,
+            )
+            second_stored_run = get_document_processing_run(
+                database_url=database_url,
+                document_key=second_document_key,
+            )
+
+        self.assertEqual(processed, [first_document_key])
+        self.assertTrue(drain_result.did_work)
+        self.assertEqual(drain_result.selected_count, 2)
+        self.assertEqual(drain_result.completed_count, 1)
+        self.assertEqual(drain_result.failed_count, 0)
+        self.assertEqual(drain_result.error_messages, ())
+        self.assertEqual(first_stored_run.status, "succeeded")
+        self.assertEqual(second_stored_run.status, "running")
+        self.assertEqual(second_stored_run.locked_by, "other-worker")
+
     def test_scheduler_tick_processes_multiple_documents_concurrently(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
         self.assertIsNotNone(create_document_processing_run)

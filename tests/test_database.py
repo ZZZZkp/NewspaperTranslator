@@ -372,6 +372,35 @@ class DatabaseMigrationTests(unittest.TestCase):
         self.assertIn("current_step", article_processing_runs_columns)
         self.assertIn("0006_scheduled_automatic_document_processing", recorded_versions)
 
+    def test_applies_documents_source_metadata_schema_migration(self) -> None:
+        self.assertIsNotNone(
+            run_pending_migrations,
+            "run_pending_migrations should be importable from newspaper_translator.database",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+
+            applied_versions = run_pending_migrations(database_url)
+
+            connection = sqlite3.connect(database_path)
+            try:
+                document_columns = {
+                    row[1]
+                    for row in connection.execute("PRAGMA table_info(documents)")
+                }
+                document_index_names = {
+                    row[1]
+                    for row in connection.execute("PRAGMA index_list(documents)")
+                }
+            finally:
+                connection.close()
+
+        self.assertIn("0013_documents_source_metadata", applied_versions)
+        self.assertIn("source_message_internal_date", document_columns)
+        self.assertIn("idx_documents_content_hash", document_index_names)
+
     def test_applies_article_persistence_and_enrichment_schema_migration(self) -> None:
         self.assertIsNotNone(
             run_pending_migrations,

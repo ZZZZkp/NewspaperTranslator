@@ -100,3 +100,10 @@ OK
 - changed Gmail PDF dedupe from attachment-instance identity to `content_hash`
 - resolved publication dates from month-day filenames such as `金融时报-5-6.pdf`
 - changed `documents.source_name` to store filename prefixes while keeping import-audit `source_name = gmail`
+
+### Verification
+
+- `PYTHONPATH=src ./.venv/bin/python -m unittest tests.test_database.DatabaseMigrationTests.test_applies_documents_source_metadata_schema_migration tests.test_ingestion.IngestionSelectionTests tests.test_article_pipeline.ArticlePipelineTests tests.test_gmail.GmailIntegrationTests -v`
+  Result: `Ran 40 tests` -> `OK`
+- `PYTHONPATH=src ./.venv/bin/python -m unittest tests.test_document_processing tests.test_api_queries tests.test_web -v`
+  Result: `Ran 81 tests` -> `OK`

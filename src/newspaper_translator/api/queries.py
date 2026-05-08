@@ -685,13 +685,17 @@ def list_article_processing_card_views(
     database_url: str,
     page: int = 1,
     page_size: int = 20,
+    limit: int | None = None,
     status: str | None = None,
     source: str | None = None,
     publication_date_from: str | None = None,
     publication_date_to: str | None = None,
     step: str | None = None,
     error_message: str | None = None,
-) -> tuple[list[ArticleProcessingCardView], PaginationView]:
+    include_pagination: bool = False,
+) -> list[ArticleProcessingCardView] | tuple[list[ArticleProcessingCardView], PaginationView]:
+    if limit is not None:
+        page_size = limit
     page, page_size = _normalize_pagination(page=page, page_size=page_size)
     offset = (page - 1) * page_size
     connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
@@ -763,7 +767,10 @@ def list_article_processing_card_views(
                 latest_error_summary=latest_error_summary,
             )
         )
-    return cards, _build_pagination_view(page=page, page_size=page_size, total_count=total_count)
+    pagination = _build_pagination_view(page=page, page_size=page_size, total_count=total_count)
+    if include_pagination:
+        return cards, pagination
+    return cards
 
 
 def get_article_processing_filter_options_view(
@@ -842,7 +849,8 @@ def list_article_card_views(
     processing_status: str | None = None,
     page: int = 1,
     page_size: int = 20,
-) -> tuple[list[ArticleCardView], PaginationView]:
+    include_pagination: bool = False,
+) -> list[ArticleCardView] | tuple[list[ArticleCardView], PaginationView]:
     page, page_size = _normalize_pagination(page=page, page_size=page_size)
     offset = (page - 1) * page_size
     connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
@@ -911,7 +919,10 @@ def list_article_card_views(
                 processing_badges=processing_badges,
             )
         )
-    return cards, _build_pagination_view(page=page, page_size=page_size, total_count=total_count)
+    pagination = _build_pagination_view(page=page, page_size=page_size, total_count=total_count)
+    if include_pagination:
+        return cards, pagination
+    return cards
 
 
 def list_focus_tag_article_card_views(
@@ -926,7 +937,7 @@ def list_focus_tag_article_card_views(
     seen_article_ids: set[str] = set()
     cards: list[ArticleCardView] = []
     for focus_tag in normalized_tags:
-        tag_cards, _ = list_article_card_views(
+        tag_cards = list_article_card_views(
             database_url=database_url,
             tag=focus_tag,
         )

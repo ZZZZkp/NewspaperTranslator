@@ -344,7 +344,7 @@ class ArticleQueryTests(unittest.TestCase):
                 status="succeeded",
             )
 
-            cards, _ = list_article_card_views(database_url=database_url)
+            cards = list_article_card_views(database_url=database_url)
 
         self.assertEqual(len(cards), 1)
         self.assertEqual(cards[0].article_id, article.article_id)
@@ -426,7 +426,7 @@ class ArticleQueryTests(unittest.TestCase):
                 error_message="summary timeout",
             )
 
-            cards, _ = list_article_card_views(database_url=database_url)
+            cards = list_article_card_views(database_url=database_url)
 
         self.assertEqual(len(cards), 1)
         self.assertEqual(cards[0].title_zh, "芯片制造商准备应对新的补贴争端")
@@ -472,7 +472,7 @@ class ArticleQueryTests(unittest.TestCase):
                 status="succeeded",
             )
 
-            cards, _ = list_article_card_views(database_url=database_url)
+            cards = list_article_card_views(database_url=database_url)
 
         self.assertEqual(len(cards), 1)
         self.assertEqual(cards[0].title_en, "Chipmakers prepare for a new subsidy dispute")
@@ -841,7 +841,7 @@ class ArticleQueryTests(unittest.TestCase):
                 last_error_message="summary timeout",
             )
 
-            cards, _ = list_article_processing_card_views(
+            cards = list_article_processing_card_views(
                 database_url=database_url,
                 page_size=20,
             )
@@ -918,7 +918,7 @@ class ArticleQueryTests(unittest.TestCase):
                 current_step="enrich",
             )
 
-            cards, _ = list_article_processing_card_views(
+            cards = list_article_processing_card_views(
                 database_url=database_url,
                 page_size=20,
                 source="Wall Street Journal",
@@ -970,6 +970,23 @@ class ArticleQueryTests(unittest.TestCase):
                 translated_body_zh="文章B正文。",
                 tags=["Policy", "Trade", "US"],
             )
+            document_key_c = self._insert_document(
+                database_path,
+                original_filename="wsj-2026-04-22-c.pdf",
+                source_name="WSJ",
+                document_key="message-3:attachment-1:hash-3",
+            )
+            article_c_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=document_key_c,
+                publication_date="2026-04-22",
+                title="Article C",
+                body_suffix="Article C body.",
+                translated_title_zh="文章C",
+                summary_zh="文章C摘要",
+                translated_body_zh="文章C正文。",
+                tags=["Policy", "Trade", "US"],
+            )
             self._insert_article_processing_run(
                 database_path=database_path,
                 article_key=self._get_article_key(database_path=database_path, article_id=article_a_id),
@@ -986,18 +1003,41 @@ class ArticleQueryTests(unittest.TestCase):
                 current_step="translate",
                 last_error_message="quota exhausted",
             )
+            article_c_key = self._get_article_key(database_path=database_path, article_id=article_c_id)
+            self._insert_article_processing_run(
+                database_path=database_path,
+                article_key=article_c_key,
+                article_id=article_c_id,
+                status="failed_retryable",
+                current_step="enrich",
+                last_error_message="summary timeout",
+            )
 
-            runs, pagination = list_article_processing_card_views(
+            page_one, pagination = list_article_processing_card_views(
                 database_url=database_url,
                 page=1,
-                page_size=10,
+                page_size=1,
                 status="failed_retryable",
                 step="enrich",
                 error_message="summary timeout",
+                include_pagination=True,
+            )
+            page_two, _ = list_article_processing_card_views(
+                database_url=database_url,
+                page=2,
+                page_size=1,
+                status="failed_retryable",
+                step="enrich",
+                error_message="summary timeout",
+                include_pagination=True,
             )
 
-        self.assertEqual(pagination.total_count, 1)
-        self.assertEqual([run.title_en for run in runs], ["Article A"])
+        self.assertEqual(pagination.page, 1)
+        self.assertEqual(pagination.page_size, 1)
+        self.assertEqual(pagination.total_count, 2)
+        self.assertEqual(pagination.total_pages, 2)
+        self.assertEqual([run.title_en for run in page_one], ["Article C"])
+        self.assertEqual([run.title_en for run in page_two], ["Article A"])
 
     def test_article_processing_filter_options_follow_active_filters(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
@@ -1113,7 +1153,7 @@ class ArticleQueryTests(unittest.TestCase):
                 source_name="Wall Street Journal",
                 document_key="message-3:attachment-1:hash-3",
             )
-            self._insert_succeeded_article_with_enrichment(
+            ready_article_id = self._insert_succeeded_article_with_enrichment(
                 database_url=database_url,
                 document_key=ready_document_key,
                 publication_date="2026-04-22",
@@ -1136,6 +1176,24 @@ class ArticleQueryTests(unittest.TestCase):
                 tags=["Policy", "Trade", "US"],
                 enrichment_status="partial",
             )
+            second_partial_document_key = self._insert_document(
+                database_path,
+                original_filename="wsj-2026-04-22-partial-2.pdf",
+                source_name="Wall Street Journal",
+                document_key="message-4:attachment-1:hash-4",
+            )
+            second_partial_article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=second_partial_document_key,
+                publication_date="2026-04-22",
+                title="Second partial article",
+                body_suffix="Second partial article body.",
+                translated_title_zh="标题三",
+                summary_zh=None,
+                translated_body_zh="正文三。",
+                tags=["Policy", "Trade", "US"],
+                enrichment_status="partial",
+            )
             self._insert_succeeded_article_without_enrichment(
                 database_url=database_url,
                 document_key=fallback_document_key,
@@ -1147,15 +1205,30 @@ class ArticleQueryTests(unittest.TestCase):
             page_one, pagination_one = list_article_card_views(
                 database_url=database_url,
                 page=1,
-                page_size=2,
+                page_size=1,
                 reading_status="ready",
                 processing_status="partial_enrichment",
+                include_pagination=True,
+            )
+            page_two, pagination_two = list_article_card_views(
+                database_url=database_url,
+                page=2,
+                page_size=1,
+                reading_status="ready",
+                processing_status="partial_enrichment",
+                include_pagination=True,
             )
 
-        self.assertEqual(pagination_one.total_count, 1)
-        self.assertEqual(pagination_one.total_pages, 1)
+        self.assertEqual(pagination_one.page, 1)
+        self.assertEqual(pagination_one.page_size, 1)
+        self.assertEqual(pagination_one.total_count, 2)
+        self.assertEqual(pagination_one.total_pages, 2)
         self.assertEqual(len(page_one), 1)
-        self.assertEqual(page_one[0].article_id, article_partial_id)
+        self.assertEqual(page_one[0].article_id, second_partial_article_id)
+        self.assertEqual(pagination_two.page, 2)
+        self.assertEqual(len(page_two), 1)
+        self.assertEqual(page_two[0].article_id, article_partial_id)
+        self.assertNotEqual(ready_article_id, page_one[0].article_id)
 
     def test_article_cards_support_source_filter(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
@@ -1201,7 +1274,7 @@ class ArticleQueryTests(unittest.TestCase):
                 tags=["Policy", "Hardware", "Trade"],
             )
 
-            cards, _ = list_article_card_views(
+            cards = list_article_card_views(
                 database_url=database_url,
                 source="Wall Street Journal",
             )
@@ -1254,7 +1327,7 @@ class ArticleQueryTests(unittest.TestCase):
                 tags=["Policy", "Hardware", "Trade"],
             )
 
-            cards, _ = list_article_card_views(
+            cards = list_article_card_views(
                 database_url=database_url,
                 tag="Hardware",
             )
@@ -1307,7 +1380,7 @@ class ArticleQueryTests(unittest.TestCase):
                 tags=["Policy", "Hardware", "Trade"],
             )
 
-            cards, _ = list_article_card_views(
+            cards = list_article_card_views(
                 database_url=database_url,
                 publication_date_from="2026-04-22",
                 publication_date_to="2026-04-22",
@@ -1361,7 +1434,7 @@ class ArticleQueryTests(unittest.TestCase):
                 tags=["Policy", "Hardware", "Trade"],
             )
 
-            cards, _ = list_article_card_views(database_url=database_url)
+            cards = list_article_card_views(database_url=database_url)
 
         self.assertEqual([card.article_id for card in cards], [newer_article_id, older_article_id])
 
@@ -1470,7 +1543,7 @@ class ArticleQueryTests(unittest.TestCase):
                 run_status="skipped_advertisement",
             )
 
-            cards, _ = list_article_card_views(database_url=database_url)
+            cards = list_article_card_views(database_url=database_url)
 
         titles = [card.title_en for card in cards]
         self.assertIn("Visible Article", titles)

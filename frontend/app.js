@@ -106,6 +106,7 @@ async function fetchJson(path, options = {}) {
       Accept: "application/json",
       ...(options.headers || {}),
     },
+    body: options.body,
   });
   if (!response.ok) {
     throw new Error(`Request failed: ${response.status} ${response.statusText}`);
@@ -484,7 +485,7 @@ function renderArticleProcessingList(runs) {
       badgeRow.appendChild(badge);
     });
 
-    if (run.status === "failed_retryable") {
+    if (run.status === "failed_retryable" || run.status === "failed_terminal") {
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
       checkbox.className = "article-processing-select";

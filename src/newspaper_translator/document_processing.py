@@ -990,7 +990,7 @@ def retry_article_processing_runs(
     retryable_article_keys = [
         article_key
         for article_key, run_status in matched_rows
-        if run_status == "failed_retryable"
+        if run_status in ("failed_retryable", "failed_terminal")
     ]
     updated_count = 0
     if retryable_article_keys:
@@ -1006,7 +1006,7 @@ def retry_article_processing_runs(
                     lock_expires_at = NULL,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE article_key IN ({placeholders})
-                  AND status = 'failed_retryable'
+                  AND status IN ('failed_retryable', 'failed_terminal')
                 """,
                 tuple(retryable_article_keys),
             )

@@ -414,6 +414,11 @@ Tests should cover:
 - `error_message` filter shows placeholder text "先选择阶段" when no stage is selected instead of being HTML-`disabled`. Functional behavior is equivalent.
 - The batch action bar does not have a standalone "clear selection" button. Selection is cleared automatically after each batch retry action, which covers the primary operator workflow without adding a redundant control.
 
+**Post-implementation corrections:**
+
+- Batch retry eligibility was extended to include `failed_terminal` in addition to `failed_retryable`. The spec originally excluded `failed_terminal` from batch retry, but operator feedback clarified that terminal failures are precisely the articles that need manual intervention, whereas `failed_retryable` rows are retried automatically by the worker. Both the Python eligibility filter and the SQL `UPDATE` WHERE clause were updated accordingly, and the frontend now renders checkboxes on both statuses.
+- Fixed a bug where `fetchJson` did not forward `options.body` to the underlying `fetch` call. All POST requests sent via `fetchJson` (including retry-batch) were arriving at the backend with an empty body, causing consistent 400 responses. Added `body: options.body` to the fetch options object.
+
 ## Rollout Notes
 
 The implementation should default both paged lists to a modest page size such as 20. The exact default can be finalized during implementation, but both surfaces should use the same default unless a strong operator workflow reason emerges to diverge.

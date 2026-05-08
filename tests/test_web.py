@@ -750,6 +750,77 @@ class WebApiEndpointTests(unittest.TestCase):
         self.assertEqual(payload["pagination"]["page_size"], 1)
         self.assertEqual(payload["pagination"]["total_count"], 2)
 
+    def test_api_article_processing_endpoint_returns_runs_and_pagination(self) -> None:
+        self.assertIsNotNone(create_article_processing_run)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            first_document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-1:attachment-1:hash-1",
+                source_name="WSJ",
+            )
+            second_document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-2:attachment-1:hash-2",
+                source_name="WSJ",
+            )
+            first_article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=first_document_key,
+                publication_date="2026-04-21",
+                title="Earlier processing article",
+                body_suffix="Earlier processing body.",
+                translated_title_zh="较早处理文章",
+                summary_zh="较早处理摘要",
+                translated_body_zh="较早处理正文。",
+                tags=["Retry", "Ops", "Queue"],
+            )
+            second_article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=second_document_key,
+                publication_date="2026-04-22",
+                title="Later processing article",
+                body_suffix="Later processing body.",
+                translated_title_zh="较晚处理文章",
+                summary_zh="较晚处理摘要",
+                translated_body_zh="较晚处理正文。",
+                tags=["Retry", "Ops", "Queue"],
+            )
+            create_article_processing_run(
+                database_url=database_url,
+                article_id=first_article_id,
+            )
+            create_article_processing_run(
+                database_url=database_url,
+                article_id=second_article_id,
+            )
+
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path="/api/article-processing",
+                query_string="page=2&page_size=1",
+            )
+
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(status, "200 OK")
+        self.assertIn("runs", payload)
+        self.assertEqual(len(payload["runs"]), 1)
+        self.assertEqual(payload["pagination"]["page"], 2)
+        self.assertEqual(payload["pagination"]["page_size"], 1)
+        self.assertEqual(payload["pagination"]["total_count"], 2)
+
     def test_article_processing_filter_options_endpoint_returns_dynamic_values(self) -> None:
         self.assertIsNotNone(create_article_processing_run)
 

@@ -1164,6 +1164,116 @@ class WebApiEndpointTests(unittest.TestCase):
                 "failed_retryable",
             )
 
+    def test_article_processing_retry_batch_rejects_non_post_method(self) -> None:
+        self.assertIsNotNone(create_app)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path="/api/article-processing/retry-batch",
+                method="GET",
+            )
+
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(status, "405 Method Not Allowed")
+        self.assertEqual(payload["status"], "method_not_allowed")
+
+    def test_article_processing_retry_batch_rejects_malformed_json(self) -> None:
+        self.assertIsNotNone(create_app)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path="/api/article-processing/retry-batch",
+                method="POST",
+                body=b"{",
+                content_type="application/json",
+            )
+
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(status, "400 Bad Request")
+        self.assertEqual(payload["status"], "invalid_json_request")
+
+    def test_article_processing_retry_batch_rejects_non_object_request_body(self) -> None:
+        self.assertIsNotNone(create_app)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path="/api/article-processing/retry-batch",
+                method="POST",
+                body=json.dumps(["selection"]).encode("utf-8"),
+                content_type="application/json",
+            )
+
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(status, "400 Bad Request")
+        self.assertEqual(payload["status"], "invalid_request_body")
+
+    def test_article_processing_retry_batch_rejects_unsupported_mode(self) -> None:
+        self.assertIsNotNone(create_app)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path="/api/article-processing/retry-batch",
+                method="POST",
+                body=json.dumps({"mode": "everything"}).encode("utf-8"),
+                content_type="application/json",
+            )
+
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(status, "400 Bad Request")
+        self.assertEqual(payload["status"], "unsupported_retry_batch_mode")
+
     def test_api_document_processing_detail_endpoint_includes_visible_articles(self) -> None:
         self.assertIsNotNone(create_parse_run)
         self.assertIsNotNone(create_article_enrichment_run)

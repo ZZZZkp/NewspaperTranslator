@@ -232,8 +232,27 @@ def create_app(env: Mapping[str, str]):
             return _json_response(start_response, "200 OK", payload)
 
         if path == "/api/article-processing/retry-batch":
-            request = _read_json_request(environ)
+            if environ.get("REQUEST_METHOD", "GET").upper() != "POST":
+                return _json_response(
+                    start_response,
+                    "405 Method Not Allowed",
+                    {"status": "method_not_allowed"},
+                )
+            try:
+                request = _read_json_request(environ)
+            except _JsonRequestError as exc:
+                return _json_response(
+                    start_response,
+                    "400 Bad Request",
+                    {"status": exc.status},
+                )
             mode = request.get("mode")
+            if mode not in {"selection", "filtered"}:
+                return _json_response(
+                    start_response,
+                    "400 Bad Request",
+                    {"status": "unsupported_retry_batch_mode"},
+                )
             filters = request.get("filters", {})
             article_keys = request.get("article_keys")
             if not isinstance(filters, dict):
@@ -355,6 +374,12 @@ def _json_response(start_response, status: str, payload: dict[str, object]):
     return [body]
 
 
+class _JsonRequestError(ValueError):
+    def __init__(self, status: str):
+        super().__init__(status)
+        self.status = status
+
+
 def _read_json_request(environ) -> dict[str, object]:
     body_stream = environ.get("wsgi.input")
     if body_stream is None:
@@ -367,10 +392,13 @@ def _read_json_request(environ) -> dict[str, object]:
     raw_body = body_stream.read(body_size) if body_size > 0 else b""
     if not raw_body:
         return {}
-    payload = json.loads(raw_body.decode("utf-8"))
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise _JsonRequestError("invalid_json_request") from exc
     if isinstance(payload, dict):
         return payload
-    raise ValueError("JSON request body must be an object")
+    raise _JsonRequestError("invalid_request_body")
 
 
 def _query_value(query: dict[str, list[str]], key: str) -> str | None:

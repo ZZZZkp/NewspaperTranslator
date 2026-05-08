@@ -137,6 +137,7 @@ function showDashboardSections() {
   articleProcessingSection.classList.add("hidden");
   articleProcessingDetailView.classList.add("hidden");
   articleProcessingFilterForm.classList.add("hidden");
+  articleProcessingBatchBar.classList.add("hidden");
   documentDetailView.classList.add("hidden");
   setActiveNav("dashboard");
 }
@@ -162,6 +163,7 @@ function showDocumentProcessingPage() {
   articleProcessingSection.classList.add("hidden");
   articleProcessingDetailView.classList.add("hidden");
   articleProcessingFilterForm.classList.add("hidden");
+  articleProcessingBatchBar.classList.add("hidden");
   documentRefreshButton.classList.remove("hidden");
   setActiveWorkbenchTab("documents");
   setActiveNav("documents");
@@ -301,12 +303,8 @@ function toggleArticleProcessingSelection(articleKey, checked) {
 
 function renderArticleProcessingBatchBar() {
   const count = selectedArticleProcessingKeys.size;
-  if (count === 0) {
-    articleProcessingBatchBar.classList.add("hidden");
-    return;
-  }
-  articleProcessingBatchBar.classList.remove("hidden");
-  articleProcessingSelectionCount.textContent = `已选 ${count} 条`;
+  articleProcessingSelectionCount.textContent = count > 0 ? `已选 ${count} 条` : "";
+  articleProcessingRetrySelectedButton.disabled = count === 0;
 }
 
 async function retrySelectedArticleProcessingRuns() {
@@ -485,6 +483,18 @@ function renderArticleProcessingList(runs) {
       badge.textContent = badgeText;
       badgeRow.appendChild(badge);
     });
+
+    if (run.status === "failed_retryable") {
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.className = "article-processing-select";
+      checkbox.checked = selectedArticleProcessingKeys.has(run.article_key);
+      checkbox.addEventListener("click", (e) => e.stopPropagation());
+      checkbox.addEventListener("change", () => {
+        toggleArticleProcessingSelection(run.article_key, checkbox.checked);
+      });
+      node.appendChild(checkbox);
+    }
 
     node.addEventListener("click", () => {
       window.location.hash = `article-processing/${encodeURIComponent(run.article_key)}`;
@@ -810,10 +820,13 @@ async function loadArticleProcessing(page = 1) {
     fetchJson(`/api/article-processing?${queryString}`),
     loadArticleProcessingFilterOptions(),
   ]);
+  selectedArticleProcessingKeys.clear();
   renderArticleProcessingList(payload.runs);
   const total = payload.pagination?.total_count ?? payload.runs.length;
   articleProcessingMeta.textContent = `当前列表共 ${total} 条记录`;
   renderPagination(articleProcessingPagination, payload.pagination, (p) => loadArticleProcessing(p));
+  articleProcessingBatchBar.classList.remove("hidden");
+  renderArticleProcessingBatchBar();
   setStatus("文章处理列表已加载。");
 }
 

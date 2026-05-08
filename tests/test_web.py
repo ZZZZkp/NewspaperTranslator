@@ -1496,6 +1496,51 @@ class WebApiEndpointTests(unittest.TestCase):
                         "failed_retryable",
                     )
 
+    def test_article_processing_retry_batch_rejects_unknown_filtered_filter_key(self) -> None:
+        self.assertIsNotNone(create_article_processing_run)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            article_key = self._create_failed_retryable_article_processing_run(
+                database_path=database_path,
+                database_url=database_url,
+                document_key="message-1:attachment-1:hash-1",
+                title="Filtered unknown key validation article",
+            )
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path="/api/article-processing/retry-batch",
+                method="POST",
+                body=json.dumps(
+                    {
+                        "mode": "filtered",
+                        "filters": {
+                            "unexpected_key": "failed_retryable",
+                        },
+                    }
+                ).encode("utf-8"),
+                content_type="application/json",
+            )
+            payload = json.loads(body.decode("utf-8"))
+
+            self.assertEqual(status, "400 Bad Request")
+            self.assertEqual(payload["status"], "unknown_filtered_filter_key")
+            self.assertEqual(
+                self._get_article_processing_status(database_path=database_path, article_key=article_key),
+                "failed_retryable",
+            )
+
     def test_retry_article_processing_runs_rechecks_status_at_write_time(self) -> None:
         self.assertIsNotNone(retry_article_processing_runs)
 

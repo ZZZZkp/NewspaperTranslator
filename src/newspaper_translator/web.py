@@ -33,6 +33,15 @@ from newspaper_translator.import_audit import (
 )
 from newspaper_translator.runtime import build_runtime_report
 
+_RETRY_BATCH_FILTER_KEYS = (
+    "status",
+    "source",
+    "publication_date_from",
+    "publication_date_to",
+    "step",
+    "error_message",
+)
+
 
 def create_app(env: Mapping[str, str]):
     runtime_report = build_runtime_report(env=env, service="web")
@@ -276,14 +285,18 @@ def create_app(env: Mapping[str, str]):
                         "400 Bad Request",
                         {"status": "invalid_filtered_filters"},
                     )
-                for filter_key in (
-                    "status",
-                    "source",
-                    "publication_date_from",
-                    "publication_date_to",
-                    "step",
-                    "error_message",
-                ):
+                unknown_filter_keys = sorted(
+                    filter_key
+                    for filter_key in filters
+                    if filter_key not in _RETRY_BATCH_FILTER_KEYS
+                )
+                if unknown_filter_keys:
+                    return _json_response(
+                        start_response,
+                        "400 Bad Request",
+                        {"status": "unknown_filtered_filter_key"},
+                    )
+                for filter_key in _RETRY_BATCH_FILTER_KEYS:
                     filter_value = filters.get(filter_key)
                     if filter_value is not None and not isinstance(filter_value, str):
                         return _json_response(

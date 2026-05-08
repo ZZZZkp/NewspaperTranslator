@@ -125,18 +125,25 @@ def create_app(env: Mapping[str, str]):
             )
 
         if path == "/api/articles":
-            articles, pagination = list_article_card_views(
-                database_url=database_url,
-                source=_query_value(query, "source"),
-                tag=_query_value(query, "tag"),
-                publication_date_from=_query_value(query, "publication_date_from"),
-                publication_date_to=_query_value(query, "publication_date_to"),
-                reading_status=_query_value(query, "reading_status"),
-                processing_status=_query_value(query, "processing_status"),
-                page=_query_int(query, "page", default=1),
-                page_size=_query_int(query, "page_size", default=20),
-                include_pagination=True,
-            )
+            try:
+                articles, pagination = list_article_card_views(
+                    database_url=database_url,
+                    source=_query_value(query, "source"),
+                    tag=_query_value(query, "tag"),
+                    publication_date_from=_query_value(query, "publication_date_from"),
+                    publication_date_to=_query_value(query, "publication_date_to"),
+                    reading_status=_query_value(query, "reading_status"),
+                    processing_status=_query_value(query, "processing_status"),
+                    page=_query_int(query, "page", default=1),
+                    page_size=_query_int(query, "page_size", default=20),
+                    include_pagination=True,
+                )
+            except _QueryParamError:
+                return _json_response(
+                    start_response,
+                    "400 Bad Request",
+                    {"status": "invalid_query_parameter"},
+                )
             payload = {
                 "articles": _to_jsonable(articles),
                 "pagination": _to_jsonable(pagination),
@@ -199,19 +206,26 @@ def create_app(env: Mapping[str, str]):
             return _json_response(start_response, "200 OK", payload)
 
         if path in {"/article-processing", "/api/article-processing"}:
-            runs, pagination = list_article_processing_card_views(
-                database_url=database_url,
-                limit=None,
-                page=_query_int(query, "page", default=1),
-                page_size=_query_int(query, "page_size", default=_query_int(query, "limit", default=50)),
-                status=_query_value(query, "status"),
-                source=_query_value(query, "source"),
-                publication_date_from=_query_value(query, "publication_date_from"),
-                publication_date_to=_query_value(query, "publication_date_to"),
-                step=_query_value(query, "step"),
-                error_message=_query_value(query, "error_message"),
-                include_pagination=True,
-            )
+            try:
+                runs, pagination = list_article_processing_card_views(
+                    database_url=database_url,
+                    limit=None,
+                    page=_query_int(query, "page", default=1),
+                    page_size=_query_int(query, "page_size", default=_query_int(query, "limit", default=50)),
+                    status=_query_value(query, "status"),
+                    source=_query_value(query, "source"),
+                    publication_date_from=_query_value(query, "publication_date_from"),
+                    publication_date_to=_query_value(query, "publication_date_to"),
+                    step=_query_value(query, "step"),
+                    error_message=_query_value(query, "error_message"),
+                    include_pagination=True,
+                )
+            except _QueryParamError:
+                return _json_response(
+                    start_response,
+                    "400 Bad Request",
+                    {"status": "invalid_query_parameter"},
+                )
             payload = {
                 "runs": _to_jsonable(runs),
                 "pagination": _to_jsonable(pagination),
@@ -406,6 +420,10 @@ class _JsonRequestError(ValueError):
         self.status = status
 
 
+class _QueryParamError(ValueError):
+    pass
+
+
 def _read_json_request(environ) -> dict[str, object]:
     body_stream = environ.get("wsgi.input")
     if body_stream is None:
@@ -438,7 +456,10 @@ def _query_int(query: dict[str, list[str]], key: str, *, default: int) -> int:
     value = _query_value(query, key)
     if value is None:
         return default
-    return int(value)
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise _QueryParamError(key) from exc
 
 
 def _to_jsonable(value):

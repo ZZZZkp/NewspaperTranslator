@@ -41,6 +41,7 @@ try:
         create_document_processing_run,
         request_manual_article_retry,
         request_manual_document_retry,
+        retry_article_processing_runs,
     )
     from newspaper_translator.web import create_app
 except ImportError:
@@ -64,6 +65,7 @@ except ImportError:
     record_parse_run_result = None
     request_manual_article_retry = None
     request_manual_document_retry = None
+    retry_article_processing_runs = None
     run_pending_migrations = None
 
 
@@ -821,6 +823,58 @@ class WebApiEndpointTests(unittest.TestCase):
         self.assertEqual(payload["pagination"]["page_size"], 1)
         self.assertEqual(payload["pagination"]["total_count"], 2)
 
+    def test_api_articles_endpoint_rejects_invalid_pagination_query_values(self) -> None:
+        self.assertIsNotNone(create_app)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path="/api/articles",
+                query_string="page=abc&page_size=1",
+            )
+
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(status, "400 Bad Request")
+        self.assertEqual(payload["status"], "invalid_query_parameter")
+
+    def test_api_article_processing_endpoint_rejects_invalid_pagination_query_values(self) -> None:
+        self.assertIsNotNone(create_app)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path="/api/article-processing",
+                query_string="page=1&page_size=oops",
+            )
+
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(status, "400 Bad Request")
+        self.assertEqual(payload["status"], "invalid_query_parameter")
+
     def test_article_processing_filter_options_endpoint_returns_dynamic_values(self) -> None:
         self.assertIsNotNone(create_article_processing_run)
 
@@ -1441,6 +1495,54 @@ class WebApiEndpointTests(unittest.TestCase):
                         self._get_article_processing_status(database_path=database_path, article_key=article_key),
                         "failed_retryable",
                     )
+
+    def test_retry_article_processing_runs_rechecks_status_at_write_time(self) -> None:
+        self.assertIsNotNone(retry_article_processing_runs)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            article_key = self._create_failed_retryable_article_processing_run(
+                database_path=database_path,
+                database_url=database_url,
+                document_key="message-1:attachment-1:hash-1",
+                title="Service write-time recheck article",
+            )
+            self._update_article_processing_run(
+                database_path=database_path,
+                article_key=article_key,
+                status="running",
+                current_step="enrich",
+                last_error_message="summary timeout",
+            )
+
+            with patch(
+                "newspaper_translator.document_processing._list_article_processing_runs_for_retry",
+                return_value=[(article_key, "failed_retryable")],
+            ):
+                summary = retry_article_processing_runs(
+                    database_url=database_url,
+                    article_keys=[article_key],
+                )
+
+            self.assertEqual(summary.matched_count, 1)
+            self.assertEqual(summary.updated_count, 0)
+            self.assertEqual(summary.skipped_count, 1)
+            self.assertEqual(
+                self._get_article_processing_status(database_path=database_path, article_key=article_key),
+                "running",
+            )
+
+    def test_retry_article_processing_runs_rejects_ambiguous_keys_and_filters(self) -> None:
+        self.assertIsNotNone(retry_article_processing_runs)
+
+        with self.assertRaises(ValueError):
+            retry_article_processing_runs(
+                database_url="sqlite:////tmp/ignored.db",
+                article_keys=["article-key-1"],
+                status="failed_retryable",
+            )
 
     def test_api_document_processing_detail_endpoint_includes_visible_articles(self) -> None:
         self.assertIsNotNone(create_parse_run)

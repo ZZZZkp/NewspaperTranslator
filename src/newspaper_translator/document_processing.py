@@ -974,6 +974,8 @@ def retry_article_processing_runs(
             error_message,
         )
     )
+    if has_filter_scope and article_keys is not None:
+        raise ValueError("article_keys cannot be combined with filter arguments")
     matched_rows = _list_article_processing_runs_for_retry(
         database_url=database_url,
         article_keys=None if has_filter_scope else article_keys,
@@ -990,11 +992,12 @@ def retry_article_processing_runs(
         for article_key, run_status in matched_rows
         if run_status == "failed_retryable"
     ]
+    updated_count = 0
     if retryable_article_keys:
         connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
         try:
             placeholders = ", ".join("?" for _ in retryable_article_keys)
-            connection.execute(
+            cursor = connection.execute(
                 f"""
                 UPDATE article_processing_runs
                 SET
@@ -1003,14 +1006,15 @@ def retry_article_processing_runs(
                     lock_expires_at = NULL,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE article_key IN ({placeholders})
+                  AND status = 'failed_retryable'
                 """,
                 tuple(retryable_article_keys),
             )
+            updated_count = max(cursor.rowcount, 0)
             connection.commit()
         finally:
             connection.close()
 
-    updated_count = len(retryable_article_keys)
     return BatchRetrySummary(
         matched_count=matched_count,
         updated_count=updated_count,

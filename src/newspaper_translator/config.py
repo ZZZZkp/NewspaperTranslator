@@ -76,10 +76,7 @@ class GeminiSettings:
                 raise ConfigurationError("Missing required configuration: GOOGLE_GEMINI_BASE_URL")
         else:
             api_token = _require_setting(env, "GEMINI_TOKEN")
-            base_url = env.get(
-                "GOOGLE_GEMINI_BASE_URL",
-                "https://generativelanguage.googleapis.com/v1beta",
-            ).strip() or "https://generativelanguage.googleapis.com/v1beta"
+            base_url = "https://generativelanguage.googleapis.com/v1beta"
         return cls(
             api_token=api_token,
             base_url=base_url.rstrip("/"),

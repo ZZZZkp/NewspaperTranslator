@@ -80,10 +80,23 @@ const documentBackButton = document.querySelector("#document-back-button");
 const summaryCardTemplate = document.querySelector("#summary-card-template");
 const articleCardTemplate = document.querySelector("#article-card-template");
 const documentCardTemplate = document.querySelector("#document-card-template");
+const readingStatusFilter = document.querySelector("#reading-status-filter");
+const processingStatusFilter = document.querySelector("#processing-status-filter");
+const allArticlesPagination = document.querySelector("#all-articles-pagination");
+const articleProcessingStepFilter = document.querySelector("#article-processing-step-filter");
+const articleProcessingErrorFilter = document.querySelector("#article-processing-error-filter");
+const articleProcessingBatchBar = document.querySelector("#article-processing-batch-bar");
+const articleProcessingRetrySelectedButton = document.querySelector("#article-processing-retry-selected-button");
+const articleProcessingRetryFilteredButton = document.querySelector("#article-processing-retry-filtered-button");
+const articleProcessingSelectionCount = document.querySelector("#article-processing-selection-count");
+const articleProcessingPagination = document.querySelector("#article-processing-pagination");
 
 let currentDetail = null;
 let currentDocumentRun = null;
 let currentArticleProcessingRun = null;
+let currentAllArticlesPage = 1;
+let currentArticleProcessingPage = 1;
+const page_size = 20;
 
 async function fetchJson(path, options = {}) {
   const response = await fetch(path, {
@@ -204,6 +217,65 @@ function renderSelectOptions(selectElement, options, emptyLabel) {
   if (options.includes(currentValue) || currentValue === "") {
     selectElement.value = currentValue;
   }
+}
+
+function getRouteQueryParams() {
+  const hash = window.location.hash.replace(/^#/, "");
+  const [routeName, rawQuery = ""] = hash.split("?");
+  return { routeName, params: new URLSearchParams(rawQuery) };
+}
+
+function renderPagination(container, pagination, onPageChange) {
+  container.replaceChildren();
+  if (!pagination || pagination.total_pages <= 1) {
+    return;
+  }
+  const prevButton = document.createElement("button");
+  prevButton.textContent = "上一页";
+  prevButton.disabled = pagination.page <= 1;
+  prevButton.addEventListener("click", () => onPageChange(pagination.page - 1));
+  container.appendChild(prevButton);
+  const pageLabel = document.createElement("span");
+  pageLabel.textContent = `第 ${pagination.page} / ${pagination.total_pages} 页（共 ${pagination.total_count} 条）`;
+  container.appendChild(pageLabel);
+  const nextButton = document.createElement("button");
+  nextButton.textContent = "下一页";
+  nextButton.disabled = pagination.page >= pagination.total_pages;
+  nextButton.addEventListener("click", () => onPageChange(pagination.page + 1));
+  container.appendChild(nextButton);
+}
+
+function buildArticleProcessingFilterOptionsQueryString() {
+  const params = new URLSearchParams();
+  if (articleProcessingStatusFilter.value) params.set("status", articleProcessingStatusFilter.value);
+  if (articleProcessingSourceFilter.value) params.set("source", articleProcessingSourceFilter.value);
+  if (articleProcessingDateFromFilter.value) params.set("publication_date_from", articleProcessingDateFromFilter.value);
+  if (articleProcessingDateToFilter.value) params.set("publication_date_to", articleProcessingDateToFilter.value);
+  if (articleProcessingStepFilter.value) params.set("step", articleProcessingStepFilter.value);
+  return params.toString();
+}
+
+function renderDependentErrorOptions(errorMessages) {
+  renderSelectOptions(articleProcessingErrorFilter, errorMessages || [], "先选择阶段");
+}
+
+async function loadArticleProcessingFilterOptions() {
+  const queryString = buildArticleProcessingFilterOptionsQueryString();
+  const payload = await fetchJson(
+    queryString
+      ? `/api/article-processing/filter-options?${queryString}`
+      : "/api/article-processing/filter-options"
+  );
+  renderSelectOptions(articleProcessingStepFilter, payload.steps, "全部阶段");
+  renderDependentErrorOptions(payload.error_messages);
+}
+
+async function requestBatchArticleRetry(body) {
+  return fetchJson("/api/article-processing/retry-batch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
 
 function renderCards(container, cards, emptyText) {
@@ -440,18 +512,12 @@ function showArticleProcessingDetail(run) {
 
 function buildArticleQueryString() {
   const params = new URLSearchParams();
-  if (sourceFilter.value) {
-    params.set("source", sourceFilter.value);
-  }
-  if (tagFilter.value) {
-    params.set("tag", tagFilter.value);
-  }
-  if (dateFromFilter.value) {
-    params.set("publication_date_from", dateFromFilter.value);
-  }
-  if (dateToFilter.value) {
-    params.set("publication_date_to", dateToFilter.value);
-  }
+  if (sourceFilter.value) params.set("source", sourceFilter.value);
+  if (tagFilter.value) params.set("tag", tagFilter.value);
+  if (dateFromFilter.value) params.set("publication_date_from", dateFromFilter.value);
+  if (dateToFilter.value) params.set("publication_date_to", dateToFilter.value);
+  if (readingStatusFilter.value) params.set("reading_status", readingStatusFilter.value);
+  if (processingStatusFilter.value) params.set("processing_status", processingStatusFilter.value);
   return params.toString();
 }
 
@@ -465,18 +531,14 @@ function buildDocumentProcessingQueryString() {
 
 function buildArticleProcessingQueryString() {
   const params = new URLSearchParams();
-  if (articleProcessingStatusFilter.value) {
-    params.set("status", articleProcessingStatusFilter.value);
-  }
-  if (articleProcessingSourceFilter.value) {
-    params.set("source", articleProcessingSourceFilter.value);
-  }
-  if (articleProcessingDateFromFilter.value) {
-    params.set("publication_date_from", articleProcessingDateFromFilter.value);
-  }
-  if (articleProcessingDateToFilter.value) {
-    params.set("publication_date_to", articleProcessingDateToFilter.value);
-  }
+  if (articleProcessingStatusFilter.value) params.set("status", articleProcessingStatusFilter.value);
+  if (articleProcessingSourceFilter.value) params.set("source", articleProcessingSourceFilter.value);
+  if (articleProcessingDateFromFilter.value) params.set("publication_date_from", articleProcessingDateFromFilter.value);
+  if (articleProcessingDateToFilter.value) params.set("publication_date_to", articleProcessingDateToFilter.value);
+  if (articleProcessingStepFilter.value) params.set("step", articleProcessingStepFilter.value);
+  if (articleProcessingErrorFilter.value) params.set("error_message", articleProcessingErrorFilter.value);
+  params.set("page", String(currentArticleProcessingPage));
+  params.set("page_size", String(page_size));
   return params.toString();
 }
 
@@ -502,16 +564,16 @@ async function loadFocusTagArticles() {
   focusTagMeta.textContent = `共 ${payload.articles.length} 篇文章命中关注标签`;
 }
 
-async function loadAllArticles() {
-  const queryString = buildArticleQueryString();
-  const path = queryString ? `/api/articles?${queryString}` : "/api/articles";
-  const payload = await fetchJson(path);
-  renderCards(
-    allArticleCards,
-    payload.articles,
-    "当前筛选条件下没有文章。",
-  );
-  allArticlesMeta.textContent = `当前列表共 ${payload.articles.length} 篇文章`;
+async function loadAllArticles(page = 1) {
+  currentAllArticlesPage = page;
+  const params = new URLSearchParams(buildArticleQueryString());
+  params.set("page", String(page));
+  params.set("page_size", String(page_size));
+  const payload = await fetchJson(`/api/articles?${params.toString()}`);
+  renderCards(allArticleCards, payload.articles, "当前筛选条件下没有文章。");
+  const total = payload.pagination?.total_count ?? payload.articles.length;
+  allArticlesMeta.textContent = `当前列表共 ${total} 篇文章`;
+  renderPagination(allArticlesPagination, payload.pagination, (p) => loadAllArticles(p));
 }
 
 function renderDetailMode(mode) {
@@ -688,14 +750,19 @@ async function loadDocumentProcessing() {
   setStatus("文档处理列表已加载。");
 }
 
-async function loadArticleProcessing() {
+async function loadArticleProcessing(page = 1) {
+  currentArticleProcessingPage = page;
   showArticleProcessingPage();
   setStatus("正在加载文章处理列表...");
   const queryString = buildArticleProcessingQueryString();
-  const path = queryString ? `/api/article-processing?${queryString}` : "/api/article-processing";
-  const payload = await fetchJson(path);
+  const [payload] = await Promise.all([
+    fetchJson(`/api/article-processing?${queryString}`),
+    loadArticleProcessingFilterOptions(),
+  ]);
   renderArticleProcessingList(payload.runs);
-  articleProcessingMeta.textContent = `当前列表共 ${payload.runs.length} 条记录`;
+  const total = payload.pagination?.total_count ?? payload.runs.length;
+  articleProcessingMeta.textContent = `当前列表共 ${total} 条记录`;
+  renderPagination(articleProcessingPagination, payload.pagination, (p) => loadArticleProcessing(p));
   setStatus("文章处理列表已加载。");
 }
 

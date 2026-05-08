@@ -1,4 +1,5 @@
 import json
+import io
 import pathlib
 import sys
 import tempfile
@@ -66,7 +67,7 @@ except ImportError:
     run_pending_migrations = None
 
 
-class WebHealthEndpointTests(unittest.TestCase):
+class WebApiEndpointTests(unittest.TestCase):
     def test_health_endpoint_initializes_database_before_reporting_status(self) -> None:
         self.assertIsNotNone(
             create_app,
@@ -687,6 +688,356 @@ class WebHealthEndpointTests(unittest.TestCase):
         payload = json.loads(body.decode("utf-8"))
         self.assertEqual(status, "200 OK")
         self.assertEqual([item["article_key"] for item in payload["runs"]], [second_article_key])
+
+    def test_api_articles_endpoint_returns_articles_and_pagination(self) -> None:
+        self.assertIsNotNone(create_app)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            first_document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-1:attachment-1:hash-1",
+            )
+            second_document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-2:attachment-1:hash-2",
+            )
+            self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=first_document_key,
+                publication_date="2026-04-21",
+                title="Earlier ready article",
+                body_suffix="Earlier body.",
+                translated_title_zh="较早的就绪文章",
+                summary_zh="较早摘要",
+                translated_body_zh="较早正文。",
+                tags=["Markets", "Asia", "Policy"],
+            )
+            self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=second_document_key,
+                publication_date="2026-04-22",
+                title="Later ready article",
+                body_suffix="Later body.",
+                translated_title_zh="较晚的就绪文章",
+                summary_zh="较晚摘要",
+                translated_body_zh="较晚正文。",
+                tags=["Markets", "US", "Policy"],
+            )
+
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path="/api/articles",
+                query_string="page=2&page_size=1&reading_status=ready",
+            )
+
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(status, "200 OK")
+        self.assertIn("articles", payload)
+        self.assertEqual(len(payload["articles"]), 1)
+        self.assertEqual(payload["pagination"]["page"], 2)
+        self.assertEqual(payload["pagination"]["page_size"], 1)
+        self.assertEqual(payload["pagination"]["total_count"], 2)
+
+    def test_article_processing_filter_options_endpoint_returns_dynamic_values(self) -> None:
+        self.assertIsNotNone(create_article_processing_run)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            retryable_document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-1:attachment-1:hash-1",
+                source_name="WSJ",
+            )
+            other_document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-2:attachment-1:hash-2",
+                source_name="WSJ",
+            )
+            retryable_article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=retryable_document_key,
+                publication_date="2026-04-22",
+                title="Retryable article",
+                body_suffix="Retryable body.",
+                translated_title_zh="可重试文章",
+                summary_zh="可重试摘要",
+                translated_body_zh="可重试正文。",
+                tags=["Retry", "Queue", "Ops"],
+            )
+            other_article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=other_document_key,
+                publication_date="2026-04-23",
+                title="Translate article",
+                body_suffix="Translate body.",
+                translated_title_zh="翻译文章",
+                summary_zh="翻译摘要",
+                translated_body_zh="翻译正文。",
+                tags=["Retry", "Translate", "Ops"],
+            )
+            retryable_article_key = self._get_article_key(
+                database_path=database_path,
+                article_id=retryable_article_id,
+            )
+            other_article_key = self._get_article_key(
+                database_path=database_path,
+                article_id=other_article_id,
+            )
+            create_article_processing_run(
+                database_url=database_url,
+                article_id=retryable_article_id,
+            )
+            create_article_processing_run(
+                database_url=database_url,
+                article_id=other_article_id,
+            )
+            self._update_article_processing_run(
+                database_path=database_path,
+                article_key=retryable_article_key,
+                status="failed_retryable",
+                current_step="enrich",
+                last_error_message="summary timeout",
+            )
+            self._update_article_processing_run(
+                database_path=database_path,
+                article_key=other_article_key,
+                status="failed_retryable",
+                current_step="translate",
+                last_error_message="summary timeout",
+            )
+
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path="/api/article-processing/filter-options",
+                query_string="status=failed_retryable&step=enrich",
+            )
+
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(payload["steps"], ["enrich", "translate"])
+        self.assertEqual(payload["error_messages"], ["summary timeout"])
+
+    def test_article_processing_retry_batch_selection_mode_updates_only_retryable_rows(self) -> None:
+        self.assertIsNotNone(create_article_processing_run)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            retryable_document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-1:attachment-1:hash-1",
+                source_name="WSJ",
+            )
+            running_document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-2:attachment-1:hash-2",
+                source_name="WSJ",
+            )
+            retryable_article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=retryable_document_key,
+                publication_date="2026-04-22",
+                title="Retryable A",
+                body_suffix="Retryable A body.",
+                translated_title_zh="可重试 A",
+                summary_zh="可重试 A 摘要",
+                translated_body_zh="可重试 A 正文。",
+                tags=["Retry", "Batch", "Ops"],
+            )
+            running_article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=running_document_key,
+                publication_date="2026-04-22",
+                title="Running B",
+                body_suffix="Running B body.",
+                translated_title_zh="运行中 B",
+                summary_zh="运行中 B 摘要",
+                translated_body_zh="运行中 B 正文。",
+                tags=["Retry", "Batch", "Ops"],
+            )
+            retryable_article_key = self._get_article_key(
+                database_path=database_path,
+                article_id=retryable_article_id,
+            )
+            running_article_key = self._get_article_key(
+                database_path=database_path,
+                article_id=running_article_id,
+            )
+            create_article_processing_run(
+                database_url=database_url,
+                article_id=retryable_article_id,
+            )
+            create_article_processing_run(
+                database_url=database_url,
+                article_id=running_article_id,
+            )
+            self._update_article_processing_run(
+                database_path=database_path,
+                article_key=retryable_article_key,
+                status="failed_retryable",
+                current_step="enrich",
+                last_error_message="summary timeout",
+            )
+            self._update_article_processing_run(
+                database_path=database_path,
+                article_key=running_article_key,
+                status="running",
+                current_step="enrich",
+                last_error_message="still processing",
+            )
+
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path="/api/article-processing/retry-batch",
+                method="POST",
+                body=json.dumps(
+                    {
+                        "mode": "selection",
+                        "article_keys": [retryable_article_key, running_article_key],
+                    }
+                ).encode("utf-8"),
+                content_type="application/json",
+            )
+
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(payload["matched_count"], 2)
+        self.assertEqual(payload["updated_count"], 1)
+        self.assertEqual(payload["skipped_count"], 1)
+
+    def test_article_processing_retry_batch_filtered_mode_uses_full_filtered_result_set(self) -> None:
+        self.assertIsNotNone(create_article_processing_run)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            matching_document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-1:attachment-1:hash-1",
+                source_name="WSJ",
+            )
+            other_document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-2:attachment-1:hash-2",
+                source_name="FT",
+            )
+            matching_article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=matching_document_key,
+                publication_date="2026-04-22",
+                title="Matching retry article",
+                body_suffix="Matching body.",
+                translated_title_zh="匹配重试文章",
+                summary_zh="匹配摘要",
+                translated_body_zh="匹配正文。",
+                tags=["Retry", "Filter", "Ops"],
+            )
+            other_article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=other_document_key,
+                publication_date="2026-04-22",
+                title="Other article",
+                body_suffix="Other body.",
+                translated_title_zh="其他文章",
+                summary_zh="其他摘要",
+                translated_body_zh="其他正文。",
+                tags=["Retry", "Filter", "Ops"],
+            )
+            matching_article_key = self._get_article_key(
+                database_path=database_path,
+                article_id=matching_article_id,
+            )
+            other_article_key = self._get_article_key(
+                database_path=database_path,
+                article_id=other_article_id,
+            )
+            create_article_processing_run(
+                database_url=database_url,
+                article_id=matching_article_id,
+            )
+            create_article_processing_run(
+                database_url=database_url,
+                article_id=other_article_id,
+            )
+            self._update_article_processing_run(
+                database_path=database_path,
+                article_key=matching_article_key,
+                status="failed_retryable",
+                current_step="enrich",
+                last_error_message="summary timeout",
+            )
+            self._update_article_processing_run(
+                database_path=database_path,
+                article_key=other_article_key,
+                status="failed_retryable",
+                current_step="translate",
+                last_error_message="different error",
+            )
+
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path="/api/article-processing/retry-batch",
+                method="POST",
+                body=json.dumps(
+                    {
+                        "mode": "filtered",
+                        "filters": {
+                            "status": "failed_retryable",
+                            "source": "WSJ",
+                            "step": "enrich",
+                            "error_message": "summary timeout",
+                        },
+                    }
+                ).encode("utf-8"),
+                content_type="application/json",
+            )
+
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(status, "200 OK")
+        self.assertGreaterEqual(payload["updated_count"], 1)
 
     def test_api_document_processing_detail_endpoint_includes_visible_articles(self) -> None:
         self.assertIsNotNone(create_parse_run)
@@ -1487,6 +1838,40 @@ class WebHealthEndpointTests(unittest.TestCase):
         finally:
             connection.close()
 
+    def _update_article_processing_run(
+        self,
+        *,
+        database_path: pathlib.Path,
+        article_key: str,
+        status: str,
+        current_step: str,
+        last_error_message: str | None,
+    ) -> None:
+        import sqlite3
+
+        connection = sqlite3.connect(database_path)
+        try:
+            connection.execute(
+                """
+                UPDATE article_processing_runs
+                SET
+                    status = ?,
+                    current_step = ?,
+                    last_error_message = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE article_key = ?
+                """,
+                (
+                    status,
+                    current_step,
+                    last_error_message,
+                    article_key,
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
     def _get_article_key(
         self,
         *,
@@ -1634,7 +2019,15 @@ class WebHealthEndpointTests(unittest.TestCase):
         return article.article_id
 
 
-def _perform_wsgi_request(app, *, method: str = "GET", path: str, query_string: str = "") -> tuple[str, dict[str, str], bytes]:
+def _perform_wsgi_request(
+    app,
+    *,
+    method: str = "GET",
+    path: str,
+    query_string: str = "",
+    body: bytes = b"",
+    content_type: str | None = None,
+) -> tuple[str, dict[str, str], bytes]:
     captured_status = ""
     captured_headers: list[tuple[str, str]] = []
 
@@ -1647,15 +2040,17 @@ def _perform_wsgi_request(app, *, method: str = "GET", path: str, query_string: 
         captured_status = status
         captured_headers = headers
 
-    response_iterable = app(
-        {
-            "REQUEST_METHOD": method,
-            "PATH_INFO": path,
-            "QUERY_STRING": query_string,
-            "wsgi.input": None,
-        },
-        start_response,
-    )
+    environ = {
+        "REQUEST_METHOD": method,
+        "PATH_INFO": path,
+        "QUERY_STRING": query_string,
+        "wsgi.input": io.BytesIO(body),
+        "CONTENT_LENGTH": str(len(body)),
+    }
+    if content_type is not None:
+        environ["CONTENT_TYPE"] = content_type
+
+    response_iterable = app(environ, start_response)
     body = b"".join(response_iterable)
     return captured_status, dict(captured_headers), body
 

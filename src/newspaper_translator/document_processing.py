@@ -79,6 +79,13 @@ class ArticleProcessingRun:
     updated_at: str
 
 
+@dataclass(frozen=True)
+class BatchRetrySummary:
+    matched_count: int
+    updated_count: int
+    skipped_count: int
+
+
 def create_scheduler_run(*, database_url: str, trigger_type: str) -> SchedulerRun:
     scheduler_run_id = str(uuid.uuid4())
     connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
@@ -943,6 +950,119 @@ def request_manual_article_retry(
         database_url=database_url,
         article_key=article_key,
     )
+
+
+def retry_article_processing_runs(
+    *,
+    database_url: str,
+    article_keys: list[str] | None = None,
+    status: str | None = None,
+    source: str | None = None,
+    publication_date_from: str | None = None,
+    publication_date_to: str | None = None,
+    step: str | None = None,
+    error_message: str | None = None,
+) -> BatchRetrySummary:
+    matched_rows = _list_article_processing_runs_for_retry(
+        database_url=database_url,
+        article_keys=article_keys,
+        status=status,
+        source=source,
+        publication_date_from=publication_date_from,
+        publication_date_to=publication_date_to,
+        step=step,
+        error_message=error_message,
+    )
+    matched_count = len(matched_rows)
+    retryable_article_keys = [
+        article_key
+        for article_key, run_status in matched_rows
+        if run_status == "failed_retryable"
+    ]
+    if retryable_article_keys:
+        connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+        try:
+            placeholders = ", ".join("?" for _ in retryable_article_keys)
+            connection.execute(
+                f"""
+                UPDATE article_processing_runs
+                SET
+                    status = 'manual_retry_requested',
+                    locked_by = NULL,
+                    lock_expires_at = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE article_key IN ({placeholders})
+                """,
+                tuple(retryable_article_keys),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    updated_count = len(retryable_article_keys)
+    return BatchRetrySummary(
+        matched_count=matched_count,
+        updated_count=updated_count,
+        skipped_count=matched_count - updated_count,
+    )
+
+
+def _list_article_processing_runs_for_retry(
+    *,
+    database_url: str,
+    article_keys: list[str] | None = None,
+    status: str | None = None,
+    source: str | None = None,
+    publication_date_from: str | None = None,
+    publication_date_to: str | None = None,
+    step: str | None = None,
+    error_message: str | None = None,
+) -> list[tuple[str, str]]:
+    clauses: list[str] = []
+    params: list[object] = []
+    if article_keys is not None:
+        if not article_keys:
+            return []
+        placeholders = ", ".join("?" for _ in article_keys)
+        clauses.append(f"r.article_key IN ({placeholders})")
+        params.extend(article_keys)
+    if status:
+        clauses.append("r.status = ?")
+        params.append(status)
+    if source:
+        clauses.append("d.source_name = ?")
+        params.append(source)
+    if publication_date_from:
+        clauses.append("a.publication_date >= ?")
+        params.append(publication_date_from)
+    if publication_date_to:
+        clauses.append("a.publication_date <= ?")
+        params.append(publication_date_to)
+    if step:
+        clauses.append("r.current_step = ?")
+        params.append(step)
+    if error_message:
+        clauses.append("r.last_error_message = ?")
+        params.append(error_message)
+
+    query = """
+    SELECT r.article_key, r.status
+    FROM article_processing_runs r
+    JOIN final_articles a
+        ON a.article_id = r.article_id
+    JOIN documents d
+        ON d.document_key = a.document_key
+    """
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    query += " ORDER BY r.updated_at DESC, r.created_at DESC, r.rowid DESC"
+
+    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+    try:
+        rows = connection.execute(query, tuple(params)).fetchall()
+    finally:
+        connection.close()
+    return [(row[0], row[1]) for row in rows]
 
 
 def succeed_document_processing_run(

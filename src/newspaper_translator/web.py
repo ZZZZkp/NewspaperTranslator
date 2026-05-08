@@ -10,6 +10,7 @@ from wsgiref.simple_server import make_server
 from newspaper_translator.api.queries import (
     get_article_detail_view,
     get_article_processing_detail_view,
+    get_article_processing_filter_options_view,
     get_document_processing_detail_view,
     get_filter_options_view,
     get_overview_view,
@@ -21,6 +22,7 @@ from newspaper_translator.document_processing import (
     list_document_processing_runs,
     request_manual_article_retry,
     request_manual_document_retry,
+    retry_article_processing_runs,
 )
 from newspaper_translator.gmail import import_from_gmail
 from newspaper_translator.import_audit import (
@@ -123,16 +125,21 @@ def create_app(env: Mapping[str, str]):
             )
 
         if path == "/api/articles":
+            articles, pagination = list_article_card_views(
+                database_url=database_url,
+                source=_query_value(query, "source"),
+                tag=_query_value(query, "tag"),
+                publication_date_from=_query_value(query, "publication_date_from"),
+                publication_date_to=_query_value(query, "publication_date_to"),
+                reading_status=_query_value(query, "reading_status"),
+                processing_status=_query_value(query, "processing_status"),
+                page=_query_int(query, "page", default=1),
+                page_size=_query_int(query, "page_size", default=20),
+                include_pagination=True,
+            )
             payload = {
-                "articles": _to_jsonable(
-                    list_article_card_views(
-                        database_url=database_url,
-                        source=_query_value(query, "source"),
-                        tag=_query_value(query, "tag"),
-                        publication_date_from=_query_value(query, "publication_date_from"),
-                        publication_date_to=_query_value(query, "publication_date_to"),
-                    )
-                )
+                "articles": _to_jsonable(articles),
+                "pagination": _to_jsonable(pagination),
             }
             return _json_response(start_response, "200 OK", payload)
 
@@ -192,19 +199,61 @@ def create_app(env: Mapping[str, str]):
             return _json_response(start_response, "200 OK", payload)
 
         if path in {"/article-processing", "/api/article-processing"}:
+            runs, pagination = list_article_processing_card_views(
+                database_url=database_url,
+                limit=None,
+                page=_query_int(query, "page", default=1),
+                page_size=_query_int(query, "page_size", default=_query_int(query, "limit", default=50)),
+                status=_query_value(query, "status"),
+                source=_query_value(query, "source"),
+                publication_date_from=_query_value(query, "publication_date_from"),
+                publication_date_to=_query_value(query, "publication_date_to"),
+                step=_query_value(query, "step"),
+                error_message=_query_value(query, "error_message"),
+                include_pagination=True,
+            )
             payload = {
-                "runs": _to_jsonable(
-                    list_article_processing_card_views(
-                        database_url=database_url,
-                        limit=_query_int(query, "limit", default=50),
-                        status=_query_value(query, "status"),
-                        source=_query_value(query, "source"),
-                        publication_date_from=_query_value(query, "publication_date_from"),
-                        publication_date_to=_query_value(query, "publication_date_to"),
-                    )
-                )
+                "runs": _to_jsonable(runs),
+                "pagination": _to_jsonable(pagination),
             }
             return _json_response(start_response, "200 OK", payload)
+
+        if path == "/api/article-processing/filter-options":
+            payload = _to_jsonable(
+                get_article_processing_filter_options_view(
+                    database_url=database_url,
+                    status=_query_value(query, "status"),
+                    source=_query_value(query, "source"),
+                    publication_date_from=_query_value(query, "publication_date_from"),
+                    publication_date_to=_query_value(query, "publication_date_to"),
+                    step=_query_value(query, "step"),
+                )
+            )
+            return _json_response(start_response, "200 OK", payload)
+
+        if path == "/api/article-processing/retry-batch":
+            request = _read_json_request(environ)
+            mode = request.get("mode")
+            filters = request.get("filters", {})
+            article_keys = request.get("article_keys")
+            if not isinstance(filters, dict):
+                filters = {}
+            if not isinstance(article_keys, list):
+                article_keys = None
+            summary = retry_article_processing_runs(
+                database_url=database_url,
+                article_keys=article_keys,
+                status=filters.get("status") if isinstance(filters.get("status"), str) else None,
+                source=filters.get("source") if isinstance(filters.get("source"), str) else None,
+                publication_date_from=filters.get("publication_date_from") if isinstance(filters.get("publication_date_from"), str) else None,
+                publication_date_to=filters.get("publication_date_to") if isinstance(filters.get("publication_date_to"), str) else None,
+                step=filters.get("step") if isinstance(filters.get("step"), str) else None,
+                error_message=filters.get("error_message") if isinstance(filters.get("error_message"), str) else None,
+            ) if mode == "filtered" else retry_article_processing_runs(
+                database_url=database_url,
+                article_keys=article_keys,
+            )
+            return _json_response(start_response, "200 OK", _to_jsonable(summary))
 
         if path.startswith("/document-processing/") or path.startswith("/api/document-processing/"):
             prefix = "/api/document-processing/" if path.startswith("/api/document-processing/") else "/document-processing/"
@@ -301,6 +350,24 @@ def _json_response(start_response, status: str, payload: dict[str, object]):
     ]
     start_response(status, headers)
     return [body]
+
+
+def _read_json_request(environ) -> dict[str, object]:
+    body_stream = environ.get("wsgi.input")
+    if body_stream is None:
+        return {}
+    content_length = environ.get("CONTENT_LENGTH", "")
+    try:
+        body_size = int(content_length) if content_length else 0
+    except ValueError:
+        body_size = 0
+    raw_body = body_stream.read(body_size) if body_size > 0 else b""
+    if not raw_body:
+        return {}
+    payload = json.loads(raw_body.decode("utf-8"))
+    if isinstance(payload, dict):
+        return payload
+    raise ValueError("JSON request body must be an object")
 
 
 def _query_value(query: dict[str, list[str]], key: str) -> str | None:

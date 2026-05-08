@@ -262,15 +262,30 @@ def create_app(env: Mapping[str, str]):
                         "400 Bad Request",
                         {"status": "invalid_filtered_filters"},
                     )
+                for filter_key in (
+                    "status",
+                    "source",
+                    "publication_date_from",
+                    "publication_date_to",
+                    "step",
+                    "error_message",
+                ):
+                    filter_value = filters.get(filter_key)
+                    if filter_value is not None and not isinstance(filter_value, str):
+                        return _json_response(
+                            start_response,
+                            "400 Bad Request",
+                            {"status": "invalid_filtered_filter_value"},
+                        )
                 summary = retry_article_processing_runs(
                     database_url=database_url,
                     article_keys=None,
-                    status=filters.get("status") if isinstance(filters.get("status"), str) else None,
-                    source=filters.get("source") if isinstance(filters.get("source"), str) else None,
-                    publication_date_from=filters.get("publication_date_from") if isinstance(filters.get("publication_date_from"), str) else None,
-                    publication_date_to=filters.get("publication_date_to") if isinstance(filters.get("publication_date_to"), str) else None,
-                    step=filters.get("step") if isinstance(filters.get("step"), str) else None,
-                    error_message=filters.get("error_message") if isinstance(filters.get("error_message"), str) else None,
+                    status=filters.get("status"),
+                    source=filters.get("source"),
+                    publication_date_from=filters.get("publication_date_from"),
+                    publication_date_to=filters.get("publication_date_to"),
+                    step=filters.get("step"),
+                    error_message=filters.get("error_message"),
                 )
             else:
                 if (

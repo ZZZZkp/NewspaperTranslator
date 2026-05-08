@@ -1388,6 +1388,60 @@ class WebApiEndpointTests(unittest.TestCase):
                 "failed_retryable",
             )
 
+    def test_article_processing_retry_batch_rejects_non_string_filtered_filter_values(self) -> None:
+        self.assertIsNotNone(create_article_processing_run)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            article_key = self._create_failed_retryable_article_processing_run(
+                database_path=database_path,
+                database_url=database_url,
+                document_key="message-1:attachment-1:hash-1",
+                title="Filtered member validation article",
+            )
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            for filter_key in (
+                "status",
+                "source",
+                "publication_date_from",
+                "publication_date_to",
+                "step",
+                "error_message",
+            ):
+                with self.subTest(filter_key=filter_key):
+                    status, _, body = _perform_wsgi_request(
+                        app,
+                        path="/api/article-processing/retry-batch",
+                        method="POST",
+                        body=json.dumps(
+                            {
+                                "mode": "filtered",
+                                "filters": {
+                                    filter_key: ["bad"],
+                                },
+                            }
+                        ).encode("utf-8"),
+                        content_type="application/json",
+                    )
+                    payload = json.loads(body.decode("utf-8"))
+
+                    self.assertEqual(status, "400 Bad Request")
+                    self.assertEqual(payload["status"], "invalid_filtered_filter_value")
+                    self.assertEqual(
+                        self._get_article_processing_status(database_path=database_path, article_key=article_key),
+                        "failed_retryable",
+                    )
+
     def test_api_document_processing_detail_endpoint_includes_visible_articles(self) -> None:
         self.assertIsNotNone(create_parse_run)
         self.assertIsNotNone(create_article_enrichment_run)

@@ -1,6 +1,6 @@
 # Reading And Article Processing Pagination Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Add server-backed pagination to the reading list and article-processing list, add dynamic stage-to-error filtering on article processing, and add article-processing batch retry without changing the current static frontend architecture.
 
@@ -16,7 +16,7 @@
 - Modify: `src/newspaper_translator/api/queries.py`
 - Test: `tests/test_api_queries.py`
 
-- [ ] **Step 1: Write failing query-layer tests for reading pagination and new reading filters**
+- [x] **Step 1: Write failing query-layer tests for reading pagination and new reading filters**
 
 ```python
 def test_article_card_views_support_pagination_reading_status_and_processing_status(self) -> None:
@@ -53,7 +53,7 @@ def test_article_card_views_support_pagination_reading_status_and_processing_sta
     self.assertEqual(page_one[0].article_id, article_partial.article_id)
 ```
 
-- [ ] **Step 2: Run the focused query test and verify it fails**
+- [x] **Step 2: Run the focused query test and verify it fails**
 
 Run:
 
@@ -63,7 +63,7 @@ python -m unittest tests.test_api_queries.ApiQueryViewTests.test_article_card_vi
 
 Expected: FAIL because `list_article_card_views()` does not yet accept `page`, `page_size`, or `processing_status`, and it does not return pagination metadata.
 
-- [ ] **Step 3: Write failing query-layer tests for article-processing pagination and dynamic filter options**
+- [x] **Step 3: Write failing query-layer tests for article-processing pagination and dynamic filter options**
 
 ```python
 def test_article_processing_card_views_support_pagination_step_and_error_message(self) -> None:
@@ -112,7 +112,7 @@ def test_article_processing_filter_options_follow_active_filters(self) -> None:
     self.assertEqual(options.error_messages, ["summary timeout"])
 ```
 
-- [ ] **Step 4: Run the focused article-processing query tests and verify they fail**
+- [x] **Step 4: Run the focused article-processing query tests and verify they fail**
 
 Run:
 
@@ -124,7 +124,7 @@ python -m unittest \
 
 Expected: FAIL because the query layer does not yet support `page`, `page_size`, `step`, `error_message`, or dynamic filter-option shaping.
 
-- [ ] **Step 5: Implement minimal query-layer changes**
+- [x] **Step 5: Implement minimal query-layer changes**
 
 ```python
 @dataclass(frozen=True)
@@ -177,7 +177,7 @@ def get_article_processing_filter_options_view(
     ...
 ```
 
-- [ ] **Step 6: Run the focused query tests and verify they pass**
+- [x] **Step 6: Run the focused query tests and verify they pass**
 
 Run:
 
@@ -190,7 +190,7 @@ python -m unittest \
 
 Expected: PASS
 
-- [ ] **Step 7: Commit the query-layer slice**
+- [x] **Step 7: Commit the query-layer slice**
 
 ```bash
 git add src/newspaper_translator/api/queries.py tests/test_api_queries.py
@@ -204,7 +204,7 @@ git commit -m "feat: add paginated article and processing queries"
 - Modify: `src/newspaper_translator/document_processing.py`
 - Test: `tests/test_web.py`
 
-- [ ] **Step 1: Write failing web tests for paginated list responses and filter-options endpoint**
+- [x] **Step 1: Write failing web tests for paginated list responses and filter-options endpoint**
 
 ```python
 def test_api_articles_endpoint_returns_articles_and_pagination(self) -> None:
@@ -235,7 +235,7 @@ def test_article_processing_filter_options_endpoint_returns_dynamic_values(self)
     self.assertEqual(payload["error_messages"], ["summary timeout"])
 ```
 
-- [ ] **Step 2: Run the focused web tests and verify they fail**
+- [x] **Step 2: Run the focused web tests and verify they fail**
 
 Run:
 
@@ -247,7 +247,7 @@ python -m unittest \
 
 Expected: FAIL because the endpoints do not yet emit `pagination` and `/api/article-processing/filter-options` does not exist.
 
-- [ ] **Step 3: Write failing web tests for article-processing batch retry**
+- [x] **Step 3: Write failing web tests for article-processing batch retry**
 
 ```python
 def test_article_processing_retry_batch_selection_mode_updates_only_retryable_rows(self) -> None:
@@ -296,7 +296,7 @@ def test_article_processing_retry_batch_filtered_mode_uses_full_filtered_result_
     self.assertGreaterEqual(payload["updated_count"], 1)
 ```
 
-- [ ] **Step 4: Run the batch-retry web tests and verify they fail**
+- [x] **Step 4: Run the batch-retry web tests and verify they fail**
 
 Run:
 
@@ -308,7 +308,7 @@ python -m unittest \
 
 Expected: FAIL because `/api/article-processing/retry-batch` does not exist and there is no batch retry helper yet.
 
-- [ ] **Step 5: Implement minimal WSGI and retry-service changes**
+- [x] **Step 5: Implement minimal WSGI and retry-service changes**
 
 ```python
 def retry_article_processing_runs(
@@ -344,7 +344,7 @@ if path == "/api/article-processing/retry-batch":
     return _json_response(start_response, "200 OK", _to_jsonable(summary))
 ```
 
-- [ ] **Step 6: Run the focused web tests and verify they pass**
+- [x] **Step 6: Run the focused web tests and verify they pass**
 
 Run:
 
@@ -358,7 +358,7 @@ python -m unittest \
 
 Expected: PASS
 
-- [ ] **Step 7: Commit the API-surface slice**
+- [x] **Step 7: Commit the API-surface slice**
 
 ```bash
 git add src/newspaper_translator/web.py src/newspaper_translator/document_processing.py tests/test_web.py
@@ -372,7 +372,7 @@ git commit -m "feat: add paginated article APIs and batch retry endpoint"
 - Modify: `frontend/styles.css`
 - Test: `tests/test_frontend_static.py`
 
-- [ ] **Step 1: Write failing static tests for new reading and article-processing controls**
+- [x] **Step 1: Write failing static tests for new reading and article-processing controls**
 
 ```python
 def test_frontend_index_defines_pagination_and_batch_retry_controls(self) -> None:
@@ -388,7 +388,7 @@ def test_frontend_index_defines_pagination_and_batch_retry_controls(self) -> Non
     self.assertIn('id="article-processing-retry-filtered-button"', index_text)
 ```
 
-- [ ] **Step 2: Run the static test and verify it fails**
+- [x] **Step 2: Run the static test and verify it fails**
 
 Run:
 
@@ -398,7 +398,7 @@ python -m unittest tests.test_frontend_static.FrontendStaticTests.test_frontend_
 
 Expected: FAIL because those IDs do not yet exist.
 
-- [ ] **Step 3: Add the minimal HTML and CSS hooks**
+- [x] **Step 3: Add the minimal HTML and CSS hooks**
 
 ```html
 <label>
@@ -443,7 +443,7 @@ Expected: FAIL because those IDs do not yet exist.
 }
 ```
 
-- [ ] **Step 4: Run the static tests and verify they pass**
+- [x] **Step 4: Run the static tests and verify they pass**
 
 Run:
 
@@ -453,7 +453,7 @@ python -m unittest tests.test_frontend_static -v
 
 Expected: PASS
 
-- [ ] **Step 5: Commit the markup and style slice**
+- [x] **Step 5: Commit the markup and style slice**
 
 ```bash
 git add frontend/index.html frontend/styles.css tests/test_frontend_static.py
@@ -466,7 +466,7 @@ git commit -m "feat: add frontend pagination and batch action controls"
 - Modify: `frontend/app.js`
 - Test: `tests/test_frontend_static.py`
 
-- [ ] **Step 1: Write failing static assertions for the new frontend wiring**
+- [x] **Step 1: Write failing static assertions for the new frontend wiring**
 
 ```python
 def test_frontend_app_requests_pagination_filter_and_batch_retry_surfaces(self) -> None:
@@ -482,7 +482,7 @@ def test_frontend_app_requests_pagination_filter_and_batch_retry_surfaces(self) 
     self.assertIn("URLSearchParams", app_text)
 ```
 
-- [ ] **Step 2: Run the focused static assertion and verify it fails**
+- [x] **Step 2: Run the focused static assertion and verify it fails**
 
 Run:
 
@@ -492,7 +492,7 @@ python -m unittest tests.test_frontend_static.FrontendStaticTests.test_frontend_
 
 Expected: FAIL because the frontend does not yet call the new endpoints or carry page state.
 
-- [ ] **Step 3: Implement the route-state and fetch wiring**
+- [x] **Step 3: Implement the route-state and fetch wiring**
 
 ```javascript
 function getRouteQueryParams() {
@@ -526,7 +526,7 @@ async function requestBatchArticleRetry(body) {
 }
 ```
 
-- [ ] **Step 4: Run all frontend static tests and verify they pass**
+- [x] **Step 4: Run all frontend static tests and verify they pass**
 
 Run:
 
@@ -536,7 +536,7 @@ python -m unittest tests.test_frontend_static -v
 
 Expected: PASS
 
-- [ ] **Step 5: Commit the frontend wiring slice**
+- [x] **Step 5: Commit the frontend wiring slice**
 
 ```bash
 git add frontend/app.js tests/test_frontend_static.py
@@ -551,7 +551,7 @@ git commit -m "feat: wire frontend pagination and dynamic processing filters"
 - Modify: `frontend/styles.css`
 - Test: `tests/test_frontend_static.py`
 
-- [ ] **Step 1: Add failing static coverage for selection and batch-action rendering hooks**
+- [x] **Step 1: Add failing static coverage for selection and batch-action rendering hooks**
 
 ```python
 def test_frontend_index_and_app_define_processing_selection_flow(self) -> None:
@@ -564,7 +564,7 @@ def test_frontend_index_and_app_define_processing_selection_flow(self) -> None:
     self.assertIn("articleProcessingRetryFilteredButton", app_text)
 ```
 
-- [ ] **Step 2: Run the focused static test and verify it fails**
+- [x] **Step 2: Run the focused static test and verify it fails**
 
 Run:
 
@@ -574,7 +574,7 @@ python -m unittest tests.test_frontend_static.FrontendStaticTests.test_frontend_
 
 Expected: FAIL because the selection state and batch-action hooks do not yet exist.
 
-- [ ] **Step 3: Implement minimal selection-state behavior**
+- [x] **Step 3: Implement minimal selection-state behavior**
 
 ```javascript
 const selectedArticleProcessingKeys = new Set();
@@ -609,7 +609,7 @@ async function retryFilteredArticleProcessingRuns() {
 }
 ```
 
-- [ ] **Step 4: Run the full targeted test suite and verify it passes**
+- [x] **Step 4: Run the full targeted test suite and verify it passes**
 
 Run:
 
@@ -622,7 +622,7 @@ python -m unittest \
 
 Expected: PASS
 
-- [ ] **Step 5: Commit the batch-selection slice**
+- [x] **Step 5: Commit the batch-selection slice**
 
 ```bash
 git add frontend/app.js frontend/index.html frontend/styles.css tests/test_frontend_static.py
@@ -635,7 +635,7 @@ git commit -m "feat: add article processing batch retry controls"
 - Modify: `docs/superpowers/specs/2026-05-08-reading-and-article-processing-pagination-design.md` only if implementation reveals a spec mismatch
 - Verify: `docs/superpowers/plans/2026-05-08-reading-and-article-processing-pagination-implementation-plan.md`
 
-- [ ] **Step 1: Run the full relevant regression suite**
+- [x] **Step 1: Run the full relevant regression suite**
 
 Run:
 
@@ -648,7 +648,7 @@ python -m unittest \
 
 Expected: PASS with new pagination, filter-option, and batch-retry coverage included.
 
-- [ ] **Step 2: Manually verify the implemented UI flow in the browser**
+- [x] **Step 2: Manually verify the implemented UI flow in the browser**
 
 Run:
 
@@ -669,7 +669,7 @@ Expected:
 - article-processing list pages correctly
 - retry selected and retry filtered actions both refresh the list and status text
 
-- [ ] **Step 3: Check for plan/spec drift and fix only if needed**
+- [x] **Step 3: Check for plan/spec drift and fix only if needed**
 
 ```text
 Compare the implementation against:
@@ -679,7 +679,7 @@ Compare the implementation against:
 
 Expected: No drift. If one small mismatch is discovered, update the spec wording in the same commit as the implementation clarification.
 
-- [ ] **Step 4: Create the final integration commit**
+- [x] **Step 4: Create the final integration commit**
 
 ```bash
 git add src/newspaper_translator/api/queries.py \

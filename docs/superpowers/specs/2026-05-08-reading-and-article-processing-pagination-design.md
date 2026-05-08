@@ -405,6 +405,15 @@ Tests should cover:
   - selection checkboxes
   - batch action bar wiring
 
+## Implementation Notes
+
+*Recorded 2026-05-08 after implementation.*
+
+**Minor deviations from spec accepted during implementation:**
+
+- `error_message` filter shows placeholder text "先选择阶段" when no stage is selected instead of being HTML-`disabled`. Functional behavior is equivalent.
+- The batch action bar does not have a standalone "clear selection" button. Selection is cleared automatically after each batch retry action, which covers the primary operator workflow without adding a redundant control.
+
 ## Rollout Notes
 
 The implementation should default both paged lists to a modest page size such as 20. The exact default can be finalized during implementation, but both surfaces should use the same default unless a strong operator workflow reason emerges to diverge.

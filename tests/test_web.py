@@ -1016,25 +1016,41 @@ class WebApiEndpointTests(unittest.TestCase):
             database_path = pathlib.Path(temp_dir) / "app.db"
             database_url = f"sqlite:///{database_path}"
             run_pending_migrations(database_url)
-            matching_document_key = self._insert_document(
+            first_matching_document_key = self._insert_document(
                 database_path=database_path,
                 document_key="message-1:attachment-1:hash-1",
                 source_name="WSJ",
             )
-            other_document_key = self._insert_document(
+            second_matching_document_key = self._insert_document(
                 database_path=database_path,
                 document_key="message-2:attachment-1:hash-2",
+                source_name="WSJ",
+            )
+            other_document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-3:attachment-1:hash-3",
                 source_name="FT",
             )
-            matching_article_id = self._insert_succeeded_article_with_enrichment(
+            first_matching_article_id = self._insert_succeeded_article_with_enrichment(
                 database_url=database_url,
-                document_key=matching_document_key,
+                document_key=first_matching_document_key,
                 publication_date="2026-04-22",
-                title="Matching retry article",
-                body_suffix="Matching body.",
-                translated_title_zh="匹配重试文章",
-                summary_zh="匹配摘要",
-                translated_body_zh="匹配正文。",
+                title="First matching retry article",
+                body_suffix="First matching body.",
+                translated_title_zh="第一篇匹配重试文章",
+                summary_zh="第一篇匹配摘要",
+                translated_body_zh="第一篇匹配正文。",
+                tags=["Retry", "Filter", "Ops"],
+            )
+            second_matching_article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=second_matching_document_key,
+                publication_date="2026-04-22",
+                title="Second matching retry article",
+                body_suffix="Second matching body.",
+                translated_title_zh="第二篇匹配重试文章",
+                summary_zh="第二篇匹配摘要",
+                translated_body_zh="第二篇匹配正文。",
                 tags=["Retry", "Filter", "Ops"],
             )
             other_article_id = self._insert_succeeded_article_with_enrichment(
@@ -1048,9 +1064,13 @@ class WebApiEndpointTests(unittest.TestCase):
                 translated_body_zh="其他正文。",
                 tags=["Retry", "Filter", "Ops"],
             )
-            matching_article_key = self._get_article_key(
+            first_matching_article_key = self._get_article_key(
                 database_path=database_path,
-                article_id=matching_article_id,
+                article_id=first_matching_article_id,
+            )
+            second_matching_article_key = self._get_article_key(
+                database_path=database_path,
+                article_id=second_matching_article_id,
             )
             other_article_key = self._get_article_key(
                 database_path=database_path,
@@ -1058,7 +1078,11 @@ class WebApiEndpointTests(unittest.TestCase):
             )
             create_article_processing_run(
                 database_url=database_url,
-                article_id=matching_article_id,
+                article_id=first_matching_article_id,
+            )
+            create_article_processing_run(
+                database_url=database_url,
+                article_id=second_matching_article_id,
             )
             create_article_processing_run(
                 database_url=database_url,
@@ -1066,7 +1090,14 @@ class WebApiEndpointTests(unittest.TestCase):
             )
             self._update_article_processing_run(
                 database_path=database_path,
-                article_key=matching_article_key,
+                article_key=first_matching_article_key,
+                status="failed_retryable",
+                current_step="enrich",
+                last_error_message="summary timeout",
+            )
+            self._update_article_processing_run(
+                database_path=database_path,
+                article_key=second_matching_article_key,
                 status="failed_retryable",
                 current_step="enrich",
                 last_error_message="summary timeout",
@@ -1095,6 +1126,7 @@ class WebApiEndpointTests(unittest.TestCase):
                 body=json.dumps(
                     {
                         "mode": "filtered",
+                        "article_keys": [first_matching_article_key],
                         "filters": {
                             "status": "failed_retryable",
                             "source": "WSJ",
@@ -1105,10 +1137,32 @@ class WebApiEndpointTests(unittest.TestCase):
                 ).encode("utf-8"),
                 content_type="application/json",
             )
-
-        payload = json.loads(body.decode("utf-8"))
-        self.assertEqual(status, "200 OK")
-        self.assertGreaterEqual(payload["updated_count"], 1)
+            payload = json.loads(body.decode("utf-8"))
+            self.assertEqual(status, "200 OK")
+            self.assertEqual(payload["matched_count"], 2)
+            self.assertEqual(payload["updated_count"], 2)
+            self.assertEqual(payload["skipped_count"], 0)
+            self.assertEqual(
+                self._get_article_processing_status(
+                    database_path=database_path,
+                    article_key=first_matching_article_key,
+                ),
+                "manual_retry_requested",
+            )
+            self.assertEqual(
+                self._get_article_processing_status(
+                    database_path=database_path,
+                    article_key=second_matching_article_key,
+                ),
+                "manual_retry_requested",
+            )
+            self.assertEqual(
+                self._get_article_processing_status(
+                    database_path=database_path,
+                    article_key=other_article_key,
+                ),
+                "failed_retryable",
+            )
 
     def test_api_document_processing_detail_endpoint_includes_visible_articles(self) -> None:
         self.assertIsNotNone(create_parse_run)
@@ -1960,6 +2014,28 @@ class WebApiEndpointTests(unittest.TestCase):
                 WHERE article_id = ?
                 """,
                 (article_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        return row[0]
+
+    def _get_article_processing_status(
+        self,
+        *,
+        database_path: pathlib.Path,
+        article_key: str,
+    ) -> str:
+        import sqlite3
+
+        connection = sqlite3.connect(database_path)
+        try:
+            row = connection.execute(
+                """
+                SELECT status
+                FROM article_processing_runs
+                WHERE article_key = ?
+                """,
+                (article_key,),
             ).fetchone()
         finally:
             connection.close()

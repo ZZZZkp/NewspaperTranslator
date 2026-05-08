@@ -963,9 +963,20 @@ def retry_article_processing_runs(
     step: str | None = None,
     error_message: str | None = None,
 ) -> BatchRetrySummary:
+    has_filter_scope = any(
+        value is not None
+        for value in (
+            status,
+            source,
+            publication_date_from,
+            publication_date_to,
+            step,
+            error_message,
+        )
+    )
     matched_rows = _list_article_processing_runs_for_retry(
         database_url=database_url,
-        article_keys=article_keys,
+        article_keys=None if has_filter_scope else article_keys,
         status=status,
         source=source,
         publication_date_from=publication_date_from,

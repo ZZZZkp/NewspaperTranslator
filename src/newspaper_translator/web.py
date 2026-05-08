@@ -240,19 +240,22 @@ def create_app(env: Mapping[str, str]):
                 filters = {}
             if not isinstance(article_keys, list):
                 article_keys = None
-            summary = retry_article_processing_runs(
-                database_url=database_url,
-                article_keys=article_keys,
-                status=filters.get("status") if isinstance(filters.get("status"), str) else None,
-                source=filters.get("source") if isinstance(filters.get("source"), str) else None,
-                publication_date_from=filters.get("publication_date_from") if isinstance(filters.get("publication_date_from"), str) else None,
-                publication_date_to=filters.get("publication_date_to") if isinstance(filters.get("publication_date_to"), str) else None,
-                step=filters.get("step") if isinstance(filters.get("step"), str) else None,
-                error_message=filters.get("error_message") if isinstance(filters.get("error_message"), str) else None,
-            ) if mode == "filtered" else retry_article_processing_runs(
-                database_url=database_url,
-                article_keys=article_keys,
-            )
+            if mode == "filtered":
+                summary = retry_article_processing_runs(
+                    database_url=database_url,
+                    article_keys=None,
+                    status=filters.get("status") if isinstance(filters.get("status"), str) else None,
+                    source=filters.get("source") if isinstance(filters.get("source"), str) else None,
+                    publication_date_from=filters.get("publication_date_from") if isinstance(filters.get("publication_date_from"), str) else None,
+                    publication_date_to=filters.get("publication_date_to") if isinstance(filters.get("publication_date_to"), str) else None,
+                    step=filters.get("step") if isinstance(filters.get("step"), str) else None,
+                    error_message=filters.get("error_message") if isinstance(filters.get("error_message"), str) else None,
+                )
+            else:
+                summary = retry_article_processing_runs(
+                    database_url=database_url,
+                    article_keys=article_keys,
+                )
             return _json_response(start_response, "200 OK", _to_jsonable(summary))
 
         if path.startswith("/document-processing/") or path.startswith("/api/document-processing/"):

@@ -97,6 +97,7 @@ let currentArticleProcessingRun = null;
 let currentAllArticlesPage = 1;
 let currentArticleProcessingPage = 1;
 const page_size = 20;
+const selectedArticleProcessingKeys = new Set();
 
 async function fetchJson(path, options = {}) {
   const response = await fetch(path, {
@@ -276,6 +277,56 @@ async function requestBatchArticleRetry(body) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+function getCurrentArticleProcessingFilters() {
+  const filters = {};
+  if (articleProcessingStatusFilter.value) filters.status = articleProcessingStatusFilter.value;
+  if (articleProcessingSourceFilter.value) filters.source = articleProcessingSourceFilter.value;
+  if (articleProcessingDateFromFilter.value) filters.publication_date_from = articleProcessingDateFromFilter.value;
+  if (articleProcessingDateToFilter.value) filters.publication_date_to = articleProcessingDateToFilter.value;
+  if (articleProcessingStepFilter.value) filters.step = articleProcessingStepFilter.value;
+  if (articleProcessingErrorFilter.value) filters.error_message = articleProcessingErrorFilter.value;
+  return filters;
+}
+
+function toggleArticleProcessingSelection(articleKey, checked) {
+  if (checked) {
+    selectedArticleProcessingKeys.add(articleKey);
+  } else {
+    selectedArticleProcessingKeys.delete(articleKey);
+  }
+  renderArticleProcessingBatchBar();
+}
+
+function renderArticleProcessingBatchBar() {
+  const count = selectedArticleProcessingKeys.size;
+  if (count === 0) {
+    articleProcessingBatchBar.classList.add("hidden");
+    return;
+  }
+  articleProcessingBatchBar.classList.remove("hidden");
+  articleProcessingSelectionCount.textContent = `已选 ${count} 条`;
+}
+
+async function retrySelectedArticleProcessingRuns() {
+  const payload = await requestBatchArticleRetry({
+    mode: "selection",
+    article_keys: Array.from(selectedArticleProcessingKeys),
+  });
+  selectedArticleProcessingKeys.clear();
+  await loadArticleProcessing();
+  setStatus(`批量重试完成：更新 ${payload.updated_count} 条，跳过 ${payload.skipped_count} 条。`);
+}
+
+async function retryFilteredArticleProcessingRuns() {
+  const payload = await requestBatchArticleRetry({
+    mode: "filtered",
+    filters: getCurrentArticleProcessingFilters(),
+  });
+  selectedArticleProcessingKeys.clear();
+  await loadArticleProcessing();
+  setStatus(`筛选结果批量重试完成：更新 ${payload.updated_count} 条。`);
 }
 
 function renderCards(container, cards, emptyText) {
@@ -988,6 +1039,27 @@ articleProcessingResetFiltersButton.addEventListener("click", async () => {
   } catch (error) {
     console.error(error);
     setStatus("文章处理筛选重置失败。");
+  }
+});
+
+articleProcessingRetrySelectedButton.addEventListener("click", async () => {
+  if (!selectedArticleProcessingKeys.size) {
+    return;
+  }
+  try {
+    await retrySelectedArticleProcessingRuns();
+  } catch (error) {
+    console.error(error);
+    setStatus("批量重试失败，请稍后重试。");
+  }
+});
+
+articleProcessingRetryFilteredButton.addEventListener("click", async () => {
+  try {
+    await retryFilteredArticleProcessingRuns();
+  } catch (error) {
+    console.error(error);
+    setStatus("筛选结果批量重试失败，请稍后重试。");
   }
 });
 

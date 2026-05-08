@@ -1127,6 +1127,79 @@ class ArticleQueryTests(unittest.TestCase):
         self.assertEqual(options.steps, ["enrich", "translate"])
         self.assertEqual(options.error_messages, ["summary timeout"])
 
+    def test_article_processing_card_views_normalize_non_positive_pagination_and_empty_pages(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(list_article_processing_card_views)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            runs, pagination = list_article_processing_card_views(
+                database_url=database_url,
+                page=0,
+                page_size=0,
+                status="failed_retryable",
+                include_pagination=True,
+            )
+
+        self.assertEqual(runs, [])
+        self.assertEqual(pagination.page, 1)
+        self.assertEqual(pagination.page_size, 1)
+        self.assertEqual(pagination.total_count, 0)
+        self.assertEqual(pagination.total_pages, 0)
+
+    def test_article_processing_card_views_limit_overrides_page_size(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(list_article_processing_card_views)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            for index in range(3):
+                document_key = self._insert_document(
+                    database_path,
+                    original_filename=f"wsj-2026-04-22-{index}.pdf",
+                    source_name="WSJ",
+                    document_key=f"message-{index + 1}:attachment-1:hash-{index + 1}",
+                )
+                article_id = self._insert_succeeded_article_with_enrichment(
+                    database_url=database_url,
+                    document_key=document_key,
+                    publication_date="2026-04-22",
+                    title=f"Article {index}",
+                    body_suffix=f"Article {index} body.",
+                    translated_title_zh=f"文章{index}",
+                    summary_zh=f"摘要{index}",
+                    translated_body_zh=f"正文{index}。",
+                    tags=["Policy", "Trade", "US"],
+                )
+                self._insert_article_processing_run(
+                    database_path=database_path,
+                    article_key=self._get_article_key(database_path=database_path, article_id=article_id),
+                    article_id=article_id,
+                    status="failed_retryable",
+                    current_step="enrich",
+                    last_error_message="summary timeout",
+                )
+
+            runs, pagination = list_article_processing_card_views(
+                database_url=database_url,
+                page=1,
+                page_size=3,
+                limit=1,
+                status="failed_retryable",
+                include_pagination=True,
+            )
+
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(pagination.page_size, 1)
+        self.assertEqual(pagination.total_count, 3)
+        self.assertEqual(pagination.total_pages, 3)
+
     def test_article_card_views_support_pagination_reading_status_and_processing_status(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
         self.assertIsNotNone(list_article_card_views)
@@ -1229,6 +1302,29 @@ class ArticleQueryTests(unittest.TestCase):
         self.assertEqual(len(page_two), 1)
         self.assertEqual(page_two[0].article_id, article_partial_id)
         self.assertNotEqual(ready_article_id, page_one[0].article_id)
+
+    def test_article_card_views_normalize_non_positive_pagination_and_empty_pages(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(list_article_card_views)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            cards, pagination = list_article_card_views(
+                database_url=database_url,
+                page=0,
+                page_size=0,
+                reading_status="ready",
+                include_pagination=True,
+            )
+
+        self.assertEqual(cards, [])
+        self.assertEqual(pagination.page, 1)
+        self.assertEqual(pagination.page_size, 1)
+        self.assertEqual(pagination.total_count, 0)
+        self.assertEqual(pagination.total_pages, 0)
 
     def test_article_cards_support_source_filter(self) -> None:
         self.assertIsNotNone(run_pending_migrations)

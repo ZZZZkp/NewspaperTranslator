@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import sqlite3
+from typing import Literal, overload
 
 from newspaper_translator.article_content import extract_local_image_paths_and_clean_text
 from newspaper_translator.article_store import (
@@ -182,6 +183,12 @@ class ArticleProcessingCardView:
     current_step: str
     automatic_failure_count: int
     latest_error_summary: str
+
+
+ArticleCardList = list[ArticleCardView]
+ArticleCardPage = tuple[ArticleCardList, PaginationView]
+ArticleProcessingCardList = list[ArticleProcessingCardView]
+ArticleProcessingCardPage = tuple[ArticleProcessingCardList, PaginationView]
 
 
 def _normalize_pagination(*, page: int, page_size: int) -> tuple[int, int]:
@@ -680,6 +687,40 @@ def get_article_processing_detail_view(
     )
 
 
+@overload
+def list_article_processing_card_views(
+    *,
+    database_url: str,
+    page: int = 1,
+    page_size: int = 20,
+    limit: int | None = None,
+    status: str | None = None,
+    source: str | None = None,
+    publication_date_from: str | None = None,
+    publication_date_to: str | None = None,
+    step: str | None = None,
+    error_message: str | None = None,
+    include_pagination: Literal[False] = False,
+) -> ArticleProcessingCardList: ...
+
+
+@overload
+def list_article_processing_card_views(
+    *,
+    database_url: str,
+    page: int = 1,
+    page_size: int = 20,
+    limit: int | None = None,
+    status: str | None = None,
+    source: str | None = None,
+    publication_date_from: str | None = None,
+    publication_date_to: str | None = None,
+    step: str | None = None,
+    error_message: str | None = None,
+    include_pagination: Literal[True],
+) -> ArticleProcessingCardPage: ...
+
+
 def list_article_processing_card_views(
     *,
     database_url: str,
@@ -693,7 +734,18 @@ def list_article_processing_card_views(
     step: str | None = None,
     error_message: str | None = None,
     include_pagination: bool = False,
-) -> list[ArticleProcessingCardView] | tuple[list[ArticleProcessingCardView], PaginationView]:
+) -> ArticleProcessingCardList | ArticleProcessingCardPage:
+    """List article-processing runs.
+
+    Default mode preserves the legacy query-layer contract and returns only the
+    list of rows so existing callers can remain unchanged.
+
+    Set ``include_pagination=True`` to receive ``(items, pagination)``.
+    Pagination normalizes non-positive ``page`` and ``page_size`` to ``1``.
+    When ``limit`` is provided it overrides ``page_size`` for backward
+    compatibility with pre-pagination callers. Empty result sets report
+    ``total_pages == 0``.
+    """
     if limit is not None:
         page_size = limit
     page, page_size = _normalize_pagination(page=page, page_size=page_size)
@@ -838,6 +890,38 @@ def get_article_processing_filter_options_view(
         connection.close()
 
 
+@overload
+def list_article_card_views(
+    *,
+    database_url: str,
+    source: str | None = None,
+    tag: str | None = None,
+    publication_date_from: str | None = None,
+    publication_date_to: str | None = None,
+    reading_status: str | None = None,
+    processing_status: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+    include_pagination: Literal[False] = False,
+) -> ArticleCardList: ...
+
+
+@overload
+def list_article_card_views(
+    *,
+    database_url: str,
+    source: str | None = None,
+    tag: str | None = None,
+    publication_date_from: str | None = None,
+    publication_date_to: str | None = None,
+    reading_status: str | None = None,
+    processing_status: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+    include_pagination: Literal[True],
+) -> ArticleCardPage: ...
+
+
 def list_article_card_views(
     *,
     database_url: str,
@@ -850,7 +934,15 @@ def list_article_card_views(
     page: int = 1,
     page_size: int = 20,
     include_pagination: bool = False,
-) -> list[ArticleCardView] | tuple[list[ArticleCardView], PaginationView]:
+) -> ArticleCardList | ArticleCardPage:
+    """List article cards.
+
+    Default mode returns only the list to preserve existing callers.
+
+    Set ``include_pagination=True`` to receive ``(items, pagination)``.
+    Pagination normalizes non-positive ``page`` and ``page_size`` to ``1``.
+    Empty result sets report ``total_pages == 0``.
+    """
     page, page_size = _normalize_pagination(page=page, page_size=page_size)
     offset = (page - 1) * page_size
     connection = sqlite3.connect(sqlite_path_from_database_url(database_url))

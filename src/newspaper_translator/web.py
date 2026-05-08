@@ -255,11 +255,13 @@ def create_app(env: Mapping[str, str]):
                 )
             filters = request.get("filters", {})
             article_keys = request.get("article_keys")
-            if not isinstance(filters, dict):
-                filters = {}
-            if not isinstance(article_keys, list):
-                article_keys = None
             if mode == "filtered":
+                if not isinstance(filters, dict):
+                    return _json_response(
+                        start_response,
+                        "400 Bad Request",
+                        {"status": "invalid_filtered_filters"},
+                    )
                 summary = retry_article_processing_runs(
                     database_url=database_url,
                     article_keys=None,
@@ -271,6 +273,15 @@ def create_app(env: Mapping[str, str]):
                     error_message=filters.get("error_message") if isinstance(filters.get("error_message"), str) else None,
                 )
             else:
+                if (
+                    not isinstance(article_keys, list)
+                    or any(not isinstance(article_key, str) for article_key in article_keys)
+                ):
+                    return _json_response(
+                        start_response,
+                        "400 Bad Request",
+                        {"status": "invalid_selection_article_keys"},
+                    )
                 summary = retry_article_processing_runs(
                     database_url=database_url,
                     article_keys=article_keys,

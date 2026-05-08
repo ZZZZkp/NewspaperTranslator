@@ -1274,6 +1274,120 @@ class WebApiEndpointTests(unittest.TestCase):
         self.assertEqual(status, "400 Bad Request")
         self.assertEqual(payload["status"], "unsupported_retry_batch_mode")
 
+    def test_article_processing_retry_batch_rejects_selection_with_non_list_article_keys(self) -> None:
+        self.assertIsNotNone(create_article_processing_run)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            article_key = self._create_failed_retryable_article_processing_run(
+                database_path=database_path,
+                database_url=database_url,
+                document_key="message-1:attachment-1:hash-1",
+                title="Selection validation article",
+            )
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path="/api/article-processing/retry-batch",
+                method="POST",
+                body=json.dumps({"mode": "selection", "article_keys": article_key}).encode("utf-8"),
+                content_type="application/json",
+            )
+            payload = json.loads(body.decode("utf-8"))
+
+            self.assertEqual(status, "400 Bad Request")
+            self.assertEqual(payload["status"], "invalid_selection_article_keys")
+            self.assertEqual(
+                self._get_article_processing_status(database_path=database_path, article_key=article_key),
+                "failed_retryable",
+            )
+
+    def test_article_processing_retry_batch_rejects_selection_with_non_string_article_key_item(self) -> None:
+        self.assertIsNotNone(create_article_processing_run)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            article_key = self._create_failed_retryable_article_processing_run(
+                database_path=database_path,
+                database_url=database_url,
+                document_key="message-1:attachment-1:hash-1",
+                title="Selection item validation article",
+            )
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path="/api/article-processing/retry-batch",
+                method="POST",
+                body=json.dumps({"mode": "selection", "article_keys": [article_key, 7]}).encode("utf-8"),
+                content_type="application/json",
+            )
+            payload = json.loads(body.decode("utf-8"))
+
+            self.assertEqual(status, "400 Bad Request")
+            self.assertEqual(payload["status"], "invalid_selection_article_keys")
+            self.assertEqual(
+                self._get_article_processing_status(database_path=database_path, article_key=article_key),
+                "failed_retryable",
+            )
+
+    def test_article_processing_retry_batch_rejects_filtered_with_non_object_filters(self) -> None:
+        self.assertIsNotNone(create_article_processing_run)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            article_key = self._create_failed_retryable_article_processing_run(
+                database_path=database_path,
+                database_url=database_url,
+                document_key="message-1:attachment-1:hash-1",
+                title="Filtered validation article",
+            )
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path="/api/article-processing/retry-batch",
+                method="POST",
+                body=json.dumps({"mode": "filtered", "filters": ["bad"]}).encode("utf-8"),
+                content_type="application/json",
+            )
+            payload = json.loads(body.decode("utf-8"))
+
+            self.assertEqual(status, "400 Bad Request")
+            self.assertEqual(payload["status"], "invalid_filtered_filters")
+            self.assertEqual(
+                self._get_article_processing_status(database_path=database_path, article_key=article_key),
+                "failed_retryable",
+            )
+
     def test_api_document_processing_detail_endpoint_includes_visible_articles(self) -> None:
         self.assertIsNotNone(create_parse_run)
         self.assertIsNotNone(create_article_enrichment_run)
@@ -2150,6 +2264,47 @@ class WebApiEndpointTests(unittest.TestCase):
         finally:
             connection.close()
         return row[0]
+
+    def _create_failed_retryable_article_processing_run(
+        self,
+        *,
+        database_path: pathlib.Path,
+        database_url: str,
+        document_key: str,
+        title: str,
+    ) -> str:
+        self._insert_document(
+            database_path=database_path,
+            document_key=document_key,
+            source_name="WSJ",
+        )
+        article_id = self._insert_succeeded_article_with_enrichment(
+            database_url=database_url,
+            document_key=document_key,
+            publication_date="2026-04-22",
+            title=title,
+            body_suffix=f"{title} body.",
+            translated_title_zh="校验文章",
+            summary_zh="校验摘要",
+            translated_body_zh="校验正文。",
+            tags=["Retry", "Validation", "Ops"],
+        )
+        article_key = self._get_article_key(
+            database_path=database_path,
+            article_id=article_id,
+        )
+        create_article_processing_run(
+            database_url=database_url,
+            article_id=article_id,
+        )
+        self._update_article_processing_run(
+            database_path=database_path,
+            article_key=article_key,
+            status="failed_retryable",
+            current_step="enrich",
+            last_error_message="summary timeout",
+        )
+        return article_key
 
     def _build_parse_result(self, *, title: str, body_suffix: str):
         from newspaper_translator.pdf import (

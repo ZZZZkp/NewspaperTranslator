@@ -48,6 +48,23 @@
                 </select>
               </label>
               <label>
+                <span>阅读状态</span>
+                <select id="reading-status-filter" name="reading_status">
+                  <option value="">全部状态</option>
+                  <option value="ready">ready</option>
+                  <option value="english_fallback">english_fallback</option>
+                </select>
+              </label>
+              <label>
+                <span>处理状态</span>
+                <select id="processing-status-filter" name="processing_status">
+                  <option value="">全部状态</option>
+                  <option value="full_enrichment">full_enrichment</option>
+                  <option value="partial_enrichment">partial_enrichment</option>
+                  <option value="no_enrichment">no_enrichment</option>
+                </select>
+              </label>
+              <label>
                 <span>开始日期</span>
                 <input id="date-from-filter" name="publication_date_from" type="date" />
               </label>
@@ -126,6 +143,18 @@
               <label>
                 <span>结束日期</span>
                 <input id="article-processing-date-to-filter" name="article_processing_date_to" type="date" />
+              </label>
+              <label>
+                <span>阶段</span>
+                <select id="article-processing-step-filter" name="article_processing_step">
+                  <option value="">全部阶段</option>
+                </select>
+              </label>
+              <label>
+                <span>错误原因</span>
+                <select id="article-processing-error-filter" name="article_processing_error">
+                  <option value="">先选择阶段</option>
+                </select>
               </label>
               <div class="filter-actions">
                 <button type="submit">应用筛选</button>
@@ -222,6 +251,7 @@
               <p id="all-articles-meta" class="meta-copy">等待加载文章列表...</p>
             </div>
             <div id="all-article-cards" class="card-grid"></div>
+            <div id="all-articles-pagination" class="pagination-bar"></div>
           </section>
 
           <section id="document-processing-section" class="panel hidden">
@@ -243,7 +273,15 @@
               </div>
               <p id="article-processing-meta" class="meta-copy">等待加载文章处理记录...</p>
             </div>
+            <div id="article-processing-batch-bar" class="batch-action-bar hidden">
+              <span id="article-processing-selection-count">已选 0 条</span>
+              <div class="button-row">
+                <button id="article-processing-retry-selected-button" type="button">重试已选</button>
+                <button id="article-processing-retry-filtered-button" type="button">重试全部筛选结果</button>
+              </div>
+            </div>
             <div id="article-processing-cards" class="card-grid"></div>
+            <div id="article-processing-pagination" class="pagination-bar"></div>
           </section>
 
           <section id="article-processing-detail-view" class="panel hidden">

@@ -241,6 +241,23 @@ body {
   background: transparent;
 }
 
+.pagination-bar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-top: 16px;
+}
+
+.batch-action-bar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 8px;
+}
+
 .hidden {
   display: none !important;
 }

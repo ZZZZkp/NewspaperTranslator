@@ -130,5 +130,18 @@ class FrontendStaticTests(unittest.TestCase):
         self.assertIn('${FRONTEND_PORT:-3000}:3000', compose_text)
 
 
+    def test_frontend_index_defines_pagination_and_batch_retry_controls(self) -> None:
+        index_text = (PROJECT_ROOT / "frontend" / "index.html").read_text()
+
+        self.assertIn('id="reading-status-filter"', index_text)
+        self.assertIn('id="processing-status-filter"', index_text)
+        self.assertIn('id="all-articles-pagination"', index_text)
+        self.assertIn('id="article-processing-step-filter"', index_text)
+        self.assertIn('id="article-processing-error-filter"', index_text)
+        self.assertIn('id="article-processing-batch-bar"', index_text)
+        self.assertIn('id="article-processing-retry-selected-button"', index_text)
+        self.assertIn('id="article-processing-retry-filtered-button"', index_text)
+
+
 if __name__ == "__main__":
     unittest.main()

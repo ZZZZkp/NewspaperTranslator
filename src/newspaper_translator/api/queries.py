@@ -88,6 +88,22 @@ class FilterOptionsView:
 
 
 @dataclass(frozen=True)
+class PaginationView:
+    page: int
+    page_size: int
+    total_count: int
+    total_pages: int
+
+
+@dataclass(frozen=True)
+class ArticleProcessingFilterOptionsView:
+    statuses: list[str]
+    sources: list[str]
+    steps: list[str]
+    error_messages: list[str]
+
+
+@dataclass(frozen=True)
 class DocumentVisibleArticleView:
     article_id: str
     publication_date: str
@@ -166,6 +182,133 @@ class ArticleProcessingCardView:
     current_step: str
     automatic_failure_count: int
     latest_error_summary: str
+
+
+def _normalize_pagination(*, page: int, page_size: int) -> tuple[int, int]:
+    return max(page, 1), max(page_size, 1)
+
+
+def _build_pagination_view(*, page: int, page_size: int, total_count: int) -> PaginationView:
+    total_pages = 0
+    if total_count > 0:
+        total_pages = (total_count + page_size - 1) // page_size
+    return PaginationView(
+        page=page,
+        page_size=page_size,
+        total_count=total_count,
+        total_pages=total_pages,
+    )
+
+
+def _build_article_processing_where_clauses(
+    *,
+    status: str | None = None,
+    source: str | None = None,
+    publication_date_from: str | None = None,
+    publication_date_to: str | None = None,
+    step: str | None = None,
+    error_message: str | None = None,
+) -> tuple[list[str], list[object]]:
+    clauses: list[str] = []
+    params: list[object] = []
+    if status:
+        clauses.append("r.status = ?")
+        params.append(status)
+    if source:
+        clauses.append("d.source_name = ?")
+        params.append(source)
+    if publication_date_from:
+        clauses.append("a.publication_date >= ?")
+        params.append(publication_date_from)
+    if publication_date_to:
+        clauses.append("a.publication_date <= ?")
+        params.append(publication_date_to)
+    if step:
+        clauses.append("r.current_step = ?")
+        params.append(step)
+    if error_message:
+        clauses.append("r.last_error_message = ?")
+        params.append(error_message)
+    return clauses, params
+
+
+def _build_article_card_filters(
+    *,
+    source: str | None = None,
+    tag: str | None = None,
+    publication_date_from: str | None = None,
+    publication_date_to: str | None = None,
+    reading_status: str | None = None,
+    processing_status: str | None = None,
+) -> tuple[str, list[object]]:
+    query = (
+        """
+    FROM final_articles a
+    JOIN documents d
+        ON d.document_key = a.document_key
+    JOIN parse_runs p
+        ON p.parse_run_id = a.parse_run_id
+    WHERE p.status = 'succeeded'
+      AND p.parse_run_id = (
+            SELECT p2.parse_run_id
+            FROM parse_runs p2
+            WHERE p2.document_key = a.document_key
+              AND p2.status = 'succeeded'
+            ORDER BY p2.finished_at DESC, p2.rowid DESC
+            LIMIT 1
+      )
+      AND """
+        + _NOT_SKIPPED_ADVERTISEMENT_CLAUSE
+    )
+    params: list[object] = []
+    if source:
+        query += " AND d.source_name = ?"
+        params.append(source)
+    if tag:
+        query += """
+         AND EXISTS (
+                SELECT 1
+                FROM article_tags t
+                JOIN article_enrichment_runs r
+                    ON r.enrichment_run_id = t.enrichment_run_id
+                WHERE r.article_id = a.article_id
+                  AND r.status IN ('partial', 'succeeded')
+                  AND t.tag_text = ?
+         )
+        """
+        params.append(tag)
+    if publication_date_from:
+        query += " AND a.publication_date >= ?"
+        params.append(publication_date_from)
+    if publication_date_to:
+        query += " AND a.publication_date <= ?"
+        params.append(publication_date_to)
+    if reading_status == "ready":
+        query += """
+         AND EXISTS (
+                SELECT 1
+                FROM ({latest}) latest
+                WHERE latest.article_id = a.article_id
+         )
+        """.format(latest=_LATEST_USABLE_ENRICHMENT_SUBQUERY)
+    elif reading_status == "english_fallback":
+        query += """
+         AND NOT EXISTS (
+                SELECT 1
+                FROM ({latest}) latest
+                WHERE latest.article_id = a.article_id
+         )
+        """.format(latest=_LATEST_USABLE_ENRICHMENT_SUBQUERY)
+    if processing_status == "partial_enrichment":
+        query += """
+         AND EXISTS (
+                SELECT 1
+                FROM ({latest}) latest
+                WHERE latest.article_id = a.article_id
+                  AND latest.status = 'partial'
+         )
+        """.format(latest=_LATEST_USABLE_ENRICHMENT_SUBQUERY)
+    return query, params
 
 
 def get_overview_view(*, database_url: str) -> OverviewView:
@@ -540,14 +683,40 @@ def get_article_processing_detail_view(
 def list_article_processing_card_views(
     *,
     database_url: str,
-    limit: int,
+    page: int = 1,
+    page_size: int = 20,
     status: str | None = None,
     source: str | None = None,
     publication_date_from: str | None = None,
     publication_date_to: str | None = None,
-) -> list[ArticleProcessingCardView]:
+    step: str | None = None,
+    error_message: str | None = None,
+) -> tuple[list[ArticleProcessingCardView], PaginationView]:
+    page, page_size = _normalize_pagination(page=page, page_size=page_size)
+    offset = (page - 1) * page_size
     connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
     try:
+        base_query = """
+        FROM article_processing_runs r
+        JOIN final_articles a
+            ON a.article_id = r.article_id
+        JOIN documents d
+            ON d.document_key = a.document_key
+        """
+        clauses, params = _build_article_processing_where_clauses(
+            status=status,
+            source=source,
+            publication_date_from=publication_date_from,
+            publication_date_to=publication_date_to,
+            step=step,
+            error_message=error_message,
+        )
+        if clauses:
+            base_query += " WHERE " + " AND ".join(clauses)
+        total_count = connection.execute(
+            "SELECT COUNT(*) " + base_query,
+            tuple(params),
+        ).fetchone()[0]
         query = """
         SELECT
             r.article_processing_run_id,
@@ -562,31 +731,9 @@ def list_article_processing_card_views(
             r.current_step,
             r.automatic_failure_count,
             r.last_error_message
-        FROM article_processing_runs r
-        JOIN final_articles a
-            ON a.article_id = r.article_id
-        JOIN documents d
-            ON d.document_key = a.document_key
-        """
-        params: list[object] = []
-        clauses: list[str] = []
-        if status:
-            clauses.append("r.status = ?")
-            params.append(status)
-        if source:
-            clauses.append("d.source_name = ?")
-            params.append(source)
-        if publication_date_from:
-            clauses.append("a.publication_date >= ?")
-            params.append(publication_date_from)
-        if publication_date_to:
-            clauses.append("a.publication_date <= ?")
-            params.append(publication_date_to)
-        if clauses:
-            query += " WHERE " + " AND ".join(clauses)
-        query += " ORDER BY r.updated_at DESC, r.created_at DESC, r.rowid DESC LIMIT ?"
-        params.append(limit)
-        rows = connection.execute(query, tuple(params)).fetchall()
+        """ + base_query
+        query += " ORDER BY r.updated_at DESC, r.created_at DESC, r.rowid DESC LIMIT ? OFFSET ?"
+        rows = connection.execute(query, tuple([*params, page_size, offset])).fetchall()
     finally:
         connection.close()
 
@@ -616,7 +763,72 @@ def list_article_processing_card_views(
                 latest_error_summary=latest_error_summary,
             )
         )
-    return cards
+    return cards, _build_pagination_view(page=page, page_size=page_size, total_count=total_count)
+
+
+def get_article_processing_filter_options_view(
+    *,
+    database_url: str,
+    status: str | None = None,
+    source: str | None = None,
+    publication_date_from: str | None = None,
+    publication_date_to: str | None = None,
+    step: str | None = None,
+) -> ArticleProcessingFilterOptionsView:
+    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+    try:
+        status_clauses, status_params = _build_article_processing_where_clauses(
+            source=source,
+            publication_date_from=publication_date_from,
+            publication_date_to=publication_date_to,
+            step=step,
+        )
+        source_clauses, source_params = _build_article_processing_where_clauses(
+            status=status,
+            publication_date_from=publication_date_from,
+            publication_date_to=publication_date_to,
+            step=step,
+        )
+        step_clauses, step_params = _build_article_processing_where_clauses(
+            status=status,
+            source=source,
+            publication_date_from=publication_date_from,
+            publication_date_to=publication_date_to,
+        )
+        error_clauses, error_params = _build_article_processing_where_clauses(
+            status=status,
+            source=source,
+            publication_date_from=publication_date_from,
+            publication_date_to=publication_date_to,
+            step=step,
+        )
+
+        def fetch_distinct(column: str, clauses: list[str], params: list[object]) -> list[str]:
+            query = f"""
+            SELECT DISTINCT {column}
+            FROM article_processing_runs r
+            JOIN final_articles a
+                ON a.article_id = r.article_id
+            JOIN documents d
+                ON d.document_key = a.document_key
+            """
+            if clauses:
+                query += " WHERE " + " AND ".join(clauses)
+                query += f" AND {column} IS NOT NULL"
+            else:
+                query += f" WHERE {column} IS NOT NULL"
+            query += f" ORDER BY {column} ASC"
+            rows = connection.execute(query, tuple(params)).fetchall()
+            return [row[0] for row in rows]
+
+        return ArticleProcessingFilterOptionsView(
+            statuses=fetch_distinct("r.status", status_clauses, status_params),
+            sources=fetch_distinct("d.source_name", source_clauses, source_params),
+            steps=fetch_distinct("r.current_step", step_clauses, step_params),
+            error_messages=fetch_distinct("r.last_error_message", error_clauses, error_params),
+        )
+    finally:
+        connection.close()
 
 
 def list_article_card_views(
@@ -626,59 +838,37 @@ def list_article_card_views(
     tag: str | None = None,
     publication_date_from: str | None = None,
     publication_date_to: str | None = None,
-) -> list[ArticleCardView]:
+    reading_status: str | None = None,
+    processing_status: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> tuple[list[ArticleCardView], PaginationView]:
+    page, page_size = _normalize_pagination(page=page, page_size=page_size)
+    offset = (page - 1) * page_size
     connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
     try:
-        query = (
-            """
+        base_query, params = _build_article_card_filters(
+            source=source,
+            tag=tag,
+            publication_date_from=publication_date_from,
+            publication_date_to=publication_date_to,
+            reading_status=reading_status,
+            processing_status=processing_status,
+        )
+        total_count = connection.execute(
+            "SELECT COUNT(*) " + base_query,
+            tuple(params),
+        ).fetchone()[0]
+        query = """
         SELECT
             a.article_id,
             a.document_key,
             d.source_name,
             a.publication_date,
             a.title_en
-        FROM final_articles a
-        JOIN documents d
-            ON d.document_key = a.document_key
-        JOIN parse_runs p
-            ON p.parse_run_id = a.parse_run_id
-        WHERE p.status = 'succeeded'
-          AND p.parse_run_id = (
-                SELECT p2.parse_run_id
-                FROM parse_runs p2
-                WHERE p2.document_key = a.document_key
-                  AND p2.status = 'succeeded'
-                ORDER BY p2.finished_at DESC, p2.rowid DESC
-                LIMIT 1
-          )
-          AND """
-            + _NOT_SKIPPED_ADVERTISEMENT_CLAUSE
-        )
-        params: list[object] = []
-        if source:
-            query += " AND d.source_name = ?"
-            params.append(source)
-        if tag:
-            query += """
-             AND EXISTS (
-                    SELECT 1
-                    FROM article_tags t
-                    JOIN article_enrichment_runs r
-                        ON r.enrichment_run_id = t.enrichment_run_id
-                    WHERE r.article_id = a.article_id
-                      AND r.status IN ('partial', 'succeeded')
-                      AND t.tag_text = ?
-             )
-            """
-            params.append(tag)
-        if publication_date_from:
-            query += " AND a.publication_date >= ?"
-            params.append(publication_date_from)
-        if publication_date_to:
-            query += " AND a.publication_date <= ?"
-            params.append(publication_date_to)
-        query += " ORDER BY a.publication_date DESC, a.article_order ASC"
-        rows = connection.execute(query, tuple(params)).fetchall()
+        """ + base_query
+        query += " ORDER BY a.publication_date DESC, a.article_order ASC LIMIT ? OFFSET ?"
+        rows = connection.execute(query, tuple([*params, page_size, offset])).fetchall()
     finally:
         connection.close()
 
@@ -721,7 +911,7 @@ def list_article_card_views(
                 processing_badges=processing_badges,
             )
         )
-    return cards
+    return cards, _build_pagination_view(page=page, page_size=page_size, total_count=total_count)
 
 
 def list_focus_tag_article_card_views(
@@ -736,10 +926,11 @@ def list_focus_tag_article_card_views(
     seen_article_ids: set[str] = set()
     cards: list[ArticleCardView] = []
     for focus_tag in normalized_tags:
-        for card in list_article_card_views(
+        tag_cards, _ = list_article_card_views(
             database_url=database_url,
             tag=focus_tag,
-        ):
+        )
+        for card in tag_cards:
             if card.article_id in seen_article_ids:
                 continue
             seen_article_ids.add(card.article_id)

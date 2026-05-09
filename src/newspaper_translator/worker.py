@@ -363,9 +363,53 @@ def run_article_worker_loop(
     recover_articles()
 
     loop_count = 0
+    consecutive_failures = 0
     while max_loops is None or loop_count < max_loops:
-        if _work_exists():
-            run_tick()
+        try:
+            try:
+                work_exists = _work_exists()
+            except Exception as exc:
+                _raise_for_worker_loop_error(exc, stage="article_probe")
+
+            if work_exists:
+                try:
+                    run_tick()
+                except Exception as exc:
+                    _raise_for_worker_loop_error(exc, stage="article_processing_tick")
+        except Exception as exc:
+            if isinstance(exc, FatalWorkerError):
+                _emit_worker_loop_log(
+                    level="ERROR",
+                    event="worker.loop.fatal",
+                    stage=exc.stage,
+                    error=str(exc.cause),
+                    error_type=type(exc.cause).__name__,
+                )
+                raise
+            if isinstance(exc, RetryableWorkerLoopError):
+                consecutive_failures += 1
+                backoff_seconds = _loop_retry_backoff_seconds(consecutive_failures)
+                _emit_worker_loop_log(
+                    level="WARNING",
+                    event="worker.loop.retryable",
+                    stage=exc.stage,
+                    consecutive_failures=consecutive_failures,
+                    backoff_seconds=backoff_seconds,
+                    error=str(exc.cause),
+                    error_type=type(exc.cause).__name__,
+                )
+                loop_count += 1
+                sleep(backoff_seconds)
+                continue
+            raise
+
+        if consecutive_failures > 0:
+            _emit_worker_loop_log(
+                level="INFO",
+                event="worker.loop.recovered",
+                consecutive_failures=consecutive_failures,
+            )
+            consecutive_failures = 0
         sleep(idle_poll_interval_seconds)
         loop_count += 1
 

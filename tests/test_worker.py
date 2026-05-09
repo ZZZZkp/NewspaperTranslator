@@ -843,5 +843,61 @@ class ImportWorkerLoopFailureHandlingTests(unittest.TestCase):
         self.assertEqual(str(context.exception.cause), "bad env")
 
 
+class ArticleWorkerLoopFailureHandlingTests(unittest.TestCase):
+    def test_article_worker_backs_off_after_retryable_probe_failure(self) -> None:
+        from newspaper_translator.worker import run_worker_loop
+
+        sleep_calls: list[int] = []
+        attempts = {"count": 0}
+
+        def stub_article_work_exists() -> bool:
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise sqlite3.OperationalError("database is locked")
+            return False
+
+        run_worker_loop(
+            env={
+                "APP_ENV": "test",
+                "DATABASE_URL": "sqlite:///:memory:",
+                "STORAGE_ROOT": "/tmp",
+                "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                "WORKER_ROLE": "article",
+                "ARTICLE_WORKER_IDLE_POLL_INTERVAL_SECONDS": "60",
+            },
+            sleep_fn=lambda seconds: sleep_calls.append(seconds),
+            max_loops=2,
+            recover_stale_article_runs_fn=lambda: [],
+            run_article_processing_tick_fn=lambda: SimpleNamespace(did_work=False),
+            article_work_exists_fn=stub_article_work_exists,
+        )
+
+        self.assertEqual(attempts["count"], 2)
+        self.assertEqual(sleep_calls, [5, 60])
+
+    def test_article_worker_raises_on_fatal_probe_failure(self) -> None:
+        from newspaper_translator.worker import FatalWorkerError, run_worker_loop
+
+        with self.assertRaises(FatalWorkerError) as context:
+            run_worker_loop(
+                env={
+                    "APP_ENV": "test",
+                    "DATABASE_URL": "sqlite:///:memory:",
+                    "STORAGE_ROOT": "/tmp",
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                    "WORKER_ROLE": "article",
+                },
+                sleep_fn=lambda seconds: None,
+                max_loops=1,
+                recover_stale_article_runs_fn=lambda: [],
+                run_article_processing_tick_fn=lambda: SimpleNamespace(did_work=False),
+                article_work_exists_fn=lambda: (_ for _ in ()).throw(ValueError("bad env")),
+            )
+
+        self.assertEqual(context.exception.stage, "article_probe")
+        self.assertIsInstance(context.exception.cause, ValueError)
+        self.assertEqual(str(context.exception.cause), "bad env")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -570,7 +570,15 @@ def _is_retryable_worker_loop_error(exc: BaseException) -> bool:
     if isinstance(exc, FatalWorkerError):
         return False
     if isinstance(exc, sqlite3.OperationalError):
-        return "database is locked" in str(exc).lower()
+        message = str(exc).lower()
+        return any(
+            lock_message in message
+            for lock_message in (
+                "database is locked",
+                "database table is locked",
+                "database schema is locked",
+            )
+        )
     return False
 
 

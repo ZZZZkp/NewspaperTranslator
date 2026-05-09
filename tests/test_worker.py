@@ -748,6 +748,40 @@ class ImportWorkerLoopFailureHandlingTests(unittest.TestCase):
         self.assertEqual(attempts["count"], 2)
         self.assertEqual(sleep_calls, [5, 60])
 
+    def test_import_worker_backs_off_after_retryable_table_locked_processing_failure(self) -> None:
+        from newspaper_translator.worker import run_worker_loop
+
+        sleep_calls: list[int] = []
+        attempts = {"count": 0}
+
+        def stub_processing_tick():
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise sqlite3.OperationalError("database table is locked")
+            return SimpleNamespace(did_work=False)
+
+        run_worker_loop(
+            env={
+                "APP_ENV": "test",
+                "DATABASE_URL": "sqlite:///:memory:",
+                "STORAGE_ROOT": "/tmp",
+                "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                "PROCESSING_IDLE_POLL_INTERVAL_SECONDS": "60",
+            },
+            now_fn=lambda: "2026-05-07T12:00:00",
+            sleep_fn=lambda seconds: sleep_calls.append(seconds),
+            max_loops=2,
+            run_startup_maintenance_fn=lambda **_kwargs: {},
+            get_last_scheduler_run_started_at_fn=lambda *, database_url: "2026-05-07T12:00:00",
+            recover_stale_document_runs_fn=lambda: [],
+            recover_stale_article_runs_fn=lambda: [],
+            run_import_tick_fn=lambda *, trigger_type: "import-1",
+            run_processing_tick_fn=stub_processing_tick,
+        )
+
+        self.assertEqual(attempts["count"], 2)
+        self.assertEqual(sleep_calls, [5, 60])
+
     def test_import_worker_resets_failure_streak_after_later_success(self) -> None:
         from newspaper_translator.worker import run_worker_loop
 

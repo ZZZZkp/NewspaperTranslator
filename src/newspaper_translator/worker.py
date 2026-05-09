@@ -33,6 +33,7 @@ class RetryableWorkerLoopError(RuntimeError):
         super().__init__(message)
         self.stage = stage
         self.cause = cause
+        self.__cause__ = cause
 
 
 class FatalWorkerError(RuntimeError):
@@ -40,6 +41,7 @@ class FatalWorkerError(RuntimeError):
         super().__init__(message)
         self.stage = stage
         self.cause = cause
+        self.__cause__ = cause
 
 
 def build_startup_report(env: dict[str, str]) -> dict[str, object]:
@@ -521,16 +523,22 @@ def _loop_retry_backoff_seconds(consecutive_failures: int) -> int:
 
 
 def _is_retryable_worker_loop_error(exc: BaseException) -> bool:
+    if isinstance(exc, RetryableWorkerLoopError):
+        return True
+    if isinstance(exc, FatalWorkerError):
+        return False
     if isinstance(exc, sqlite3.OperationalError):
         return "database is locked" in str(exc).lower()
-    return isinstance(exc, RuntimeError)
+    return False
 
 
 def _is_fatal_worker_error(exc: BaseException) -> bool:
-    return isinstance(exc, ValueError)
+    return isinstance(exc, (FatalWorkerError, ValueError))
 
 
 def _raise_for_worker_loop_error(exc: BaseException, *, stage: str) -> None:
+    if isinstance(exc, (RetryableWorkerLoopError, FatalWorkerError)):
+        raise exc
     if _is_fatal_worker_error(exc):
         raise FatalWorkerError(
             f"fatal worker error during {stage}",

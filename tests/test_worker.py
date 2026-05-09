@@ -563,10 +563,37 @@ class WorkerErrorHelperTests(unittest.TestCase):
             True,
         )
 
+    def test_non_locked_operational_error_is_not_retryable(self) -> None:
+        from newspaper_translator.worker import _is_retryable_worker_loop_error
+
+        self.assertEqual(
+            _is_retryable_worker_loop_error(
+                sqlite3.OperationalError("no such table: import_runs")
+            ),
+            False,
+        )
+
     def test_value_error_is_treated_as_fatal(self) -> None:
         from newspaper_translator.worker import _is_fatal_worker_error
 
         self.assertEqual(_is_fatal_worker_error(ValueError("bad env")), True)
+
+    def test_raise_for_worker_loop_error_wraps_fatal_errors_with_stage(self) -> None:
+        from newspaper_translator.worker import (
+            FatalWorkerError,
+            _raise_for_worker_loop_error,
+        )
+
+        with self.assertRaises(FatalWorkerError) as context:
+            try:
+                raise ValueError("bad env")
+            except ValueError as exc:
+                _raise_for_worker_loop_error(exc, stage="import_tick")
+
+        self.assertEqual(context.exception.stage, "import_tick")
+        self.assertIsInstance(context.exception.cause, ValueError)
+        self.assertEqual(str(context.exception.cause), "bad env")
+        self.assertIs(context.exception.__cause__, context.exception.cause)
 
     def test_raise_for_worker_loop_error_wraps_retryable_errors_with_stage(self) -> None:
         from newspaper_translator.worker import (
@@ -576,13 +603,30 @@ class WorkerErrorHelperTests(unittest.TestCase):
 
         with self.assertRaises(RetryableWorkerLoopError) as context:
             try:
-                raise RuntimeError("temporary import failure")
-            except RuntimeError as exc:
+                raise sqlite3.OperationalError("database is locked")
+            except sqlite3.OperationalError as exc:
                 _raise_for_worker_loop_error(exc, stage="import_tick")
 
         self.assertEqual(context.exception.stage, "import_tick")
-        self.assertIsInstance(context.exception.cause, RuntimeError)
-        self.assertEqual(str(context.exception.cause), "temporary import failure")
+        self.assertIsInstance(context.exception.cause, sqlite3.OperationalError)
+        self.assertEqual(str(context.exception.cause), "database is locked")
+        self.assertIs(context.exception.__cause__, context.exception.cause)
+
+    def test_raise_for_worker_loop_error_preserves_existing_fatal_wrapper(self) -> None:
+        from newspaper_translator.worker import FatalWorkerError, _raise_for_worker_loop_error
+
+        wrapped_error = FatalWorkerError(
+            "fatal worker error during config",
+            stage="config",
+            cause=ValueError("bad env"),
+        )
+
+        with self.assertRaises(FatalWorkerError) as context:
+            _raise_for_worker_loop_error(wrapped_error, stage="import_tick")
+
+        self.assertIs(context.exception, wrapped_error)
+        self.assertEqual(context.exception.stage, "config")
+        self.assertIsInstance(context.exception.cause, ValueError)
         self.assertIs(context.exception.__cause__, context.exception.cause)
 
 

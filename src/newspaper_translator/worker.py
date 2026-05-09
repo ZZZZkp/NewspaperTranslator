@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 import os
 from pathlib import Path
+import sqlite3
 import time
 
 from newspaper_translator.config import AppSettings, GeminiSettings, MineruSettings
@@ -25,6 +26,20 @@ from newspaper_translator.import_audit import list_import_runs
 from newspaper_translator.logging_utils import format_log_event
 from newspaper_translator.mineru import MineruClient
 from newspaper_translator.runtime import build_runtime_report
+
+
+class RetryableWorkerLoopError(RuntimeError):
+    def __init__(self, message: str, *, stage: str, cause: BaseException) -> None:
+        super().__init__(message)
+        self.stage = stage
+        self.cause = cause
+
+
+class FatalWorkerError(RuntimeError):
+    def __init__(self, message: str, *, stage: str, cause: BaseException) -> None:
+        super().__init__(message)
+        self.stage = stage
+        self.cause = cause
 
 
 def build_startup_report(env: dict[str, str]) -> dict[str, object]:
@@ -495,6 +510,44 @@ def _read_int_setting(env: dict[str, str], key: str, *, default: int) -> int:
     if value is None or not value.strip():
         return default
     return int(value.strip())
+
+
+def _loop_retry_backoff_seconds(consecutive_failures: int) -> int:
+    if consecutive_failures <= 1:
+        return 5
+    if consecutive_failures == 2:
+        return 15
+    return 60
+
+
+def _is_retryable_worker_loop_error(exc: BaseException) -> bool:
+    if isinstance(exc, sqlite3.OperationalError):
+        return "database is locked" in str(exc).lower()
+    return isinstance(exc, RuntimeError)
+
+
+def _is_fatal_worker_error(exc: BaseException) -> bool:
+    return isinstance(exc, ValueError)
+
+
+def _raise_for_worker_loop_error(exc: BaseException, *, stage: str) -> None:
+    if _is_fatal_worker_error(exc):
+        raise FatalWorkerError(
+            f"fatal worker error during {stage}",
+            stage=stage,
+            cause=exc,
+        ) from exc
+    if _is_retryable_worker_loop_error(exc):
+        raise RetryableWorkerLoopError(
+            f"retryable worker loop error during {stage}",
+            stage=stage,
+            cause=exc,
+        ) from exc
+    raise FatalWorkerError(
+        f"fatal worker error during {stage}",
+        stage=stage,
+        cause=exc,
+    ) from exc
 
 
 if __name__ == "__main__":

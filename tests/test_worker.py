@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import pathlib
 import sys
 import tempfile
@@ -541,6 +542,48 @@ class WorkerThroughputDefaultsTests(unittest.TestCase):
         )
 
         self.assertEqual(sleep_calls, [60])
+
+
+class WorkerErrorHelperTests(unittest.TestCase):
+    def test_loop_retry_backoff_seconds_caps_at_sixty_seconds(self) -> None:
+        from newspaper_translator.worker import _loop_retry_backoff_seconds
+
+        self.assertEqual(_loop_retry_backoff_seconds(1), 5)
+        self.assertEqual(_loop_retry_backoff_seconds(2), 15)
+        self.assertEqual(_loop_retry_backoff_seconds(3), 60)
+        self.assertEqual(_loop_retry_backoff_seconds(8), 60)
+
+    def test_database_locked_operational_error_is_retryable(self) -> None:
+        from newspaper_translator.worker import _is_retryable_worker_loop_error
+
+        self.assertEqual(
+            _is_retryable_worker_loop_error(
+                sqlite3.OperationalError("database is locked")
+            ),
+            True,
+        )
+
+    def test_value_error_is_treated_as_fatal(self) -> None:
+        from newspaper_translator.worker import _is_fatal_worker_error
+
+        self.assertEqual(_is_fatal_worker_error(ValueError("bad env")), True)
+
+    def test_raise_for_worker_loop_error_wraps_retryable_errors_with_stage(self) -> None:
+        from newspaper_translator.worker import (
+            RetryableWorkerLoopError,
+            _raise_for_worker_loop_error,
+        )
+
+        with self.assertRaises(RetryableWorkerLoopError) as context:
+            try:
+                raise RuntimeError("temporary import failure")
+            except RuntimeError as exc:
+                _raise_for_worker_loop_error(exc, stage="import_tick")
+
+        self.assertEqual(context.exception.stage, "import_tick")
+        self.assertIsInstance(context.exception.cause, RuntimeError)
+        self.assertEqual(str(context.exception.cause), "temporary import failure")
+        self.assertIs(context.exception.__cause__, context.exception.cause)
 
 
 class WorkerRoleDispatchTests(unittest.TestCase):

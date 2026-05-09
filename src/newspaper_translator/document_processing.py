@@ -307,99 +307,104 @@ def create_article_processing_run(
     )
     article_key = article.article_key
     input_hash = build_article_input_hash(article)
-    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
-    try:
-        existing_row = connection.execute(
-            """
-            SELECT status, last_success_input_hash
-            FROM article_processing_runs
-            WHERE article_key = ?
-            """,
-            (article_key,),
-        ).fetchone()
-        if existing_row is None:
-            connection.execute(
+
+    def callback():
+        connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+        try:
+            existing_row = connection.execute(
                 """
-                INSERT INTO article_processing_runs (
-                    article_processing_run_id,
-                    article_key,
-                    article_id,
-                    status,
-                    current_step
-                ) VALUES (?, ?, ?, ?, ?)
+                SELECT status, last_success_input_hash
+                FROM article_processing_runs
+                WHERE article_key = ?
                 """,
-                (
-                    article_processing_run_id,
-                    article_key,
-                    article_id,
-                    "pending",
-                    "enrich",
-                ),
-            )
-        else:
-            current_status = existing_row[0]
-            last_success_input_hash = existing_row[1]
-            if current_status == "manual_retry_requested":
+                (article_key,),
+            ).fetchone()
+            if existing_row is None:
                 connection.execute(
                     """
-                    UPDATE article_processing_runs
-                    SET
-                        article_id = ?,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE article_key = ?
+                    INSERT INTO article_processing_runs (
+                        article_processing_run_id,
+                        article_key,
+                        article_id,
+                        status,
+                        current_step
+                    ) VALUES (?, ?, ?, ?, ?)
                     """,
                     (
-                        article_id,
+                        article_processing_run_id,
                         article_key,
-                    ),
-                )
-            elif last_success_input_hash == input_hash:
-                connection.execute(
-                    """
-                    UPDATE article_processing_runs
-                    SET
-                        article_id = ?,
-                        status = 'succeeded',
-                        current_step = 'completed',
-                        locked_by = NULL,
-                        lock_expires_at = NULL,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE article_key = ?
-                    """,
-                    (
                         article_id,
-                        article_key,
+                        "pending",
+                        "enrich",
                     ),
                 )
             else:
-                connection.execute(
-                    """
-                    UPDATE article_processing_runs
-                    SET
-                        article_id = ?,
-                        status = 'pending',
-                        current_step = 'enrich',
-                        automatic_failure_count = 0,
-                        last_error_message = NULL,
-                        last_attempt_started_at = NULL,
-                        last_attempt_finished_at = NULL,
-                        locked_by = NULL,
-                        lock_expires_at = NULL,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE article_key = ?
-                    """,
-                    (
-                        article_id,
-                        article_key,
-                    ),
-                )
-        connection.commit()
-    finally:
-        connection.close()
+                current_status = existing_row[0]
+                last_success_input_hash = existing_row[1]
+                if current_status == "manual_retry_requested":
+                    connection.execute(
+                        """
+                        UPDATE article_processing_runs
+                        SET
+                            article_id = ?,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE article_key = ?
+                        """,
+                        (
+                            article_id,
+                            article_key,
+                        ),
+                    )
+                elif last_success_input_hash == input_hash:
+                    connection.execute(
+                        """
+                        UPDATE article_processing_runs
+                        SET
+                            article_id = ?,
+                            status = 'succeeded',
+                            current_step = 'completed',
+                            locked_by = NULL,
+                            lock_expires_at = NULL,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE article_key = ?
+                        """,
+                        (
+                            article_id,
+                            article_key,
+                        ),
+                    )
+                else:
+                    connection.execute(
+                        """
+                        UPDATE article_processing_runs
+                        SET
+                            article_id = ?,
+                            status = 'pending',
+                            current_step = 'enrich',
+                            automatic_failure_count = 0,
+                            last_error_message = NULL,
+                            last_attempt_started_at = NULL,
+                            last_attempt_finished_at = NULL,
+                            locked_by = NULL,
+                            lock_expires_at = NULL,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE article_key = ?
+                        """,
+                        (
+                            article_id,
+                            article_key,
+                        ),
+                    )
+            connection.commit()
+        finally:
+            connection.close()
 
-    return get_article_processing_run(
-        database_url=database_url,
-        article_key=article_key,
+    _run_with_database_retries(callback)
+    return _run_with_database_retries(
+        lambda: get_article_processing_run(
+            database_url=database_url,
+            article_key=article_key,
+        ),
     )
 
 

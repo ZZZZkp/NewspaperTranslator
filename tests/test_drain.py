@@ -685,6 +685,82 @@ class DrainTests(DocumentProcessingTestMixin, unittest.TestCase):
         self.assertEqual(claimed_run.status, "running")
         self.assertEqual(claimed_run.locked_by, "article-worker-1")
 
+    def test_create_article_processing_run_survives_transient_locks_during_creation_and_readback(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_article_processing_run)
+        self.assertIsNotNone(list_latest_document_articles)
+        self.assertIsNotNone(document_processing_module)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            self._persist_parsed_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            article = list_latest_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )[0]
+
+            transaction_lock_failures = 0
+            readback_lock_failures = 0
+            original_connect = document_processing_module.sqlite3.connect
+
+            class ArticleCreationConnection:
+                def __init__(self, connection):
+                    self._connection = connection
+
+                def execute(self, sql, parameters=()):
+                    nonlocal transaction_lock_failures, readback_lock_failures
+                    if (
+                        "SELECT status, last_success_input_hash" in sql
+                        and parameters == (article.article_key,)
+                        and transaction_lock_failures == 0
+                    ):
+                        transaction_lock_failures += 1
+                        raise sqlite3.OperationalError("database table is locked")
+                    if (
+                        "FROM article_processing_runs" in sql
+                        and "WHERE article_key = ?" in sql
+                        and "SELECT status, last_success_input_hash" not in sql
+                        and parameters == (article.article_key,)
+                        and readback_lock_failures == 0
+                    ):
+                        readback_lock_failures += 1
+                        raise sqlite3.OperationalError("database schema is locked")
+                    return self._connection.execute(sql, parameters)
+
+                def __getattr__(self, name: str):
+                    return getattr(self._connection, name)
+
+            with mock.patch.object(
+                document_processing_module,
+                "DATABASE_RETRY_DELAYS_SECONDS",
+                (0.0, 0.0, 0.0),
+            ):
+                with mock.patch.object(
+                    document_processing_module.sqlite3,
+                    "connect",
+                    side_effect=lambda *args, **kwargs: ArticleCreationConnection(
+                        original_connect(*args, **kwargs)
+                    ),
+                ):
+                    created_run = create_article_processing_run(
+                        database_url=database_url,
+                        article_id=article.article_id,
+                    )
+
+        self.assertEqual(transaction_lock_failures, 1)
+        self.assertEqual(readback_lock_failures, 1)
+        self.assertEqual(created_run.article_key, article.article_key)
+        self.assertEqual(created_run.status, "pending")
+
     def test_process_document_survives_transient_database_lock_during_execution_resolution(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
         self.assertIsNotNone(create_document_processing_run)

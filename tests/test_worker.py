@@ -898,6 +898,91 @@ class ArticleWorkerLoopFailureHandlingTests(unittest.TestCase):
         self.assertIsInstance(context.exception.cause, ValueError)
         self.assertEqual(str(context.exception.cause), "bad env")
 
+    def test_article_worker_backs_off_after_retryable_drain_failure(self) -> None:
+        from newspaper_translator.worker import run_worker_loop
+
+        sleep_calls: list[int] = []
+        attempts = {"count": 0}
+
+        def stub_article_processing_tick():
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise sqlite3.OperationalError("database table is locked")
+            return SimpleNamespace(did_work=False)
+
+        run_worker_loop(
+            env={
+                "APP_ENV": "test",
+                "DATABASE_URL": "sqlite:///:memory:",
+                "STORAGE_ROOT": "/tmp",
+                "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                "WORKER_ROLE": "article",
+                "ARTICLE_WORKER_IDLE_POLL_INTERVAL_SECONDS": "60",
+            },
+            sleep_fn=lambda seconds: sleep_calls.append(seconds),
+            max_loops=2,
+            recover_stale_article_runs_fn=lambda: [],
+            run_article_processing_tick_fn=stub_article_processing_tick,
+            article_work_exists_fn=lambda: True,
+        )
+
+        self.assertEqual(attempts["count"], 2)
+        self.assertEqual(sleep_calls, [5, 60])
+
+    def test_article_worker_raises_on_fatal_drain_failure(self) -> None:
+        from newspaper_translator.worker import FatalWorkerError, run_worker_loop
+
+        with self.assertRaises(FatalWorkerError) as context:
+            run_worker_loop(
+                env={
+                    "APP_ENV": "test",
+                    "DATABASE_URL": "sqlite:///:memory:",
+                    "STORAGE_ROOT": "/tmp",
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                    "WORKER_ROLE": "article",
+                },
+                sleep_fn=lambda seconds: None,
+                max_loops=1,
+                recover_stale_article_runs_fn=lambda: [],
+                run_article_processing_tick_fn=lambda: (_ for _ in ()).throw(ValueError("bad env")),
+                article_work_exists_fn=lambda: True,
+            )
+
+        self.assertEqual(context.exception.stage, "article_processing_tick")
+        self.assertIsInstance(context.exception.cause, ValueError)
+        self.assertEqual(str(context.exception.cause), "bad env")
+
+    def test_article_worker_resets_failure_streak_after_later_successful_drain(self) -> None:
+        from newspaper_translator.worker import run_worker_loop
+
+        sleep_calls: list[int] = []
+        attempts = {"count": 0}
+
+        def stub_article_processing_tick():
+            attempts["count"] += 1
+            if attempts["count"] in (1, 3):
+                raise sqlite3.OperationalError("database is locked")
+            return SimpleNamespace(did_work=False)
+
+        run_worker_loop(
+            env={
+                "APP_ENV": "test",
+                "DATABASE_URL": "sqlite:///:memory:",
+                "STORAGE_ROOT": "/tmp",
+                "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                "WORKER_ROLE": "article",
+                "ARTICLE_WORKER_IDLE_POLL_INTERVAL_SECONDS": "60",
+            },
+            sleep_fn=lambda seconds: sleep_calls.append(seconds),
+            max_loops=4,
+            recover_stale_article_runs_fn=lambda: [],
+            run_article_processing_tick_fn=stub_article_processing_tick,
+            article_work_exists_fn=lambda: True,
+        )
+
+        self.assertEqual(attempts["count"], 4)
+        self.assertEqual(sleep_calls, [5, 60, 5, 60])
+
 
 if __name__ == "__main__":
     unittest.main()

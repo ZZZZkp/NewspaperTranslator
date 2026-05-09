@@ -91,9 +91,11 @@ DATABASE_RETRY_DELAYS_SECONDS = (0.2, 0.5, 1.0)
 
 
 def _is_retryable_sqlite_error(exc) -> bool:
+    message = str(exc).lower()
     return (
         isinstance(exc, sqlite3.OperationalError)
-        and "database is locked" in str(exc).lower()
+        and "database" in message
+        and "locked" in message
     )
 
 
@@ -253,36 +255,37 @@ def create_document_processing_run(
     document_key: str,
 ) -> DocumentProcessingRun:
     processing_run_id = str(uuid.uuid4())
-    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
-    try:
-        cursor = connection.execute(
-            """
-            INSERT OR IGNORE INTO document_processing_runs (
-                processing_run_id,
-                document_key,
-                status,
-                current_step
-            ) VALUES (?, ?, ?, ?)
-            """,
-            (
-                processing_run_id,
-                document_key,
-                "pending",
-                "parse_persist",
-            ),
-        )
-        connection.commit()
-    finally:
-        connection.close()
 
-    if cursor.rowcount == 0:
-        return get_document_processing_run(
+    def callback():
+        connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+        try:
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO document_processing_runs (
+                    processing_run_id,
+                    document_key,
+                    status,
+                    current_step
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (
+                    processing_run_id,
+                    document_key,
+                    "pending",
+                    "parse_persist",
+                ),
+            )
+            connection.commit()
+            return cursor.rowcount
+        finally:
+            connection.close()
+
+    _run_with_database_retries(callback)
+    return _run_with_database_retries(
+        lambda: get_document_processing_run(
             database_url=database_url,
             document_key=document_key,
-        )
-    return get_document_processing_run(
-        database_url=database_url,
-        document_key=document_key,
+        ),
     )
 
 
@@ -2145,9 +2148,11 @@ def run_processing_tick(
         failed_document_count=failed_document_count,
         error_message="; ".join(error_messages) if error_messages else None,
     )
-    finalized_run = get_scheduler_run(
-        database_url=database_url,
-        scheduler_run_id=scheduler_run.scheduler_run_id,
+    finalized_run = _run_with_database_retries(
+        lambda: get_scheduler_run(
+            database_url=database_url,
+            scheduler_run_id=scheduler_run.scheduler_run_id,
+        ),
     )
     _log_event(
         log_event,

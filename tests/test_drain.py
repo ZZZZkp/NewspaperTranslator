@@ -747,6 +747,137 @@ class DrainTests(DocumentProcessingTestMixin, unittest.TestCase):
         self.assertEqual(lock_failures, 1)
         self.assertEqual(result.status, "succeeded")
 
+    def test_process_document_survives_transient_locks_in_current_step_and_success_write(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(process_document)
+        self.assertIsNotNone(document_processing_module)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+
+            current_step_lock_failures = 0
+            success_write_lock_failures = 0
+            original_connect = document_processing_module.sqlite3.connect
+
+            class DocumentExecutionConnection:
+                def __init__(self, connection):
+                    self._connection = connection
+
+                def execute(self, sql, parameters=()):
+                    nonlocal current_step_lock_failures, success_write_lock_failures
+                    if (
+                        "UPDATE document_processing_runs" in sql
+                        and parameters == ("enrich", document_key)
+                        and current_step_lock_failures == 0
+                    ):
+                        current_step_lock_failures += 1
+                        raise sqlite3.OperationalError("database table is locked")
+                    if (
+                        "UPDATE document_processing_runs" in sql
+                        and parameters == (document_key,)
+                        and "status = 'succeeded'" in sql
+                        and success_write_lock_failures == 0
+                    ):
+                        success_write_lock_failures += 1
+                        raise sqlite3.OperationalError("database is locked")
+                    return self._connection.execute(sql, parameters)
+
+                def __getattr__(self, name: str):
+                    return getattr(self._connection, name)
+
+            with mock.patch.object(
+                document_processing_module,
+                "DATABASE_RETRY_DELAYS_SECONDS",
+                (0.0, 0.0, 0.0),
+            ):
+                with mock.patch.object(
+                    document_processing_module.sqlite3,
+                    "connect",
+                    side_effect=lambda *args, **kwargs: DocumentExecutionConnection(
+                        original_connect(*args, **kwargs)
+                    ),
+                ):
+                    result = process_document(
+                        database_url=database_url,
+                        document_key=document_key,
+                        locked_by="scheduler-worker-1",
+                        scheduler_run_id="scheduler-run-1",
+                        parse_persist_document=lambda **kwargs: None,
+                        enrich_document=lambda **kwargs: None,
+                    )
+
+        self.assertEqual(current_step_lock_failures, 1)
+        self.assertEqual(success_write_lock_failures, 1)
+        self.assertEqual(result.status, "succeeded")
+
+    def test_process_document_survives_transient_lock_in_failure_write(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(process_document)
+        self.assertIsNotNone(document_processing_module)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+
+            failure_write_lock_failures = 0
+            original_connect = document_processing_module.sqlite3.connect
+
+            class DocumentFailureConnection:
+                def __init__(self, connection):
+                    self._connection = connection
+
+                def execute(self, sql, parameters=()):
+                    nonlocal failure_write_lock_failures
+                    if (
+                        "UPDATE document_processing_runs" in sql
+                        and parameters[-1] == document_key
+                        and parameters[0] in ("failed_retryable", "failed_terminal")
+                        and failure_write_lock_failures == 0
+                    ):
+                        failure_write_lock_failures += 1
+                        raise sqlite3.OperationalError("database schema is locked")
+                    return self._connection.execute(sql, parameters)
+
+                def __getattr__(self, name: str):
+                    return getattr(self._connection, name)
+
+            with mock.patch.object(
+                document_processing_module,
+                "DATABASE_RETRY_DELAYS_SECONDS",
+                (0.0, 0.0, 0.0),
+            ):
+                with mock.patch.object(
+                    document_processing_module.sqlite3,
+                    "connect",
+                    side_effect=lambda *args, **kwargs: DocumentFailureConnection(
+                        original_connect(*args, **kwargs)
+                    ),
+                ):
+                    result = process_document(
+                        database_url=database_url,
+                        document_key=document_key,
+                        locked_by="scheduler-worker-1",
+                        scheduler_run_id="scheduler-run-1",
+                        parse_persist_document=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("parse timeout")),
+                        enrich_document=lambda **kwargs: None,
+                        step_retry_limit=0,
+                    )
+
+        self.assertEqual(failure_write_lock_failures, 1)
+        self.assertEqual(result.status, "failed_retryable")
+        self.assertEqual(result.last_error_message, "parse timeout")
+
     def test_process_article_processing_run_survives_transient_database_lock_during_execution_resolution(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
         self.assertIsNotNone(create_article_processing_run)
@@ -814,6 +945,179 @@ class DrainTests(DocumentProcessingTestMixin, unittest.TestCase):
 
         self.assertEqual(lock_failures, 1)
         self.assertEqual(result.status, "succeeded")
+
+    def test_process_article_processing_run_survives_transient_lock_in_initial_lookup_and_success_write(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_article_processing_run)
+        self.assertIsNotNone(process_article_processing_run)
+        self.assertIsNotNone(list_latest_document_articles)
+        self.assertIsNotNone(document_processing_module)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            self._persist_parsed_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            article = list_latest_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )[0]
+            create_article_processing_run(
+                database_url=database_url,
+                article_id=article.article_id,
+            )
+
+            initial_lookup_lock_failures = 0
+            success_write_lock_failures = 0
+            original_get_article_processing_run = (
+                document_processing_module.get_article_processing_run
+            )
+            original_connect = document_processing_module.sqlite3.connect
+
+            def flaky_get_article_processing_run(**kwargs):
+                nonlocal initial_lookup_lock_failures
+                if initial_lookup_lock_failures == 0:
+                    initial_lookup_lock_failures += 1
+                    raise sqlite3.OperationalError("database table is locked")
+                return original_get_article_processing_run(**kwargs)
+
+            class ArticleSuccessConnection:
+                def __init__(self, connection):
+                    self._connection = connection
+
+                def execute(self, sql, parameters=()):
+                    nonlocal success_write_lock_failures
+                    if (
+                        "UPDATE article_processing_runs" in sql
+                        and len(parameters) == 2
+                        and parameters[1] == article.article_key
+                        and "status = 'succeeded'" in sql
+                        and success_write_lock_failures == 0
+                    ):
+                        success_write_lock_failures += 1
+                        raise sqlite3.OperationalError("database schema is locked")
+                    return self._connection.execute(sql, parameters)
+
+                def __getattr__(self, name: str):
+                    return getattr(self._connection, name)
+
+            with mock.patch.object(
+                document_processing_module,
+                "DATABASE_RETRY_DELAYS_SECONDS",
+                (0.0, 0.0, 0.0),
+            ):
+                with mock.patch.object(
+                    document_processing_module,
+                    "get_article_processing_run",
+                    side_effect=flaky_get_article_processing_run,
+                ):
+                    with mock.patch.object(
+                        document_processing_module.sqlite3,
+                        "connect",
+                        side_effect=lambda *args, **kwargs: ArticleSuccessConnection(
+                            original_connect(*args, **kwargs)
+                        ),
+                    ):
+                        result = process_article_processing_run(
+                            database_url=database_url,
+                            article_key=article.article_key,
+                            locked_by="article-worker-1",
+                            translator=_FakeTranslator(),
+                            summarizer_tagger=_FakeSummarizerTagger(),
+                            provider_name="gemini",
+                            model_name="gemini-2.5-flash",
+                            prompt_version="article-enrichment-v2",
+                        )
+
+        self.assertEqual(initial_lookup_lock_failures, 1)
+        self.assertEqual(success_write_lock_failures, 1)
+        self.assertEqual(result.status, "succeeded")
+
+    def test_process_article_processing_run_survives_transient_lock_in_failure_write(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_article_processing_run)
+        self.assertIsNotNone(process_article_processing_run)
+        self.assertIsNotNone(list_latest_document_articles)
+        self.assertIsNotNone(document_processing_module)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            self._persist_parsed_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            article = list_latest_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )[0]
+            create_article_processing_run(
+                database_url=database_url,
+                article_id=article.article_id,
+            )
+
+            failure_write_lock_failures = 0
+            original_connect = document_processing_module.sqlite3.connect
+
+            class ArticleFailureConnection:
+                def __init__(self, connection):
+                    self._connection = connection
+
+                def execute(self, sql, parameters=()):
+                    nonlocal failure_write_lock_failures
+                    if (
+                        "UPDATE article_processing_runs" in sql
+                        and parameters[-1] == article.article_key
+                        and parameters[0] in ("failed_retryable", "failed_terminal")
+                        and failure_write_lock_failures == 0
+                    ):
+                        failure_write_lock_failures += 1
+                        raise sqlite3.OperationalError("database is locked")
+                    return self._connection.execute(sql, parameters)
+
+                def __getattr__(self, name: str):
+                    return getattr(self._connection, name)
+
+            failing_translator = mock.Mock(side_effect=RuntimeError("translation timeout"))
+
+            with mock.patch.object(
+                document_processing_module,
+                "DATABASE_RETRY_DELAYS_SECONDS",
+                (0.0, 0.0, 0.0),
+            ):
+                with mock.patch.object(
+                    document_processing_module.sqlite3,
+                    "connect",
+                    side_effect=lambda *args, **kwargs: ArticleFailureConnection(
+                        original_connect(*args, **kwargs)
+                    ),
+                ):
+                    result = process_article_processing_run(
+                        database_url=database_url,
+                        article_key=article.article_key,
+                        locked_by="article-worker-1",
+                        translator=failing_translator,
+                        summarizer_tagger=_FakeSummarizerTagger(),
+                        provider_name="gemini",
+                        model_name="gemini-2.5-flash",
+                        prompt_version="article-enrichment-v2",
+                    )
+
+        self.assertEqual(failure_write_lock_failures, 1)
+        self.assertEqual(result.status, "failed_retryable")
+        self.assertEqual(result.last_error_message, "translation timeout")
 
     def test_run_processing_tick_survives_transient_database_lock_after_document_success(self) -> None:
         self.assertIsNotNone(run_pending_migrations)

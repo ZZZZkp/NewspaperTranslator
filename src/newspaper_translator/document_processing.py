@@ -94,8 +94,14 @@ def _is_retryable_sqlite_error(exc) -> bool:
     message = str(exc).lower()
     return (
         isinstance(exc, sqlite3.OperationalError)
-        and "database" in message
-        and "locked" in message
+        and any(
+            lock_message in message
+            for lock_message in (
+                "database is locked",
+                "database table is locked",
+                "database schema is locked",
+            )
+        )
     )
 
 
@@ -1272,9 +1278,11 @@ def _resolve_article_processing_run_for_execution(
     lock_timeout_seconds: int,
     preclaimed_run: ArticleProcessingRun | None = None,
 ) -> tuple[ArticleProcessingRun, bool]:
-    current_run = get_article_processing_run(
-        database_url=database_url,
-        article_key=article_key,
+    current_run = _run_with_database_retries(
+        lambda: get_article_processing_run(
+            database_url=database_url,
+            article_key=article_key,
+        ),
     )
 
     if preclaimed_run is not None:
@@ -1298,9 +1306,11 @@ def _resolve_article_processing_run_for_execution(
     if claimed_run is not None:
         return claimed_run, True
 
-    return get_article_processing_run(
-        database_url=database_url,
-        article_key=article_key,
+    return _run_with_database_retries(
+        lambda: get_article_processing_run(
+            database_url=database_url,
+            article_key=article_key,
+        ),
     ), False
 
 
@@ -1476,9 +1486,11 @@ def _resolve_document_processing_run_for_execution(
             scheduler_run_id=scheduler_run_id,
             preclaimed_run=preclaimed_run,
         )
-        current_run = get_document_processing_run(
-            database_url=database_url,
-            document_key=document_key,
+        current_run = _run_with_database_retries(
+            lambda: get_document_processing_run(
+                database_url=database_url,
+                document_key=document_key,
+            ),
         )
         return current_run, (
             current_run.processing_run_id == preclaimed_run.processing_run_id
@@ -1489,9 +1501,11 @@ def _resolve_document_processing_run_for_execution(
             )
         )
 
-    current_run = get_document_processing_run(
-        database_url=database_url,
-        document_key=document_key,
+    current_run = _run_with_database_retries(
+        lambda: get_document_processing_run(
+            database_url=database_url,
+            document_key=document_key,
+        ),
     )
     if _document_processing_run_is_owned_by(
         current_run,
@@ -1510,9 +1524,11 @@ def _resolve_document_processing_run_for_execution(
     if claimed_run is not None:
         return claimed_run, True
 
-    return get_document_processing_run(
-        database_url=database_url,
-        document_key=document_key,
+    return _run_with_database_retries(
+        lambda: get_document_processing_run(
+            database_url=database_url,
+            document_key=document_key,
+        ),
     ), False
 
 
@@ -2104,9 +2120,11 @@ def run_processing_tick(
         if getattr(result, "status", "") != "succeeded":
             return result
 
-        current_run = get_document_processing_run(
-            database_url=database_url,
-            document_key=document_key,
+        current_run = _run_with_database_retries(
+            lambda: get_document_processing_run(
+                database_url=database_url,
+                document_key=document_key,
+            ),
         )
         if _document_processing_run_is_owned_by(
             current_run,

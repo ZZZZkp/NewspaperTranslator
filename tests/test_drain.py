@@ -685,6 +685,196 @@ class DrainTests(DocumentProcessingTestMixin, unittest.TestCase):
         self.assertEqual(claimed_run.status, "running")
         self.assertEqual(claimed_run.locked_by, "article-worker-1")
 
+    def test_process_document_survives_transient_database_lock_during_execution_resolution(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_document_processing_run)
+        self.assertIsNotNone(claim_document_processing_run)
+        self.assertIsNotNone(process_document)
+        self.assertIsNotNone(document_processing_module)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            create_document_processing_run(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            claimed_run = claim_document_processing_run(
+                database_url=database_url,
+                document_key=document_key,
+                locked_by="scheduler-worker-1",
+                lock_timeout_seconds=600,
+                scheduler_run_id="scheduler-run-1",
+            )
+            self.assertIsNotNone(claimed_run)
+
+            lock_failures = 0
+            original_get_document_processing_run = (
+                document_processing_module.get_document_processing_run
+            )
+
+            def flaky_get_document_processing_run(**kwargs):
+                nonlocal lock_failures
+                if lock_failures == 0:
+                    lock_failures += 1
+                    raise sqlite3.OperationalError("database table is locked")
+                return original_get_document_processing_run(**kwargs)
+
+            with mock.patch.object(
+                document_processing_module,
+                "create_document_processing_run",
+                return_value=claimed_run,
+            ):
+                with mock.patch.object(
+                    document_processing_module,
+                    "get_document_processing_run",
+                    side_effect=flaky_get_document_processing_run,
+                ):
+                    result = process_document(
+                        database_url=database_url,
+                        document_key=document_key,
+                        locked_by="scheduler-worker-1",
+                        scheduler_run_id="scheduler-run-1",
+                        parse_persist_document=lambda **kwargs: None,
+                        enrich_document=lambda **kwargs: None,
+                    )
+
+        self.assertEqual(lock_failures, 1)
+        self.assertEqual(result.status, "succeeded")
+
+    def test_process_article_processing_run_survives_transient_database_lock_during_execution_resolution(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_article_processing_run)
+        self.assertIsNotNone(claim_article_processing_run)
+        self.assertIsNotNone(process_article_processing_run)
+        self.assertIsNotNone(list_latest_document_articles)
+        self.assertIsNotNone(document_processing_module)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            self._persist_parsed_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            article = list_latest_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )[0]
+            create_article_processing_run(
+                database_url=database_url,
+                article_id=article.article_id,
+            )
+            claim_article_processing_run(
+                database_url=database_url,
+                article_key=article.article_key,
+                locked_by="article-worker-1",
+                lock_timeout_seconds=600,
+            )
+
+            lock_failures = 0
+            call_count = 0
+            original_get_article_processing_run = (
+                document_processing_module.get_article_processing_run
+            )
+
+            def flaky_get_article_processing_run(**kwargs):
+                nonlocal lock_failures, call_count
+                call_count += 1
+                if call_count == 2 and lock_failures == 0:
+                    lock_failures += 1
+                    raise sqlite3.OperationalError("database schema is locked")
+                return original_get_article_processing_run(**kwargs)
+
+            with mock.patch.object(
+                document_processing_module,
+                "get_article_processing_run",
+                side_effect=flaky_get_article_processing_run,
+            ):
+                result = process_article_processing_run(
+                    database_url=database_url,
+                    article_key=article.article_key,
+                    locked_by="article-worker-1",
+                    translator=_FakeTranslator(),
+                    summarizer_tagger=_FakeSummarizerTagger(),
+                    provider_name="gemini",
+                    model_name="gemini-2.5-flash",
+                    prompt_version="article-enrichment-v2",
+                )
+
+        self.assertEqual(lock_failures, 1)
+        self.assertEqual(result.status, "succeeded")
+
+    def test_run_processing_tick_survives_transient_database_lock_after_document_success(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_document_processing_run)
+        self.assertIsNotNone(run_processing_tick)
+        self.assertIsNotNone(document_processing_module)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            create_document_processing_run(
+                database_url=database_url,
+                document_key=document_key,
+            )
+
+            processed = False
+            lock_failures = 0
+            original_get_document_processing_run = (
+                document_processing_module.get_document_processing_run
+            )
+
+            def flaky_get_document_processing_run(**kwargs):
+                nonlocal lock_failures
+                if processed and lock_failures == 0:
+                    lock_failures += 1
+                    raise sqlite3.OperationalError("database table is locked")
+                return original_get_document_processing_run(**kwargs)
+
+            def process_one_document(*, document_key: str, scheduler_run_id: str, locked_by: str):
+                nonlocal processed
+                processed = True
+                return mock.Mock(
+                    status="succeeded",
+                    document_key=document_key,
+                    scheduler_run_id=scheduler_run_id,
+                    locked_by=locked_by,
+                )
+
+            with mock.patch.object(
+                document_processing_module,
+                "get_document_processing_run",
+                side_effect=flaky_get_document_processing_run,
+            ):
+                result = run_processing_tick(
+                    database_url=database_url,
+                    trigger_type="processing",
+                    process_one_document=process_one_document,
+                    document_limit=1,
+                )
+
+        self.assertEqual(lock_failures, 1)
+        self.assertTrue(result.did_work)
+        self.assertEqual(result.selected_document_count, 1)
+        self.assertEqual(result.completed_document_count, 1)
+        self.assertEqual(result.failed_document_count, 0)
+
     def test_run_processing_tick_retries_persistent_database_lock_three_times_then_reraises(self) -> None:
         self.assertIsNotNone(run_processing_tick)
         self.assertIsNotNone(document_processing_module)

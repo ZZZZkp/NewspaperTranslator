@@ -2,6 +2,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 import sqlite3
+import time
 import uuid
 
 from newspaper_translator.article_enrichment import build_article_input_hash, enrich_article
@@ -86,27 +87,51 @@ class BatchRetrySummary:
     skipped_count: int
 
 
+DATABASE_RETRY_DELAYS_SECONDS = (0.2, 0.5, 1.0)
+
+
+def _is_retryable_sqlite_error(exc) -> bool:
+    return (
+        isinstance(exc, sqlite3.OperationalError)
+        and "database is locked" in str(exc).lower()
+    )
+
+
+def _run_with_database_retries(callback, *, sleep_fn=time.sleep):
+    for retry_delay_seconds in DATABASE_RETRY_DELAYS_SECONDS:
+        try:
+            return callback()
+        except Exception as exc:  # noqa: BLE001
+            if not _is_retryable_sqlite_error(exc):
+                raise
+            sleep_fn(retry_delay_seconds)
+    return callback()
+
+
 def create_scheduler_run(*, database_url: str, trigger_type: str) -> SchedulerRun:
     scheduler_run_id = str(uuid.uuid4())
-    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
-    try:
-        connection.execute(
-            """
-            INSERT INTO scheduler_runs (
-                scheduler_run_id,
-                trigger_type,
-                status
-            ) VALUES (?, ?, ?)
-            """,
-            (
-                scheduler_run_id,
-                trigger_type,
-                "running",
-            ),
-        )
-        connection.commit()
-    finally:
-        connection.close()
+    def callback():
+        connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+        try:
+            connection.execute(
+                """
+                INSERT INTO scheduler_runs (
+                    scheduler_run_id,
+                    trigger_type,
+                    status
+                ) VALUES (?, ?, ?)
+                """,
+                (
+                    scheduler_run_id,
+                    trigger_type,
+                    "running",
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    _run_with_database_retries(callback)
     return get_scheduler_run(
         database_url=database_url,
         scheduler_run_id=scheduler_run_id,
@@ -124,34 +149,37 @@ def finalize_scheduler_run(
     failed_document_count: int = 0,
     error_message: str | None = None,
 ) -> None:
-    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
-    try:
-        connection.execute(
-            """
-            UPDATE scheduler_runs
-            SET
-                status = ?,
-                finished_at = CURRENT_TIMESTAMP,
-                import_run_id = ?,
-                selected_document_count = ?,
-                completed_document_count = ?,
-                failed_document_count = ?,
-                error_message = ?
-            WHERE scheduler_run_id = ?
-            """,
-            (
-                status,
-                import_run_id,
-                selected_document_count,
-                completed_document_count,
-                failed_document_count,
-                error_message,
-                scheduler_run_id,
-            ),
-        )
-        connection.commit()
-    finally:
-        connection.close()
+    def callback():
+        connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+        try:
+            connection.execute(
+                """
+                UPDATE scheduler_runs
+                SET
+                    status = ?,
+                    finished_at = CURRENT_TIMESTAMP,
+                    import_run_id = ?,
+                    selected_document_count = ?,
+                    completed_document_count = ?,
+                    failed_document_count = ?,
+                    error_message = ?
+                WHERE scheduler_run_id = ?
+                """,
+                (
+                    status,
+                    import_run_id,
+                    selected_document_count,
+                    completed_document_count,
+                    failed_document_count,
+                    error_message,
+                    scheduler_run_id,
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    _run_with_database_retries(callback)
 
 
 def get_scheduler_run(*, database_url: str, scheduler_run_id: str) -> SchedulerRun:
@@ -185,28 +213,31 @@ def get_scheduler_run(*, database_url: str, scheduler_run_id: str) -> SchedulerR
 
 
 def get_latest_scheduler_run(*, database_url: str) -> SchedulerRun | None:
-    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
-    try:
-        row = connection.execute(
-            """
-            SELECT
-                scheduler_run_id,
-                trigger_type,
-                status,
-                started_at,
-                finished_at,
-                import_run_id,
-                selected_document_count,
-                completed_document_count,
-                failed_document_count,
-                error_message
-            FROM scheduler_runs
-            ORDER BY started_at DESC, rowid DESC
-            LIMIT 1
-            """
-        ).fetchone()
-    finally:
-        connection.close()
+    def callback():
+        connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+        try:
+            return connection.execute(
+                """
+                SELECT
+                    scheduler_run_id,
+                    trigger_type,
+                    status,
+                    started_at,
+                    finished_at,
+                    import_run_id,
+                    selected_document_count,
+                    completed_document_count,
+                    failed_document_count,
+                    error_message
+                FROM scheduler_runs
+                ORDER BY started_at DESC, rowid DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        finally:
+            connection.close()
+
+    row = _run_with_database_retries(callback)
 
     if row is None:
         return None
@@ -368,39 +399,43 @@ def claim_document_processing_run(
     lock_timeout_seconds: int,
     scheduler_run_id: str | None = None,
 ) -> DocumentProcessingRun | None:
-    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
-    try:
-        cursor = connection.execute(
-            """
-            UPDATE document_processing_runs
-            SET
-                scheduler_run_id = ?,
-                status = ?,
-                locked_by = ?,
-                lock_expires_at = datetime(CURRENT_TIMESTAMP, '+' || ? || ' seconds'),
-                last_attempt_started_at = CURRENT_TIMESTAMP,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE document_key = ?
-              AND status IN ('pending', 'failed_retryable', 'manual_retry_requested')
-              AND (
-                    locked_by IS NULL
-                    OR lock_expires_at IS NULL
-                    OR lock_expires_at <= CURRENT_TIMESTAMP
-              )
-            """,
-            (
-                scheduler_run_id,
-                "running",
-                locked_by,
-                lock_timeout_seconds,
-                document_key,
-            ),
-        )
-        connection.commit()
-    finally:
-        connection.close()
+    def callback():
+        connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+        try:
+            cursor = connection.execute(
+                """
+                UPDATE document_processing_runs
+                SET
+                    scheduler_run_id = ?,
+                    status = ?,
+                    locked_by = ?,
+                    lock_expires_at = datetime(CURRENT_TIMESTAMP, '+' || ? || ' seconds'),
+                    last_attempt_started_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE document_key = ?
+                  AND status IN ('pending', 'failed_retryable', 'manual_retry_requested')
+                  AND (
+                        locked_by IS NULL
+                        OR lock_expires_at IS NULL
+                        OR lock_expires_at <= CURRENT_TIMESTAMP
+                  )
+                """,
+                (
+                    scheduler_run_id,
+                    "running",
+                    locked_by,
+                    lock_timeout_seconds,
+                    document_key,
+                ),
+            )
+            connection.commit()
+            return cursor.rowcount
+        finally:
+            connection.close()
 
-    if cursor.rowcount == 0:
+    rowcount = _run_with_database_retries(callback)
+
+    if rowcount == 0:
         return None
     return get_document_processing_run(
         database_url=database_url,
@@ -415,39 +450,43 @@ def claim_article_processing_run(
     locked_by: str,
     lock_timeout_seconds: int,
 ) -> ArticleProcessingRun | None:
-    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
-    try:
-        cursor = connection.execute(
-            """
-            UPDATE article_processing_runs
-            SET
-                status = CASE
-                    WHEN status = 'manual_retry_requested' THEN 'running_manual_retry'
-                    ELSE 'running'
-                END,
-                locked_by = ?,
-                lock_expires_at = datetime(CURRENT_TIMESTAMP, '+' || ? || ' seconds'),
-                last_attempt_started_at = CURRENT_TIMESTAMP,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE article_key = ?
-              AND status IN ('pending', 'failed_retryable', 'manual_retry_requested')
-              AND (
-                    locked_by IS NULL
-                    OR lock_expires_at IS NULL
-                    OR lock_expires_at <= CURRENT_TIMESTAMP
-              )
-            """,
-            (
-                locked_by,
-                lock_timeout_seconds,
-                article_key,
-            ),
-        )
-        connection.commit()
-    finally:
-        connection.close()
+    def callback():
+        connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+        try:
+            cursor = connection.execute(
+                """
+                UPDATE article_processing_runs
+                SET
+                    status = CASE
+                        WHEN status = 'manual_retry_requested' THEN 'running_manual_retry'
+                        ELSE 'running'
+                    END,
+                    locked_by = ?,
+                    lock_expires_at = datetime(CURRENT_TIMESTAMP, '+' || ? || ' seconds'),
+                    last_attempt_started_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE article_key = ?
+                  AND status IN ('pending', 'failed_retryable', 'manual_retry_requested')
+                  AND (
+                        locked_by IS NULL
+                        OR lock_expires_at IS NULL
+                        OR lock_expires_at <= CURRENT_TIMESTAMP
+                  )
+                """,
+                (
+                    locked_by,
+                    lock_timeout_seconds,
+                    article_key,
+                ),
+            )
+            connection.commit()
+            return cursor.rowcount
+        finally:
+            connection.close()
 
-    if cursor.rowcount == 0:
+    rowcount = _run_with_database_retries(callback)
+
+    if rowcount == 0:
         return None
     return get_article_processing_run(
         database_url=database_url,
@@ -550,43 +589,46 @@ def list_eligible_document_processing_runs(
     database_url: str,
     limit: int,
 ) -> list[DocumentProcessingRun]:
-    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
-    try:
-        rows = connection.execute(
-            """
-            SELECT
-                processing_run_id,
-                scheduler_run_id,
-                document_key,
-                status,
-                current_step,
-                automatic_failure_count,
-                last_failure_step,
-                last_error_message,
-                last_attempt_started_at,
-                last_attempt_finished_at,
-                locked_by,
-                lock_expires_at,
-                created_at,
-                updated_at
-            FROM document_processing_runs
-            WHERE status IN ('manual_retry_requested', 'pending', 'failed_retryable')
-            ORDER BY
-                CASE status
-                    WHEN 'manual_retry_requested' THEN 0
-                    WHEN 'pending' THEN 1
-                    WHEN 'failed_retryable' THEN 2
-                    ELSE 3
-                END,
-                updated_at ASC,
-                created_at ASC,
-                rowid ASC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-    finally:
-        connection.close()
+    def callback():
+        connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+        try:
+            return connection.execute(
+                """
+                SELECT
+                    processing_run_id,
+                    scheduler_run_id,
+                    document_key,
+                    status,
+                    current_step,
+                    automatic_failure_count,
+                    last_failure_step,
+                    last_error_message,
+                    last_attempt_started_at,
+                    last_attempt_finished_at,
+                    locked_by,
+                    lock_expires_at,
+                    created_at,
+                    updated_at
+                FROM document_processing_runs
+                WHERE status IN ('manual_retry_requested', 'pending', 'failed_retryable')
+                ORDER BY
+                    CASE status
+                        WHEN 'manual_retry_requested' THEN 0
+                        WHEN 'pending' THEN 1
+                        WHEN 'failed_retryable' THEN 2
+                        ELSE 3
+                    END,
+                    updated_at ASC,
+                    created_at ASC,
+                    rowid ASC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        finally:
+            connection.close()
+
+    rows = _run_with_database_retries(callback)
 
     return [
         _row_to_document_processing_run(row)
@@ -599,43 +641,46 @@ def list_eligible_article_processing_runs(
     database_url: str,
     limit: int,
 ) -> list[ArticleProcessingRun]:
-    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
-    try:
-        rows = connection.execute(
-            """
-            SELECT
-                article_processing_run_id,
-                article_key,
-                article_id,
-                status,
-                current_step,
-                automatic_failure_count,
-                last_error_message,
-                last_success_input_hash,
-                last_attempt_started_at,
-                last_attempt_finished_at,
-                locked_by,
-                lock_expires_at,
-                created_at,
-                updated_at
-            FROM article_processing_runs
-            WHERE status IN ('manual_retry_requested', 'pending', 'failed_retryable')
-            ORDER BY
-                CASE status
-                    WHEN 'manual_retry_requested' THEN 0
-                    WHEN 'pending' THEN 1
-                    WHEN 'failed_retryable' THEN 2
-                    ELSE 3
-                END,
-                updated_at ASC,
-                created_at ASC,
-                rowid ASC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-    finally:
-        connection.close()
+    def callback():
+        connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+        try:
+            return connection.execute(
+                """
+                SELECT
+                    article_processing_run_id,
+                    article_key,
+                    article_id,
+                    status,
+                    current_step,
+                    automatic_failure_count,
+                    last_error_message,
+                    last_success_input_hash,
+                    last_attempt_started_at,
+                    last_attempt_finished_at,
+                    locked_by,
+                    lock_expires_at,
+                    created_at,
+                    updated_at
+                FROM article_processing_runs
+                WHERE status IN ('manual_retry_requested', 'pending', 'failed_retryable')
+                ORDER BY
+                    CASE status
+                        WHEN 'manual_retry_requested' THEN 0
+                        WHEN 'pending' THEN 1
+                        WHEN 'failed_retryable' THEN 2
+                        ELSE 3
+                    END,
+                    updated_at ASC,
+                    created_at ASC,
+                    rowid ASC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        finally:
+            connection.close()
+
+    rows = _run_with_database_retries(callback)
 
     return [_row_to_article_processing_run(row) for row in rows]
 

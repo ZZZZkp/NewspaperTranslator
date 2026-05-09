@@ -25,6 +25,7 @@ from _document_processing_helpers import (
     claim_document_processing_run,
     get_document_processing_run,
     run_document_processing_drain,
+    run_processing_tick,
     process_document,
     create_article_processing_run,
     claim_article_processing_run,
@@ -286,6 +287,152 @@ class DrainTests(DocumentProcessingTestMixin, unittest.TestCase):
         self.assertEqual(first_stored_run.status, "succeeded")
         self.assertEqual(second_stored_run.status, "running")
         self.assertEqual(second_stored_run.locked_by, "other-worker")
+
+    def test_document_processing_drain_retries_transient_database_lock_when_listing_runs(self) -> None:
+        self.assertIsNotNone(run_pending_migrations)
+        self.assertIsNotNone(create_document_processing_run)
+        self.assertIsNotNone(run_document_processing_drain)
+        self.assertIsNotNone(get_document_processing_run)
+        self.assertIsNotNone(process_document)
+        self.assertIsNotNone(document_processing_module)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            create_document_processing_run(
+                database_url=database_url,
+                document_key=document_key,
+            )
+
+            processed: list[str] = []
+            list_attempts = 0
+
+            class RetryOnceListConnection:
+                def __init__(self, connection):
+                    self._connection = connection
+
+                def execute(self, sql, parameters=()):
+                    nonlocal list_attempts
+                    if "FROM document_processing_runs" in sql and "WHERE status IN ('manual_retry_requested', 'pending', 'failed_retryable')" in sql:
+                        list_attempts += 1
+                        if list_attempts == 1:
+                            raise sqlite3.OperationalError("database is locked")
+                    return self._connection.execute(sql, parameters)
+
+                def __getattr__(self, name: str):
+                    return getattr(self._connection, name)
+
+            def parse_persist_document(*, document_key: str):
+                processed.append(document_key)
+                return None
+
+            def enrich_document(*, document_key: str):
+                return None
+
+            original_connect = document_processing_module.sqlite3.connect
+
+            def connect_with_retry_once(*args, **kwargs):
+                return RetryOnceListConnection(original_connect(*args, **kwargs))
+
+            with mock.patch.object(
+                document_processing_module,
+                "DATABASE_RETRY_DELAYS_SECONDS",
+                (0.0, 0.0, 0.0),
+                create=True,
+            ):
+                with mock.patch.object(
+                    document_processing_module.sqlite3,
+                    "connect",
+                    side_effect=connect_with_retry_once,
+                ):
+                    drain_result = run_document_processing_drain(
+                        database_url=database_url,
+                        process_one_document=lambda **kwargs: process_document(
+                            database_url=database_url,
+                            parse_persist_document=parse_persist_document,
+                            enrich_document=enrich_document,
+                            **kwargs,
+                        ),
+                        document_limit=1,
+                        scheduler_run_id="scheduler-run-1",
+                    )
+            stored_run = get_document_processing_run(
+                database_url=database_url,
+                document_key=document_key,
+            )
+
+        self.assertEqual(list_attempts, 3)
+        self.assertEqual(processed, [document_key])
+        self.assertTrue(drain_result.did_work)
+        self.assertEqual(drain_result.selected_count, 1)
+        self.assertEqual(drain_result.completed_count, 1)
+        self.assertEqual(drain_result.failed_count, 0)
+        self.assertEqual(stored_run.status, "succeeded")
+
+    def test_run_processing_tick_retries_persistent_database_lock_three_times_then_reraises(self) -> None:
+        self.assertIsNotNone(run_processing_tick)
+        self.assertIsNotNone(document_processing_module)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            create_document_processing_run(
+                database_url=database_url,
+                document_key=document_key,
+            )
+
+            list_attempts = 0
+
+            class AlwaysLockedListConnection:
+                def __init__(self, connection):
+                    self._connection = connection
+
+                def execute(self, sql, parameters=()):
+                    nonlocal list_attempts
+                    if "FROM document_processing_runs" in sql and "WHERE status IN ('manual_retry_requested', 'pending', 'failed_retryable')" in sql:
+                        list_attempts += 1
+                        raise sqlite3.OperationalError("database is locked")
+                    return self._connection.execute(sql, parameters)
+
+                def __getattr__(self, name: str):
+                    return getattr(self._connection, name)
+
+            original_connect = document_processing_module.sqlite3.connect
+
+            def connect_with_persistent_lock(*args, **kwargs):
+                return AlwaysLockedListConnection(original_connect(*args, **kwargs))
+
+            with mock.patch.object(
+                document_processing_module,
+                "DATABASE_RETRY_DELAYS_SECONDS",
+                (0.0, 0.0, 0.0),
+                create=True,
+            ):
+                with mock.patch.object(
+                    document_processing_module.sqlite3,
+                    "connect",
+                    side_effect=connect_with_persistent_lock,
+                ):
+                    with self.assertRaisesRegex(sqlite3.OperationalError, "database is locked"):
+                        run_processing_tick(
+                            database_url=database_url,
+                            trigger_type="processing",
+                            process_one_document=lambda **kwargs: None,
+                            document_limit=1,
+                        )
+
+        self.assertEqual(list_attempts, 4)
 
     def test_article_processing_drain_refills_free_slots_until_queue_is_empty(self) -> None:
         self.assertIsNotNone(run_pending_migrations)

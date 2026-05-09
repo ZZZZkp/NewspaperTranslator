@@ -110,6 +110,7 @@ def _run_with_database_retries(callback, *, sleep_fn=time.sleep):
 
 def create_scheduler_run(*, database_url: str, trigger_type: str) -> SchedulerRun:
     scheduler_run_id = str(uuid.uuid4())
+
     def callback():
         connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
         try:
@@ -132,9 +133,11 @@ def create_scheduler_run(*, database_url: str, trigger_type: str) -> SchedulerRu
             connection.close()
 
     _run_with_database_retries(callback)
-    return get_scheduler_run(
-        database_url=database_url,
-        scheduler_run_id=scheduler_run_id,
+    return _run_with_database_retries(
+        lambda: get_scheduler_run(
+            database_url=database_url,
+            scheduler_run_id=scheduler_run_id,
+        ),
     )
 
 
@@ -437,9 +440,11 @@ def claim_document_processing_run(
 
     if rowcount == 0:
         return None
-    return get_document_processing_run(
-        database_url=database_url,
-        document_key=document_key,
+    return _run_with_database_retries(
+        lambda: get_document_processing_run(
+            database_url=database_url,
+            document_key=document_key,
+        ),
     )
 
 
@@ -488,9 +493,11 @@ def claim_article_processing_run(
 
     if rowcount == 0:
         return None
-    return get_article_processing_run(
-        database_url=database_url,
-        article_key=article_key,
+    return _run_with_database_retries(
+        lambda: get_article_processing_run(
+            database_url=database_url,
+            article_key=article_key,
+        ),
     )
 
 

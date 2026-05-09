@@ -443,23 +443,65 @@ def run_worker_loop(
     loop_count = 0
     processing_running = False
     last_did_work = False
+    consecutive_failures = 0
     while max_loops is None or loop_count < max_loops:
-        if should_run_catch_up_tick(
-            last_scheduler_run_started_at=get_last_scheduler_run_started_at_fn(
-                database_url=app_settings.database_url,
-            ),
-            now=now(),
-            interval_seconds=import_interval_seconds,
-        ):
-            run_import_tick(trigger_type="interval")
+        try:
+            if should_run_catch_up_tick(
+                last_scheduler_run_started_at=get_last_scheduler_run_started_at_fn(
+                    database_url=app_settings.database_url,
+                ),
+                now=now(),
+                interval_seconds=import_interval_seconds,
+            ):
+                try:
+                    run_import_tick(trigger_type="interval")
+                except Exception as exc:
+                    _raise_for_worker_loop_error(exc, stage="import_tick")
 
-        if not processing_running:
-            processing_running = True
-            try:
-                tick_result = run_processing_tick_callback()
-            finally:
-                processing_running = False
-            last_did_work = bool(getattr(tick_result, "did_work", False))
+            if not processing_running:
+                processing_running = True
+                try:
+                    try:
+                        tick_result = run_processing_tick_callback()
+                    except Exception as exc:
+                        _raise_for_worker_loop_error(exc, stage="processing_tick")
+                finally:
+                    processing_running = False
+                last_did_work = bool(getattr(tick_result, "did_work", False))
+        except Exception as exc:
+            if isinstance(exc, FatalWorkerError):
+                _emit_worker_loop_log(
+                    level="ERROR",
+                    event="worker.loop.fatal",
+                    stage=exc.stage,
+                    error=str(exc.cause),
+                    error_type=type(exc.cause).__name__,
+                )
+                raise
+            if isinstance(exc, RetryableWorkerLoopError):
+                consecutive_failures += 1
+                backoff_seconds = _loop_retry_backoff_seconds(consecutive_failures)
+                _emit_worker_loop_log(
+                    level="WARNING",
+                    event="worker.loop.retryable",
+                    stage=exc.stage,
+                    consecutive_failures=consecutive_failures,
+                    backoff_seconds=backoff_seconds,
+                    error=str(exc.cause),
+                    error_type=type(exc.cause).__name__,
+                )
+                loop_count += 1
+                sleep(backoff_seconds)
+                continue
+            raise
+
+        if consecutive_failures > 0:
+            _emit_worker_loop_log(
+                level="INFO",
+                event="worker.loop.recovered",
+                consecutive_failures=consecutive_failures,
+            )
+            consecutive_failures = 0
         loop_count += 1
         sleep(active_poll_interval_seconds if last_did_work else idle_poll_interval_seconds)
 
@@ -556,6 +598,18 @@ def _raise_for_worker_loop_error(exc: BaseException, *, stage: str) -> None:
         stage=stage,
         cause=exc,
     ) from exc
+
+
+def _emit_worker_loop_log(*, level: str, event: str, **details: object) -> None:
+    print(
+        format_log_event(
+            level=level,
+            event=event,
+            service="worker",
+            details=details,
+        ),
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

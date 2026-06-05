@@ -263,6 +263,10 @@ def record_parse_run_result(
                 ),
             )
 
+        fragments_by_source_order = {
+            fragment.source_order: fragment
+            for fragment in parse_result.fragments
+        }
         for article in parse_result.articles:
             article_id = str(uuid.uuid4())
             article_key = _resolve_article_key(
@@ -272,7 +276,11 @@ def record_parse_run_result(
                 title_en=article.title,
                 body_text_en=article.body_text,
                 source_page_numbers=[
-                    getattr(parse_result.fragments[source_fragment.source_order - 1], "page_number", 0)
+                    getattr(
+                        fragments_by_source_order.get(source_fragment.source_order),
+                        "page_number",
+                        0,
+                    )
                     for source_fragment in article.source_fragments
                 ],
             )

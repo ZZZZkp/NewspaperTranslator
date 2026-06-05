@@ -28,7 +28,7 @@ try:
         record_parse_run_result,
     )
     from newspaper_translator.gemini import ArticleSummaryTagResult, ArticleTranslationResult
-    from newspaper_translator.mineru import MineruParsedDocument
+    from newspaper_translator.mineru import MineruParsedDocument, MineruParsedPage
     from newspaper_translator.pdf import (
         ArticleFragment,
         ArticleSource,
@@ -45,6 +45,7 @@ except ImportError:
     ArticleSummaryTagResult = None
     ArticleTranslationResult = None
     MineruParsedDocument = None
+    MineruParsedPage = None
     ArticleFragment = None
     ArticleSource = None
     ParseMatchDecision = None
@@ -549,5 +550,5 @@ class _FakeMineruClient:
     def __init__(self, *, parsed_document) -> None:
         self._parsed_document = parsed_document
 
-    def parse_pdf(self, *, pdf_path: pathlib.Path, output_root: pathlib.Path):
+    def parse_pdf_by_pages(self, *, pdf_path: pathlib.Path, output_root: pathlib.Path):
         return self._parsed_document

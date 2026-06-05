@@ -27,6 +27,7 @@ from _document_processing_helpers import (
     list_latest_document_articles,
     get_latest_article_enrichment,
     MineruParsedDocument,
+    MineruParsedPage,
 )
 
 
@@ -473,6 +474,16 @@ class ProcessDocumentTests(DocumentProcessingTestMixin, unittest.TestCase):
                         file_name="wsj-2026-04-20.pdf",
                         markdown_path=markdown_path,
                         markdown_text=markdown_path.read_text(encoding="utf-8"),
+                        pages=(
+                            MineruParsedPage(
+                                page_number=1,
+                                batch_id="batch-1",
+                                file_id="page-0001",
+                                file_name="page-0001.pdf",
+                                markdown_path=output_root / "page-0001.md",
+                                markdown_text=markdown_path.read_text(encoding="utf-8"),
+                            ),
+                        ),
                     )
                 ),
                 continuation_matcher=None,

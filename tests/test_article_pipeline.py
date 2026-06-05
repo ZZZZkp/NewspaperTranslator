@@ -21,7 +21,7 @@ try:
         list_parse_runs,
     )
     from newspaper_translator.database import run_pending_migrations
-    from newspaper_translator.mineru import MineruParsedDocument
+    from newspaper_translator.mineru import MineruParsedDocument, MineruParsedPage
 except ImportError:
     persist_document_articles = None
     resolve_publication_date = None
@@ -29,6 +29,7 @@ except ImportError:
     list_parse_runs = None
     run_pending_migrations = None
     MineruParsedDocument = None
+    MineruParsedPage = None
 
 
 class ArticlePipelineTests(unittest.TestCase):
@@ -70,6 +71,16 @@ class ArticlePipelineTests(unittest.TestCase):
                         file_name="wsj-2026-04-20.pdf",
                         markdown_path=markdown_path,
                         markdown_text=markdown_path.read_text(encoding="utf-8"),
+                        pages=(
+                            MineruParsedPage(
+                                page_number=1,
+                                batch_id="batch-1",
+                                file_id="page-0001",
+                                file_name="page-0001.pdf",
+                                markdown_path=pathlib.Path(temp_dir) / "page-0001.md",
+                                markdown_text=markdown_path.read_text(encoding="utf-8"),
+                            ),
+                        ),
                     )
                 ),
                 continuation_matcher=_FakeContinuationMatcher(matches=[(1, 2)]),
@@ -124,6 +135,16 @@ class ArticlePipelineTests(unittest.TestCase):
                         file_name="wall-street-journal.pdf",
                         markdown_path=markdown_path,
                         markdown_text=markdown_path.read_text(encoding="utf-8"),
+                        pages=(
+                            MineruParsedPage(
+                                page_number=1,
+                                batch_id="batch-1",
+                                file_id="page-0001",
+                                file_name="page-0001.pdf",
+                                markdown_path=pathlib.Path(temp_dir) / "page-0001.md",
+                                markdown_text=markdown_path.read_text(encoding="utf-8"),
+                            ),
+                        ),
                     )
                 ),
                 continuation_matcher=None,
@@ -171,6 +192,16 @@ class ArticlePipelineTests(unittest.TestCase):
                             file_name="wall-street-journal.pdf",
                             markdown_path=markdown_path,
                             markdown_text=markdown_path.read_text(encoding="utf-8"),
+                            pages=(
+                                MineruParsedPage(
+                                    page_number=1,
+                                    batch_id="batch-1",
+                                    file_id="page-0001",
+                                    file_name="page-0001.pdf",
+                                    markdown_path=pathlib.Path(temp_dir) / "page-0001.md",
+                                    markdown_text=markdown_path.read_text(encoding="utf-8"),
+                                ),
+                            ),
                         )
                     ),
                     continuation_matcher=None,
@@ -235,6 +266,16 @@ class ArticlePipelineTests(unittest.TestCase):
                         file_name="金融时报-5-6.pdf",
                         markdown_path=markdown_path,
                         markdown_text=markdown_path.read_text(encoding="utf-8"),
+                        pages=(
+                            MineruParsedPage(
+                                page_number=1,
+                                batch_id="batch-1",
+                                file_id="page-0001",
+                                file_name="page-0001.pdf",
+                                markdown_path=pathlib.Path(temp_dir) / "page-0001.md",
+                                markdown_text=markdown_path.read_text(encoding="utf-8"),
+                            ),
+                        ),
                     )
                 ),
                 continuation_matcher=None,
@@ -326,6 +367,16 @@ class ArticlePipelineTests(unittest.TestCase):
                         file_name="金融时报-2-30.pdf",
                         markdown_path=markdown_path,
                         markdown_text=markdown_path.read_text(encoding="utf-8"),
+                        pages=(
+                            MineruParsedPage(
+                                page_number=1,
+                                batch_id="batch-1",
+                                file_id="page-0001",
+                                file_name="page-0001.pdf",
+                                markdown_path=pathlib.Path(temp_dir) / "page-0001.md",
+                                markdown_text=markdown_path.read_text(encoding="utf-8"),
+                            ),
+                        ),
                     )
                 ),
                 continuation_matcher=None,
@@ -341,6 +392,69 @@ class ArticlePipelineTests(unittest.TestCase):
         self.assertEqual(parse_run.status, "succeeded")
         self.assertEqual(parse_run.publication_date, "2026-04-20")
         self.assertEqual(parse_runs[0].status, "succeeded")
+
+    def test_persist_document_articles_uses_page_sliced_mineru_pages_for_source_page_numbers(self) -> None:
+        from newspaper_translator.mineru import MineruParsedDocument, MineruParsedPage
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_url = f"sqlite:///{pathlib.Path(temp_dir) / 'app.db'}"
+            run_pending_migrations(database_url)
+            raw_pdf = pathlib.Path(temp_dir) / "paper.pdf"
+            raw_pdf.write_bytes(b"%PDF-1.4 sample")
+            document_key = self._insert_document(
+                pathlib.Path(temp_dir) / "app.db",
+                original_filename="金融时报-6-5.pdf",
+                raw_path=str(raw_pdf),
+            )
+            mineru_client = _FakeMineruClient(
+                parsed_document=MineruParsedDocument(
+                    batch_id="batch-1,batch-2",
+                    file_id="paper",
+                    file_name="paper.pdf",
+                    markdown_path=pathlib.Path(temp_dir) / "full-pages.md",
+                    markdown_text="merged",
+                    pages=(
+                        MineruParsedPage(
+                            page_number=1,
+                            batch_id="batch-1",
+                            file_id="page-0001",
+                            file_name="page-0001.pdf",
+                            markdown_path=pathlib.Path(temp_dir) / "page-0001.md",
+                            markdown_text="# Front Title\n\nPlease turn to page A7\n",
+                        ),
+                        MineruParsedPage(
+                            page_number=7,
+                            batch_id="batch-2",
+                            file_id="page-0007",
+                            file_name="page-0007.pdf",
+                            markdown_path=pathlib.Path(temp_dir) / "page-0007.md",
+                            markdown_text="# Back Title\n\nContinued from PageOne\nBack body.\n",
+                        ),
+                    ),
+                )
+            )
+
+            parse_run = persist_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+                output_root=pathlib.Path(temp_dir) / "phase3-output",
+                mineru_client=mineru_client,
+                continuation_matcher=_FakeContinuationMatcher(matches=[(1, 2)]),
+                parser_name="mineru",
+                parser_version="vlm",
+                continuation_matcher_name="deepseek",
+                continuation_matcher_version="deepseek-chat",
+            )
+            articles = list_latest_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )
+
+        self.assertEqual(parse_run.mineru_batch_id, "batch-1,batch-2")
+        self.assertTrue(str(parse_run.markdown_path).endswith("full-pages.md"))
+        self.assertEqual(len(articles), 1)
+        self.assertEqual(articles[0].source_page_numbers, [1, 7])
+        self.assertEqual(mineru_client.calls[0]["method"], "parse_pdf_by_pages")
 
     def _insert_document(
         self,
@@ -392,8 +506,8 @@ class _FakeMineruClient:
         self._parsed_document = parsed_document
         self.calls: list[dict[str, object]] = []
 
-    def parse_pdf(self, *, pdf_path: pathlib.Path, output_root: pathlib.Path):
-        self.calls.append({"pdf_path": pdf_path, "output_root": output_root})
+    def parse_pdf_by_pages(self, *, pdf_path: pathlib.Path, output_root: pathlib.Path):
+        self.calls.append({"method": "parse_pdf_by_pages", "pdf_path": pdf_path, "output_root": output_root})
         return self._parsed_document
 
 

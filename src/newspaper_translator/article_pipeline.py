@@ -13,7 +13,7 @@ from newspaper_translator.article_store import (
 )
 from newspaper_translator.database import sqlite_path_from_database_url
 from newspaper_translator.logging_utils import format_log_event
-from newspaper_translator.pdf import build_parse_result_from_mineru_markdown
+from newspaper_translator.pdf import ParsedMarkdownPage, build_parse_result_from_mineru_pages
 
 _GMAIL_MESSAGE_TZ = ZoneInfo("Asia/Shanghai")
 
@@ -39,7 +39,7 @@ def persist_document_articles(
     continuation_matcher_version: str,
 ):
     document = _get_document(database_url=database_url, document_key=document_key)
-    parsed_document = mineru_client.parse_pdf(
+    parsed_document = mineru_client.parse_pdf_by_pages(
         pdf_path=Path(document.raw_path),
         output_root=Path(output_root),
     )
@@ -79,8 +79,14 @@ def persist_document_articles(
         )
         raise ValueError(error_message)
 
-    parse_result = build_parse_result_from_mineru_markdown(
-        parsed_document.markdown_text,
+    parse_result = build_parse_result_from_mineru_pages(
+        [
+            ParsedMarkdownPage(
+                page_number=page.page_number,
+                markdown_text=page.markdown_text,
+            )
+            for page in parsed_document.pages
+        ],
         continuation_matcher=continuation_matcher,
     )
     record_parse_run_result(

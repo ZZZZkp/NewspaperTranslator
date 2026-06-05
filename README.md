@@ -1,6 +1,6 @@
 # Newspaper Translator
 
-This repository now has a runnable local newspaper-processing stack: Gmail PDF ingestion, durable import audit and retry tracking, MinerU-backed article reconstruction, Gemini-backed continuation matching and article enrichment, scheduled background processing, and a standalone reading/operator frontend.
+This repository now has a runnable local newspaper-processing stack: Gmail PDF ingestion, durable import audit and retry tracking, page-sliced MinerU-backed article reconstruction, DeepSeek-backed continuation matching and article enrichment, scheduled background processing, and a standalone reading/operator frontend.
 
 ## Current status
 
@@ -67,19 +67,19 @@ Phase 3 now uses the MinerU precision parsing API as its primary extraction path
 The current parsing flow is:
 
 1. import raw newspaper PDFs from Gmail into local storage
-2. submit the stored PDF files to MinerU through the precision parsing batch upload API
-3. poll the batch result until the file reaches `done`
-4. download the returned `full_zip_url`
-5. extract `full.md` from the zip payload
-6. extract article fragments from the MinerU Markdown result
-7. if `GEMINI_TOKEN` is present, send only explicit continuation-bearing fragments to Gemini for matching
-8. merge matched fragment pairs into final article-oriented outputs
+2. split the stored PDF into one-page slices and submit them to MinerU in batches of up to 30 files
+3. poll each batch result until every page file reaches `done`
+4. download each returned `full_zip_url`
+5. extract page Markdown from the zip payloads and write a merged debug Markdown artifact
+6. extract article fragments from the page-aware MinerU Markdown results
+7. send explicit continuation-bearing fragments to DeepSeek for matching
+8. merge matched fragment pairs into final article-oriented outputs with 1-based physical PDF source pages
 
 Why this route:
 
 - the official MinerU precision parsing API explicitly supports complex layouts, scanned inputs, tables, formulas, and multi-column pages
-- the single-file API does not support direct file upload, so our local PDF workflow should use the documented batch upload flow
-- the batch result returns `full.md`, which is a stronger Phase 3 parsing boundary than maintaining a separate local text-extraction path
+- the single-file API does not support direct file upload, so our local PDF workflow uses the documented batch upload flow
+- page-sliced parsing gives stable physical PDF page numbers while preserving MinerU Markdown as the Phase 3 parsing boundary
 
 Reference:
 
@@ -96,14 +96,12 @@ Planned MinerU configuration:
 - `MINERU_POLL_INTERVAL_SECONDS`
 - `MINERU_POLL_TIMEOUT_SECONDS`
 
-Optional continuation-matching configuration:
+DeepSeek configuration:
 
-- `GEMINI_TOKEN`
-- `GEMINI_API_COMPAT_MODE`, default `standard`
-- `GOOGLE_GEMINI_BASE_URL`, used when `GEMINI_API_COMPAT_MODE=openai_compatible`
-- `GEMINI_API_KEY`, used when `GEMINI_API_COMPAT_MODE=openai_compatible`
-- `GEMINI_MODEL`, default `gemini-2.5-flash`
-- `GEMINI_TIMEOUT_SECONDS`, default `120`
+- `DEEPSEEK_API_KEY` (required at runtime)
+- `DEEPSEEK_BASE_URL`, default `https://api.deepseek.com`
+- `DEEPSEEK_MODEL`, default `deepseek-chat`
+- `DEEPSEEK_TIMEOUT_SECONDS`, default `120`
 
 The repository now treats MinerU-backed Markdown parsing as the only supported Phase 3 article reconstruction path.
 
@@ -179,8 +177,8 @@ Current Phase 3 parser behavior:
 - merges subtitle and `BY ...` heading patterns back into the same article
 - drops obvious teaser and digest blocks that are not full articles
 - detects explicit continuation markers such as `Please turn to page A7` and `Continued from PageOne`
-- auto-enables Gemini continuation matching when `GEMINI_TOKEN` is present
-- sends only continuation-bearing fragments to Gemini, then deterministically merges matched pairs and strips local marker text
+- uses DeepSeek for continuation matching when `DEEPSEEK_API_KEY` is configured
+- sends only continuation-bearing fragments to DeepSeek, then deterministically merges matched pairs and strips local marker text
 - records fragment-level, match-level, and final-article lineage data for persisted parse runs
 - persists fragment page numbers and final-article source page numbers where available
 - returns merged article results through CLI JSON output while leaving unmatched fragments as standalone articles
@@ -190,7 +188,7 @@ Current Phase 3 parser limits:
 - advertisement and statement filtering is intentionally deferred to later LLM-based post-processing
 - only fragments with explicit continuation markers currently participate in LLM matching
 - the parser does not yet infer cross-page relationships for fragments without explicit markers
-- page-number fidelity depends on the MinerU output; parser-derived article JSON can still fall back to parser-order indexes when original page labels are unavailable
+- source page numbers are 1-based physical PDF page indexes; printed newspaper labels such as A1/A7 are not treated as authoritative
 
 ## Article Persistence Status
 
@@ -392,14 +390,15 @@ Implemented so far:
 - manual failed-message retry through `gmail-retry-failures`
 - retry/checkpoint summary fields on `import-runs`
 - MinerU Markdown article-reconstruction tests
-- Gemini-backed continuation matching for explicit cross-page article fragments
+- page-sliced MinerU parsing with 1-based physical PDF source pages
+- DeepSeek-backed continuation matching for explicit cross-page article fragments
 - parse-run persistence for Phase 3 document processing
 - fragment, continuation-match, final-article, and lineage persistence tables
 - publication-date extraction from filenames with Markdown fallback
 - read-only CLI query surfaces for latest document articles and parse-run debug artifacts
 - enrichment-run history, enrichment outputs, and ordered tag persistence
-- executable Gemini-backed article translation, summary, and tagging
-- OpenAI-compatible gateway mode for Gemini-style article and continuation clients
+- executable DeepSeek-backed article translation, summary, and tagging
+- provider-neutral OpenAI-compatible chat JSON transport for DeepSeek-style clients
 - scheduler-driven document-processing and article-processing control planes
 - stale-run recovery, manual retry, and CLI/web/API inspection for both document and article processing
 - dashboard query surfaces for overview, article cards, article details, filters, and focus tags

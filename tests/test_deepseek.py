@@ -74,6 +74,79 @@ class ChatJsonClientTests(unittest.TestCase):
         with self.assertRaises(LlmProviderError):
             client.complete_json_text("Return JSON only.")
 
+    def test_complete_json_returns_parsed_dict(self) -> None:
+        from newspaper_translator.llm import ChatCompletionSettings, ChatJsonClient
+
+        client = ChatJsonClient(
+            settings=ChatCompletionSettings(
+                api_key="deepseek-key",
+                base_url="https://api.deepseek.com",
+                model="deepseek-chat",
+                timeout_seconds=45,
+            ),
+            transport=_FakeTransport(
+                responses=[
+                    _FakeResponse(
+                        status_code=200,
+                        body=json.dumps(
+                            {
+                                "choices": [
+                                    {"message": {"content": json.dumps({"matches": [{"a": 1}]})}}
+                                ]
+                            }
+                        ).encode("utf-8"),
+                    )
+                ]
+            ),
+        )
+
+        payload = client.complete_json("Return JSON only.")
+
+        self.assertEqual(payload, {"matches": [{"a": 1}]})
+
+    def test_complete_json_raises_when_response_text_is_not_json(self) -> None:
+        from newspaper_translator.llm import ChatCompletionSettings, ChatJsonClient, LlmProviderError
+
+        client = ChatJsonClient(
+            settings=ChatCompletionSettings(
+                api_key="deepseek-key",
+                base_url="https://api.deepseek.com",
+                model="deepseek-chat",
+                timeout_seconds=45,
+            ),
+            transport=_FakeTransport(
+                responses=[
+                    _FakeResponse(
+                        status_code=200,
+                        body=json.dumps(
+                            {"choices": [{"message": {"content": "not json"}}]}
+                        ).encode("utf-8"),
+                    )
+                ]
+            ),
+        )
+
+        with self.assertRaises(LlmProviderError):
+            client.complete_json("Return JSON only.")
+
+    def test_complete_json_text_raises_when_choices_missing(self) -> None:
+        from newspaper_translator.llm import ChatCompletionSettings, ChatJsonClient, LlmProviderError
+
+        client = ChatJsonClient(
+            settings=ChatCompletionSettings(
+                api_key="deepseek-key",
+                base_url="https://api.deepseek.com",
+                model="deepseek-chat",
+                timeout_seconds=45,
+            ),
+            transport=_FakeTransport(
+                responses=[_FakeResponse(status_code=200, body=b"{}")]
+            ),
+        )
+
+        with self.assertRaises(LlmProviderError):
+            client.complete_json_text("Return JSON only.")
+
 
 class _FakeResponse:
     def __init__(self, *, status_code: int, body: bytes) -> None:

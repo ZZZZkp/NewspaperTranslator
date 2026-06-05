@@ -2,7 +2,7 @@ from dataclasses import dataclass
 import json
 import ssl
 from typing import Protocol
-from urllib import request
+from urllib import error as urllib_error, request
 
 import certifi
 
@@ -35,7 +35,7 @@ class Transport(Protocol):
         body: bytes | None = None,
         timeout: int | None = None,
     ) -> TransportResponse:
-        pass
+        ...
 
 
 class ChatJsonClient:
@@ -111,8 +111,14 @@ class UrllibTransport:
             method=method,
         )
         ssl_context = ssl.create_default_context(cafile=certifi.where())
-        with request.urlopen(http_request, timeout=timeout, context=ssl_context) as response:
+        try:
+            with request.urlopen(http_request, timeout=timeout, context=ssl_context) as response:
+                return TransportResponse(
+                    status_code=response.getcode(),
+                    body=response.read(),
+                )
+        except urllib_error.HTTPError as exc:
             return TransportResponse(
-                status_code=response.getcode(),
-                body=response.read(),
+                status_code=exc.code,
+                body=exc.read() or b"",
             )

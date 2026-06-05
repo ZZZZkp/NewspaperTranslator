@@ -4,6 +4,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.error import URLError
 import zipfile
@@ -268,6 +269,60 @@ class MineruClientTests(unittest.TestCase):
         self.assertEqual(result.file_id, "sample")
         self.assertEqual(result.markdown_text, "# Headline\n\nBody\n")
 
+    def test_parse_pdf_by_pages_uploads_single_page_files_in_batches_of_30(self) -> None:
+        from newspaper_translator.mineru import MineruParsedPage
+
+        settings = MineruSettings(
+            api_token="mineru-token",
+            model_version="vlm",
+            language="en",
+            enable_ocr=False,
+            enable_table=True,
+            enable_formula=True,
+            page_ranges="",
+            poll_interval_seconds=0,
+            poll_timeout_seconds=30,
+        )
+        page_files = [
+            SimpleNamespace(page_number=page_number, path=pathlib.Path(f"/tmp/page-{page_number:04d}.pdf"))
+            for page_number in range(1, 32)
+        ]
+        transport = _FakeTransport(
+            responses=_build_page_batch_responses(page_count=31)
+        )
+
+        with patch("newspaper_translator.mineru.split_pdf_into_single_page_files", return_value=page_files):
+            with patch.object(pathlib.Path, "read_bytes", return_value=b"%PDF-1.4 page"):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    source_pdf = pathlib.Path(temp_dir) / "sample.pdf"
+                    source_pdf.write_bytes(b"%PDF-1.4 sample")
+                    client = MineruClient(settings=settings, transport=transport)
+
+                    result = client.parse_pdf_by_pages(
+                        pdf_path=source_pdf,
+                        output_root=pathlib.Path(temp_dir) / "mineru-output",
+                    )
+
+                    merged_markdown_path = result.markdown_path
+                    self.assertTrue(merged_markdown_path.exists())
+                    merged_text = merged_markdown_path.read_text(encoding="utf-8")
+                    self.assertIn("<!-- PDF_PAGE_NUMBER: 1 -->", merged_text)
+                    self.assertIn("<!-- PDF_PAGE_NUMBER: 31 -->", merged_text)
+
+        self.assertEqual(len(result.pages), 31)
+        self.assertIsInstance(result.pages[0], MineruParsedPage)
+        self.assertEqual(result.pages[0].page_number, 1)
+        self.assertEqual(result.pages[-1].page_number, 31)
+        create_calls = [
+            call for call in transport.calls
+            if call["method"] == "POST" and call["url"].endswith("/api/v4/file-urls/batch")
+        ]
+        self.assertEqual(len(create_calls), 2)
+        first_payload = json.loads(create_calls[0]["body"].decode("utf-8"))
+        second_payload = json.loads(create_calls[1]["body"].decode("utf-8"))
+        self.assertEqual(len(first_payload["files"]), 30)
+        self.assertEqual(len(second_payload["files"]), 1)
+
 
 class _FakeTransport:
     def __init__(self, *, responses: list["_FakeResponse"]) -> None:
@@ -325,6 +380,60 @@ def _build_result_zip_bytes(markdown_text: str) -> bytes:
     with zipfile.ZipFile(buffer, "w") as zip_file:
         zip_file.writestr("sample/full.md", markdown_text)
     return buffer.getvalue()
+
+
+def _build_page_batch_responses(*, page_count: int) -> list["_FakeResponse"]:
+    responses: list[_FakeResponse] = []
+    for batch_index, start_page in enumerate(range(1, page_count + 1, 30), start=1):
+        pages = list(range(start_page, min(start_page + 30, page_count + 1)))
+        responses.append(
+            _FakeResponse(
+                status_code=200,
+                body=json.dumps(
+                    {
+                        "code": 0,
+                        "data": {
+                            "batch_id": f"batch-{batch_index}",
+                            "file_urls": [
+                                f"https://upload.example.com/page-{page_number:04d}.pdf"
+                                for page_number in pages
+                            ],
+                        },
+                    }
+                ).encode("utf-8"),
+            )
+        )
+        responses.extend(_FakeResponse(status_code=200, body=b"") for _ in pages)
+        responses.append(
+            _FakeResponse(
+                status_code=200,
+                body=json.dumps(
+                    {
+                        "code": 0,
+                        "data": {
+                            "batch_id": f"batch-{batch_index}",
+                            "extract_result": [
+                                {
+                                    "data_id": f"page-{page_number:04d}",
+                                    "file_name": f"page-{page_number:04d}.pdf",
+                                    "state": "done",
+                                    "full_zip_url": f"https://download.example.com/page-{page_number:04d}.zip",
+                                }
+                                for page_number in pages
+                            ],
+                        },
+                    }
+                ).encode("utf-8"),
+            )
+        )
+        responses.extend(
+            _FakeResponse(
+                status_code=200,
+                body=_build_result_zip_bytes(f"# Page {page_number}\n\nBody {page_number}\n"),
+            )
+            for page_number in pages
+        )
+    return responses
 
 
 if __name__ == "__main__":

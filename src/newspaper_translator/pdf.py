@@ -184,6 +184,36 @@ def parse_pdf_articles(
     mineru_client,
     continuation_matcher=None,
 ) -> list[PageArticle]:
+    if hasattr(mineru_client, "parse_pdf_by_pages"):
+        parsed_document = mineru_client.parse_pdf_by_pages(
+            pdf_path=Path(path),
+            output_root=Path(output_root),
+        )
+        parse_result = build_parse_result_from_mineru_pages(
+            [
+                ParsedMarkdownPage(
+                    page_number=page.page_number,
+                    markdown_text=page.markdown_text,
+                )
+                for page in parsed_document.pages
+            ],
+            continuation_matcher=continuation_matcher,
+        )
+        return [
+            PageArticle(
+                page_number=getattr(
+                    parse_result.fragments[article.primary_source_order - 1],
+                    "page_number",
+                    article.article_order,
+                ),
+                x=0.0,
+                y_top=float(article.article_order),
+                title=article.title,
+                body_text=article.body_text,
+            )
+            for article in parse_result.articles
+        ]
+
     parsed_document = mineru_client.parse_pdf(pdf_path=Path(path), output_root=Path(output_root))
     return extract_articles_from_mineru_markdown(
         parsed_document.markdown_text,

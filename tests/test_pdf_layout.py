@@ -372,6 +372,43 @@ class PdfLayoutTests(unittest.TestCase):
         self.assertIn("Therapeutics for more than", articles[0].body_text)
         self.assertEqual(fake_client.calls[0]["pdf_path"], pdf_path)
 
+    def test_phase_3_entry_uses_page_sliced_mineru_client_when_available(self) -> None:
+        from newspaper_translator.mineru import MineruParsedDocument, MineruParsedPage
+        from newspaper_translator.pdf import parse_pdf_articles
+
+        fake_client = _FakePageSlicedMineruClient(
+            parsed_document=MineruParsedDocument(
+                batch_id="batch-1",
+                file_id="sample",
+                file_name="sample.pdf",
+                markdown_path=pathlib.Path("/tmp/full-pages.md"),
+                markdown_text="merged",
+                pages=(
+                    MineruParsedPage(
+                        page_number=5,
+                        batch_id="batch-1",
+                        file_id="page-0005",
+                        file_name="page-0005.pdf",
+                        markdown_path=pathlib.Path("/tmp/page-0005.md"),
+                        markdown_text="# Headline\n\nBody\n",
+                    ),
+                ),
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = pathlib.Path(temp_dir) / "sample.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4 sample")
+            articles = parse_pdf_articles(
+                pdf_path,
+                output_root=pathlib.Path(temp_dir),
+                mineru_client=fake_client,
+            )
+
+        self.assertEqual(len(articles), 1)
+        self.assertEqual(articles[0].page_number, 5)
+        self.assertEqual(fake_client.calls[0]["method"], "parse_pdf_by_pages")
+
     def test_build_parse_result_from_mineru_pages_preserves_physical_page_numbers(self) -> None:
         from newspaper_translator.pdf import (
             ParsedMarkdownPage,
@@ -479,6 +516,22 @@ class _FakeMineruClient:
                 "markdown_text": self._markdown_text,
             },
         )()
+
+
+class _FakePageSlicedMineruClient:
+    def __init__(self, *, parsed_document) -> None:
+        self._parsed_document = parsed_document
+        self.calls: list[dict[str, object]] = []
+
+    def parse_pdf_by_pages(self, *, pdf_path: pathlib.Path, output_root: pathlib.Path):
+        self.calls.append(
+            {
+                "method": "parse_pdf_by_pages",
+                "pdf_path": pdf_path,
+                "output_root": output_root,
+            }
+        )
+        return self._parsed_document
 
 
 class _FakeContinuationMatcher:

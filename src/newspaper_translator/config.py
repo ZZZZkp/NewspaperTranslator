@@ -90,6 +90,28 @@ class GeminiSettings:
         )
 
 
+@dataclass(frozen=True)
+class DeepSeekSettings:
+    api_key: str
+    base_url: str = "https://api.deepseek.com"
+    model: str = "deepseek-chat"
+    timeout_seconds: int = 120
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str]) -> "DeepSeekSettings":
+        base_url = env.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").strip()
+        return cls(
+            api_key=_require_setting(env, "DEEPSEEK_API_KEY"),
+            base_url=(base_url or "https://api.deepseek.com").rstrip("/"),
+            model=env.get("DEEPSEEK_MODEL", "deepseek-chat").strip() or "deepseek-chat",
+            timeout_seconds=_read_int_setting(
+                env,
+                "DEEPSEEK_TIMEOUT_SECONDS",
+                default=120,
+            ),
+        )
+
+
 def _require_setting(env: Mapping[str, str], key: str) -> str:
     value = env.get(key, "").strip()
     if not value:

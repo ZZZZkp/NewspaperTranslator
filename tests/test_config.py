@@ -151,5 +151,39 @@ class AppSettingsTests(unittest.TestCase):
         self.assertIn("GEMINI_API_KEY", str(context.exception))
 
 
+class DeepSeekSettingsTests(unittest.TestCase):
+    def test_loads_deepseek_settings_from_environment(self) -> None:
+        from newspaper_translator.config import DeepSeekSettings
+
+        settings = DeepSeekSettings.from_env(
+            {
+                "DEEPSEEK_API_KEY": "deepseek-key",
+                "DEEPSEEK_BASE_URL": "https://api.deepseek.com/",
+                "DEEPSEEK_MODEL": "deepseek-chat",
+                "DEEPSEEK_TIMEOUT_SECONDS": "45",
+            }
+        )
+
+        self.assertEqual(settings.api_key, "deepseek-key")
+        self.assertEqual(settings.base_url, "https://api.deepseek.com")
+        self.assertEqual(settings.model, "deepseek-chat")
+        self.assertEqual(settings.timeout_seconds, 45)
+
+    def test_deepseek_settings_fail_fast_without_api_key(self) -> None:
+        from newspaper_translator.config import ConfigurationError, DeepSeekSettings
+
+        with self.assertRaises(ConfigurationError):
+            DeepSeekSettings.from_env({"DEEPSEEK_MODEL": "deepseek-chat"})
+
+    def test_deepseek_settings_default_base_model_and_timeout(self) -> None:
+        from newspaper_translator.config import DeepSeekSettings
+
+        settings = DeepSeekSettings.from_env({"DEEPSEEK_API_KEY": "deepseek-key"})
+
+        self.assertEqual(settings.base_url, "https://api.deepseek.com")
+        self.assertEqual(settings.model, "deepseek-chat")
+        self.assertEqual(settings.timeout_seconds, 120)
+
+
 if __name__ == "__main__":
     unittest.main()

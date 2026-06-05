@@ -114,31 +114,35 @@ class ManagementCommandTests(unittest.TestCase):
                 "os.environ",
                 {
                     "MINERU_API_TOKEN": "mineru-token",
+                    "DEEPSEEK_API_KEY": "deepseek-key",
+                    "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+                    "DEEPSEEK_MODEL": "deepseek-chat",
                 },
                 clear=False,
             ):
                 with patch("newspaper_translator.manage.MineruClient") as mineru_client_class:
                     mineru_client_class.return_value = SimpleNamespace(name="mineru-client")
-                    with patch("newspaper_translator.manage.parse_pdf_articles") as parse_pdf_articles:
-                        parse_pdf_articles.return_value = [
-                            SimpleNamespace(
-                                page_number=1,
-                                x=0.0,
-                                y_top=1.0,
-                                title="talks to acquire Kelonia",
-                                body_text="Therapeutics for more than $2 billion.",
-                            )
-                        ]
-
-                        exit_code, output = run_cli(
-                            [
-                                "phase3-parse-pdf",
-                                "--pdf-path",
-                                str(pdf_path),
-                                "--output-root",
-                                str(output_root),
+                    with patch("newspaper_translator.manage.DeepSeekContinuationMatcher"):
+                        with patch("newspaper_translator.manage.parse_pdf_articles") as parse_pdf_articles:
+                            parse_pdf_articles.return_value = [
+                                SimpleNamespace(
+                                    page_number=1,
+                                    x=0.0,
+                                    y_top=1.0,
+                                    title="talks to acquire Kelonia",
+                                    body_text="Therapeutics for more than $2 billion.",
+                                )
                             ]
-                        )
+
+                            exit_code, output = run_cli(
+                                [
+                                    "phase3-parse-pdf",
+                                    "--pdf-path",
+                                    str(pdf_path),
+                                    "--output-root",
+                                    str(output_root),
+                                ]
+                            )
 
         self.assertEqual(exit_code, 0)
         self.assertIn('"title": "talks to acquire Kelonia"', output)
@@ -160,13 +164,23 @@ class ManagementCommandTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            exit_code, output = run_cli(
-                [
-                    "phase3-parse-md",
-                    "--markdown-path",
-                    str(markdown_path),
-                ]
-            )
+            with patch.dict(
+                "os.environ",
+                {
+                    "DEEPSEEK_API_KEY": "deepseek-key",
+                    "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+                    "DEEPSEEK_MODEL": "deepseek-chat",
+                },
+                clear=False,
+            ):
+                with patch("newspaper_translator.manage.DeepSeekContinuationMatcher"):
+                    exit_code, output = run_cli(
+                        [
+                            "phase3-parse-md",
+                            "--markdown-path",
+                            str(markdown_path),
+                        ]
+                    )
 
         self.assertEqual(exit_code, 0)
         self.assertIn('"title": "Big Oil Explores Farther Afield To Dodge Middle East Turmoil"', output)
@@ -188,14 +202,16 @@ class ManagementCommandTests(unittest.TestCase):
                 "os.environ",
                 {
                     "MINERU_API_TOKEN": "mineru-token",
-                    "GEMINI_TOKEN": "gemini-token",
+                    "DEEPSEEK_API_KEY": "deepseek-key",
+                    "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+                    "DEEPSEEK_MODEL": "deepseek-chat",
                 },
                 clear=False,
             ):
                 with patch("newspaper_translator.manage.MineruClient") as mineru_client_class:
                     mineru_client_class.return_value = SimpleNamespace(name="mineru-client")
-                    with patch("newspaper_translator.manage.GeminiContinuationMatcher") as matcher_class:
-                        matcher_class.return_value = SimpleNamespace(name="gemini-matcher")
+                    with patch("newspaper_translator.manage.DeepSeekContinuationMatcher") as matcher_class:
+                        matcher_class.return_value = SimpleNamespace(name="deepseek-matcher")
                         with patch("newspaper_translator.manage.parse_pdf_articles") as parse_pdf_articles:
                             parse_pdf_articles.return_value = [
                                 SimpleNamespace(
@@ -220,7 +236,7 @@ class ManagementCommandTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertIn('"title": "talks to acquire Kelonia"', output)
         self.assertEqual(matcher_class.call_count, 1)
-        self.assertEqual(parse_pdf_articles.call_args.kwargs["continuation_matcher"].name, "gemini-matcher")
+        self.assertEqual(parse_pdf_articles.call_args.kwargs["continuation_matcher"].name, "deepseek-matcher")
 
     def test_phase_3_parse_md_command_builds_gemini_matcher_when_token_is_present(self) -> None:
         self.assertIsNotNone(
@@ -242,12 +258,14 @@ class ManagementCommandTests(unittest.TestCase):
             with patch.dict(
                 "os.environ",
                 {
-                    "GEMINI_TOKEN": "gemini-token",
+                    "DEEPSEEK_API_KEY": "deepseek-key",
+                    "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+                    "DEEPSEEK_MODEL": "deepseek-chat",
                 },
                 clear=False,
             ):
-                with patch("newspaper_translator.manage.GeminiContinuationMatcher") as matcher_class:
-                    matcher_class.return_value = SimpleNamespace(name="gemini-matcher")
+                with patch("newspaper_translator.manage.DeepSeekContinuationMatcher") as matcher_class:
+                    matcher_class.return_value = SimpleNamespace(name="deepseek-matcher")
                     with patch("newspaper_translator.manage.extract_articles_from_mineru_markdown") as extract_articles:
                         extract_articles.return_value = [
                             SimpleNamespace(
@@ -270,7 +288,7 @@ class ManagementCommandTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertIn('"title": "Big Oil Explores Farther Afield To Dodge Middle East Turmoil"', output)
         self.assertEqual(matcher_class.call_count, 1)
-        self.assertEqual(extract_articles.call_args.kwargs["continuation_matcher"].name, "gemini-matcher")
+        self.assertEqual(extract_articles.call_args.kwargs["continuation_matcher"].name, "deepseek-matcher")
 
     def test_phase_3_persist_document_command_uses_article_pipeline_entry(self) -> None:
         self.assertIsNotNone(
@@ -285,30 +303,34 @@ class ManagementCommandTests(unittest.TestCase):
                 "os.environ",
                 {
                     "MINERU_API_TOKEN": "mineru-token",
+                    "DEEPSEEK_API_KEY": "deepseek-key",
+                    "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+                    "DEEPSEEK_MODEL": "deepseek-chat",
                 },
                 clear=False,
             ):
                 with patch("newspaper_translator.manage.MineruClient") as mineru_client_class:
                     mineru_client_class.return_value = SimpleNamespace(name="mineru-client")
-                    with patch("newspaper_translator.manage.persist_document_articles") as persist_document_articles:
-                        persist_document_articles.return_value = SimpleNamespace(
-                            parse_run_id="parse-run-1",
-                            document_key="message-1:attachment-1:abc",
-                            status="succeeded",
-                            publication_date="2026-04-20",
-                        )
+                    with patch("newspaper_translator.manage.DeepSeekContinuationMatcher"):
+                        with patch("newspaper_translator.manage.persist_document_articles") as persist_document_articles:
+                            persist_document_articles.return_value = SimpleNamespace(
+                                parse_run_id="parse-run-1",
+                                document_key="message-1:attachment-1:abc",
+                                status="succeeded",
+                                publication_date="2026-04-20",
+                            )
 
-                        exit_code, output = run_cli(
-                            [
-                                "phase3-persist-document",
-                                "--document-key",
-                                "message-1:attachment-1:abc",
-                                "--database-url",
-                                "sqlite:////tmp/newspaper-translator.db",
-                                "--output-root",
-                                str(output_root),
-                            ]
-                        )
+                            exit_code, output = run_cli(
+                                [
+                                    "phase3-persist-document",
+                                    "--document-key",
+                                    "message-1:attachment-1:abc",
+                                    "--database-url",
+                                    "sqlite:////tmp/newspaper-translator.db",
+                                    "--output-root",
+                                    str(output_root),
+                                ]
+                            )
 
         self.assertEqual(exit_code, 0)
         self.assertIn('"parse_run_id": "parse-run-1"', output)
@@ -361,13 +383,15 @@ class ManagementCommandTests(unittest.TestCase):
         with patch.dict(
             "os.environ",
             {
-                "GEMINI_TOKEN": "gemini-token",
+                "DEEPSEEK_API_KEY": "deepseek-key",
+                "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+                "DEEPSEEK_MODEL": "deepseek-chat",
             },
             clear=False,
         ):
-            with patch("newspaper_translator.manage.GeminiArticleTranslator") as translator_class:
+            with patch("newspaper_translator.manage.DeepSeekArticleTranslator") as translator_class:
                 translator_class.return_value = SimpleNamespace(name="translator")
-                with patch("newspaper_translator.manage.GeminiArticleSummarizerTagger") as summarizer_class:
+                with patch("newspaper_translator.manage.DeepSeekArticleSummarizerTagger") as summarizer_class:
                     summarizer_class.return_value = SimpleNamespace(name="summarizer")
                     with patch("newspaper_translator.manage.enrich_article") as enrich_article:
                         enrich_article.return_value = SimpleNamespace(
@@ -375,8 +399,8 @@ class ManagementCommandTests(unittest.TestCase):
                             article_id="article-1",
                             parse_run_id="parse-run-1",
                             status="succeeded",
-                            provider_name="gemini",
-                            model_name="gemini-2.5-flash",
+                            provider_name="deepseek",
+                            model_name="deepseek-chat",
                             prompt_version="article-enrichment-v2",
                             input_hash="hash-1",
                             started_at="2026-04-28 10:00:00",
@@ -400,7 +424,7 @@ class ManagementCommandTests(unittest.TestCase):
         self.assertEqual(translator_class.call_count, 1)
         self.assertEqual(summarizer_class.call_count, 1)
         self.assertEqual(enrich_article.call_args.kwargs["article_id"], "article-1")
-        self.assertEqual(enrich_article.call_args.kwargs["provider_name"], "gemini")
+        self.assertEqual(enrich_article.call_args.kwargs["provider_name"], "deepseek")
         self.assertEqual(enrich_article.call_args.kwargs["translator"].name, "translator")
         self.assertEqual(enrich_article.call_args.kwargs["summarizer_tagger"].name, "summarizer")
 

@@ -4,7 +4,7 @@ from pathlib import Path
 import sqlite3
 import time
 
-from newspaper_translator.config import AppSettings, GeminiSettings, MineruSettings
+from newspaper_translator.config import AppSettings, DeepSeekSettings, MineruSettings
 from newspaper_translator.document_processing import (
     get_latest_scheduler_run,
     list_eligible_article_processing_runs,
@@ -16,10 +16,10 @@ from newspaper_translator.document_processing import (
     run_processing_tick,
     run_scheduler_tick,
 )
-from newspaper_translator.gemini import (
-    GeminiArticleSummarizerTagger,
-    GeminiArticleTranslator,
-    GeminiContinuationMatcher,
+from newspaper_translator.deepseek import (
+    DeepSeekArticleSummarizerTagger,
+    DeepSeekArticleTranslator,
+    DeepSeekContinuationMatcher,
 )
 from newspaper_translator.gmail import import_from_gmail
 from newspaper_translator.import_audit import list_import_runs
@@ -190,7 +190,7 @@ def build_run_processing_tick_from_env(env: dict[str, str]):
 def build_process_one_document_from_env(env: dict[str, str]):
     app_settings = AppSettings.from_env(env)
     mineru_settings = MineruSettings.from_env(env)
-    gemini_settings = GeminiSettings.from_env(env)
+    deepseek_settings = DeepSeekSettings.from_env(env)
     output_root = Path(app_settings.storage_root) / "phase3-output"
     step_retry_limit = _read_int_setting(
         env,
@@ -209,8 +209,8 @@ def build_process_one_document_from_env(env: dict[str, str]):
 
     mineru_client = MineruClient(settings=mineru_settings)
     continuation_matcher = _build_continuation_matcher_from_env(env)
-    translator = GeminiArticleTranslator(settings=gemini_settings)
-    summarizer_tagger = GeminiArticleSummarizerTagger(settings=gemini_settings)
+    translator = DeepSeekArticleTranslator(settings=deepseek_settings)
+    summarizer_tagger = DeepSeekArticleSummarizerTagger(settings=deepseek_settings)
 
     def process_one_document_callback(*, document_key: str, scheduler_run_id: str, locked_by: str):
         return process_document(
@@ -226,8 +226,8 @@ def build_process_one_document_from_env(env: dict[str, str]):
             continuation_matcher_version=_continuation_matcher_version_from_env(env),
             translator=translator,
             summarizer_tagger=summarizer_tagger,
-            provider_name="gemini",
-            model_name=gemini_settings.model,
+            provider_name="deepseek",
+            model_name=deepseek_settings.model,
             prompt_version=prompt_version,
             step_retry_limit=step_retry_limit,
             lock_timeout_seconds=lock_timeout_seconds,
@@ -256,7 +256,7 @@ def build_recover_stale_document_runs_from_env(env: dict[str, str]):
 
 def build_process_one_article_from_env(env: dict[str, str]):
     app_settings = AppSettings.from_env(env)
-    gemini_settings = GeminiSettings.from_env(env)
+    deepseek_settings = DeepSeekSettings.from_env(env)
     automatic_failure_limit = _read_int_setting(
         env,
         "STEP_RETRY_LIMIT",
@@ -271,8 +271,8 @@ def build_process_one_article_from_env(env: dict[str, str]):
         env.get("ARTICLE_ENRICHMENT_PROMPT_VERSION", "article-enrichment-v2").strip()
         or "article-enrichment-v2"
     )
-    translator = GeminiArticleTranslator(settings=gemini_settings)
-    summarizer_tagger = GeminiArticleSummarizerTagger(settings=gemini_settings)
+    translator = DeepSeekArticleTranslator(settings=deepseek_settings)
+    summarizer_tagger = DeepSeekArticleSummarizerTagger(settings=deepseek_settings)
 
     def process_one_article_callback(*, article_key: str, locked_by: str):
         return process_article_processing_run(
@@ -281,8 +281,8 @@ def build_process_one_article_from_env(env: dict[str, str]):
             locked_by=locked_by,
             translator=translator,
             summarizer_tagger=summarizer_tagger,
-            provider_name="gemini",
-            model_name=gemini_settings.model,
+            provider_name="deepseek",
+            model_name=deepseek_settings.model,
             prompt_version=prompt_version,
             lock_timeout_seconds=lock_timeout_seconds,
             automatic_failure_limit=automatic_failure_limit,
@@ -568,29 +568,17 @@ def _current_timestamp() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat()
 
 
-def _build_continuation_matcher_from_env(env: dict[str, str]) -> GeminiContinuationMatcher | None:
-    if not _gemini_is_configured(env):
-        return None
-    return GeminiContinuationMatcher(settings=GeminiSettings.from_env(env))
+def _build_continuation_matcher_from_env(env: dict[str, str]) -> DeepSeekContinuationMatcher:
+    return DeepSeekContinuationMatcher(settings=DeepSeekSettings.from_env(env))
 
 
 def _continuation_matcher_name_from_env(env: dict[str, str]) -> str:
-    if not _gemini_is_configured(env):
-        return ""
-    return "gemini"
+    DeepSeekSettings.from_env(env)
+    return "deepseek"
 
 
 def _continuation_matcher_version_from_env(env: dict[str, str]) -> str:
-    if not _gemini_is_configured(env):
-        return ""
-    return env.get("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
-
-
-def _gemini_is_configured(env: dict[str, str]) -> bool:
-    api_compat_mode = env.get("GEMINI_API_COMPAT_MODE", "standard").strip() or "standard"
-    if api_compat_mode == "openai_compatible":
-        return bool(env.get("GEMINI_API_KEY", "").strip())
-    return bool(env.get("GEMINI_TOKEN", "").strip())
+    return DeepSeekSettings.from_env(env).model
 
 
 def _read_int_setting(env: dict[str, str], key: str, *, default: int) -> int:

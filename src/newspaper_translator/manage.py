@@ -15,7 +15,7 @@ from newspaper_translator.article_store import (
     list_parse_run_fragments,
     list_parse_runs,
 )
-from newspaper_translator.config import GeminiSettings, MineruSettings
+from newspaper_translator.config import DeepSeekSettings, MineruSettings
 from newspaper_translator.document_processing import (
     get_article_processing_run,
     get_document_processing_run,
@@ -24,10 +24,10 @@ from newspaper_translator.document_processing import (
     run_processing_tick,
     run_scheduler_tick,
 )
-from newspaper_translator.gemini import (
-    GeminiArticleSummarizerTagger,
-    GeminiArticleTranslator,
-    GeminiContinuationMatcher,
+from newspaper_translator.deepseek import (
+    DeepSeekArticleSummarizerTagger,
+    DeepSeekArticleTranslator,
+    DeepSeekContinuationMatcher,
 )
 from newspaper_translator.import_audit import (
     list_import_items,
@@ -255,14 +255,14 @@ def run_cli(argv: list[str]) -> tuple[int, str]:
         return 0, json.dumps(_to_jsonable(articles), sort_keys=True)
 
     if args.command == "phase3-enrich-article":
-        gemini_settings = GeminiSettings.from_env(os.environ)
+        deepseek_settings = DeepSeekSettings.from_env(os.environ)
         enrichment_run = enrich_article(
             database_url=_resolve_setting(args.database_url, "DATABASE_URL"),
             article_id=args.article_id,
-            translator=GeminiArticleTranslator(settings=gemini_settings),
-            summarizer_tagger=GeminiArticleSummarizerTagger(settings=gemini_settings),
-            provider_name="gemini",
-            model_name=gemini_settings.model,
+            translator=DeepSeekArticleTranslator(settings=deepseek_settings),
+            summarizer_tagger=DeepSeekArticleSummarizerTagger(settings=deepseek_settings),
+            provider_name="deepseek",
+            model_name=deepseek_settings.model,
             prompt_version="article-enrichment-v2",
         )
         return 0, json.dumps(_to_jsonable(enrichment_run), sort_keys=True)
@@ -392,30 +392,17 @@ def _build_cli_env_overrides(*, database_url: str | None = None) -> dict[str, st
     return resolved_env
 
 
-def _build_continuation_matcher_from_env(env) -> GeminiContinuationMatcher | None:
-    if not _gemini_is_configured(env):
-        return None
-    settings = GeminiSettings.from_env(env)
-    return GeminiContinuationMatcher(settings=settings)
+def _build_continuation_matcher_from_env(env) -> DeepSeekContinuationMatcher:
+    return DeepSeekContinuationMatcher(settings=DeepSeekSettings.from_env(env))
 
 
 def _continuation_matcher_name_from_env(env) -> str:
-    if not _gemini_is_configured(env):
-        return ""
-    return "gemini"
+    DeepSeekSettings.from_env(env)
+    return "deepseek"
 
 
 def _continuation_matcher_version_from_env(env) -> str:
-    if not _gemini_is_configured(env):
-        return ""
-    return env.get("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
-
-
-def _gemini_is_configured(env) -> bool:
-    api_compat_mode = env.get("GEMINI_API_COMPAT_MODE", "standard").strip() or "standard"
-    if api_compat_mode == "openai_compatible":
-        return bool(env.get("GEMINI_API_KEY", "").strip())
-    return bool(env.get("GEMINI_TOKEN", "").strip())
+    return DeepSeekSettings.from_env(env).model
 
 
 def _read_int_setting(env, key: str, *, default: int) -> int:

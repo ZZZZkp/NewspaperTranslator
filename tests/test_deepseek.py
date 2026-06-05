@@ -148,6 +148,189 @@ class ChatJsonClientTests(unittest.TestCase):
             client.complete_json_text("Return JSON only.")
 
 
+class DeepSeekClientTests(unittest.TestCase):
+    def test_continuation_matcher_returns_source_order_pairs(self) -> None:
+        from newspaper_translator.config import DeepSeekSettings
+        from newspaper_translator.deepseek import DeepSeekContinuationMatcher
+        from newspaper_translator.pdf import ArticleFragment
+
+        matcher = DeepSeekContinuationMatcher(
+            settings=DeepSeekSettings(
+                api_key="deepseek-key",
+                base_url="https://api.deepseek.com",
+                model="deepseek-chat",
+                timeout_seconds=45,
+            ),
+            transport=_FakeTransport(
+                responses=[
+                    _FakeResponse(
+                        status_code=200,
+                        body=json.dumps(
+                            {
+                                "choices": [
+                                    {
+                                        "message": {
+                                            "content": json.dumps(
+                                                {
+                                                    "matches": [
+                                                        {
+                                                            "front_source_order": 1,
+                                                            "back_source_order": 2,
+                                                        }
+                                                    ]
+                                                }
+                                            )
+                                        }
+                                    }
+                                ]
+                            }
+                        ).encode("utf-8"),
+                    )
+                ]
+            ),
+        )
+
+        matches = matcher(
+            [
+                ArticleFragment(
+                    title="Front",
+                    body_text="Please turn to page A7",
+                    source_order=1,
+                    continued_to_page="A7",
+                    continued_from_page="",
+                ),
+                ArticleFragment(
+                    title="Back",
+                    body_text="Continued from PageOne",
+                    source_order=2,
+                    continued_to_page="",
+                    continued_from_page="PageOne",
+                ),
+            ]
+        )
+
+        self.assertEqual(matches, [(1, 2)])
+
+    def test_translator_parses_classification_and_translation(self) -> None:
+        from newspaper_translator.article_store import StoredFinalArticle
+        from newspaper_translator.config import DeepSeekSettings
+        from newspaper_translator.deepseek import DeepSeekArticleTranslator
+
+        translator = DeepSeekArticleTranslator(
+            settings=DeepSeekSettings(
+                api_key="deepseek-key",
+                base_url="https://api.deepseek.com",
+                model="deepseek-chat",
+                timeout_seconds=45,
+            ),
+            transport=_FakeTransport(
+                responses=[
+                    _FakeResponse(
+                        status_code=200,
+                        body=json.dumps(
+                            {
+                                "choices": [
+                                    {
+                                        "message": {
+                                            "content": json.dumps(
+                                                {
+                                                    "content_type": "article",
+                                                    "classification_reason": "Regular newspaper article.",
+                                                    "translated_title_zh": "标题",
+                                                    "translated_body_zh": "正文",
+                                                }
+                                            )
+                                        }
+                                    }
+                                ]
+                            }
+                        ).encode("utf-8"),
+                    )
+                ]
+            ),
+        )
+
+        result = translator(
+            StoredFinalArticle(
+                article_id="article-1",
+                article_key="article-key-1",
+                parse_run_id="parse-run-1",
+                document_key="document-1",
+                publication_date="2026-06-05",
+                article_order=1,
+                primary_source_order=1,
+                source_fragment_count=1,
+                title_en="Title",
+                body_text_en="Body",
+                created_at="",
+                source_page_numbers=[1],
+            )
+        )
+
+        self.assertEqual(result.content_type, "article")
+        self.assertEqual(result.translated_title_zh, "标题")
+        self.assertEqual(result.translated_body_zh, "正文")
+
+    def test_summarizer_tagger_parses_summary_and_tags(self) -> None:
+        from newspaper_translator.article_store import StoredFinalArticle
+        from newspaper_translator.config import DeepSeekSettings
+        from newspaper_translator.deepseek import DeepSeekArticleSummarizerTagger
+
+        summarizer = DeepSeekArticleSummarizerTagger(
+            settings=DeepSeekSettings(
+                api_key="deepseek-key",
+                base_url="https://api.deepseek.com",
+                model="deepseek-chat",
+                timeout_seconds=45,
+            ),
+            transport=_FakeTransport(
+                responses=[
+                    _FakeResponse(
+                        status_code=200,
+                        body=json.dumps(
+                            {
+                                "choices": [
+                                    {
+                                        "message": {
+                                            "content": json.dumps(
+                                                {
+                                                    "summary_zh": "一段中文摘要。",
+                                                    "tags": ["经济", "市场", "企业"],
+                                                }
+                                            )
+                                        }
+                                    }
+                                ]
+                            }
+                        ).encode("utf-8"),
+                    )
+                ]
+            ),
+        )
+
+        result = summarizer(
+            article=StoredFinalArticle(
+                article_id="article-1",
+                article_key="article-key-1",
+                parse_run_id="parse-run-1",
+                document_key="document-1",
+                publication_date="2026-06-05",
+                article_order=1,
+                primary_source_order=1,
+                source_fragment_count=1,
+                title_en="Title",
+                body_text_en="Body",
+                created_at="",
+                source_page_numbers=[1],
+            ),
+            translated_title_zh="标题",
+            translated_body_zh="正文",
+        )
+
+        self.assertEqual(result.summary_zh, "一段中文摘要。")
+        self.assertEqual(result.tags, ["经济", "市场", "企业"])
+
+
 class _FakeResponse:
     def __init__(self, *, status_code: int, body: bytes) -> None:
         self.status_code = status_code

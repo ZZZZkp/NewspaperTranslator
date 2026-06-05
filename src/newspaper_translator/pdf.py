@@ -10,6 +10,13 @@ class ArticleFragment:
     source_order: int
     continued_to_page: str
     continued_from_page: str
+    page_number: int = 0
+
+
+@dataclass(frozen=True)
+class ParsedMarkdownPage:
+    page_number: int
+    markdown_text: str
 
 
 @dataclass(frozen=True)
@@ -54,7 +61,12 @@ class ParseResult:
     articles: list[ParsedArticle]
 
 
-def extract_article_fragments_from_mineru_markdown(markdown_text: str) -> list[ArticleFragment]:
+def extract_article_fragments_from_mineru_markdown(
+    markdown_text: str,
+    *,
+    page_number: int = 0,
+    starting_source_order: int = 1,
+) -> list[ArticleFragment]:
     fragments: list[ArticleFragment] = []
     current_title: str | None = None
     current_body_lines: list[str] = []
@@ -76,9 +88,10 @@ def extract_article_fragments_from_mineru_markdown(markdown_text: str) -> list[A
             ArticleFragment(
                 title=current_title,
                 body_text=body_text,
-                source_order=len(fragments) + 1,
+                source_order=starting_source_order + len(fragments),
                 continued_to_page=_extract_continued_to_page(body_text),
                 continued_from_page=_extract_continued_from_page(body_text),
+                page_number=page_number,
             )
         )
         current_title = None
@@ -158,6 +171,38 @@ def build_parse_result_from_mineru_markdown(
     continuation_matcher=None,
 ) -> ParseResult:
     fragments = extract_article_fragments_from_mineru_markdown(markdown_text)
+    return _build_parse_result_from_fragments(
+        fragments,
+        continuation_matcher=continuation_matcher,
+    )
+
+
+def build_parse_result_from_mineru_pages(
+    pages: list[ParsedMarkdownPage],
+    *,
+    continuation_matcher=None,
+) -> ParseResult:
+    fragments: list[ArticleFragment] = []
+    next_source_order = 1
+    for page in sorted(pages, key=lambda item: item.page_number):
+        page_fragments = extract_article_fragments_from_mineru_markdown(
+            page.markdown_text,
+            page_number=page.page_number,
+            starting_source_order=next_source_order,
+        )
+        fragments.extend(page_fragments)
+        next_source_order += len(page_fragments)
+    return _build_parse_result_from_fragments(
+        fragments,
+        continuation_matcher=continuation_matcher,
+    )
+
+
+def _build_parse_result_from_fragments(
+    fragments: list[ArticleFragment],
+    *,
+    continuation_matcher=None,
+) -> ParseResult:
     match_decisions: list[ParseMatchDecision] = []
 
     if continuation_matcher is None:

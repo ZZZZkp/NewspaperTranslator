@@ -372,6 +372,45 @@ class PdfLayoutTests(unittest.TestCase):
         self.assertIn("Therapeutics for more than", articles[0].body_text)
         self.assertEqual(fake_client.calls[0]["pdf_path"], pdf_path)
 
+    def test_build_parse_result_from_mineru_pages_preserves_physical_page_numbers(self) -> None:
+        from newspaper_translator.pdf import (
+            ParsedMarkdownPage,
+            build_parse_result_from_mineru_pages,
+        )
+
+        matcher = _FakeContinuationMatcher(matches=[(1, 2)])
+
+        parse_result = build_parse_result_from_mineru_pages(
+            [
+                ParsedMarkdownPage(
+                    page_number=1,
+                    markdown_text=(
+                        "# Big Oil Explores Farther Afield\n\n"
+                        "U.S. oil futures were trading near $90 a barrel.\n"
+                        "Please turn to page A7\n"
+                    ),
+                ),
+                ParsedMarkdownPage(
+                    page_number=7,
+                    markdown_text=(
+                        "# Big Oil Explores Farther Out\n\n"
+                        "Continued from PageOne after the Strait of Hormuz reopened.\n"
+                    ),
+                ),
+            ],
+            continuation_matcher=matcher,
+        )
+
+        self.assertEqual([fragment.page_number for fragment in parse_result.fragments], [1, 7])
+        self.assertEqual([fragment.source_order for fragment in parse_result.fragments], [1, 2])
+        self.assertEqual(len(parse_result.articles), 1)
+        article = parse_result.articles[0]
+        source_pages = [
+            parse_result.fragments[source.source_order - 1].page_number
+            for source in article.source_fragments
+        ]
+        self.assertEqual(source_pages, [1, 7])
+
     def test_phase_3_entry_accepts_continuation_matcher(self) -> None:
         self.assertIsNotNone(
             parse_pdf_articles,

@@ -411,6 +411,28 @@ class PdfLayoutTests(unittest.TestCase):
         ]
         self.assertEqual(source_pages, [1, 7])
 
+    def test_split_pdf_into_single_page_files_writes_1_based_page_artifacts(self) -> None:
+        from pypdf import PdfReader, PdfWriter
+        from newspaper_translator.pdf import split_pdf_into_single_page_files
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_pdf = pathlib.Path(temp_dir) / "sample.pdf"
+            writer = PdfWriter()
+            writer.add_blank_page(width=72, height=72)
+            writer.add_blank_page(width=72, height=72)
+            with source_pdf.open("wb") as output:
+                writer.write(output)
+
+            page_files = split_pdf_into_single_page_files(
+                pdf_path=source_pdf,
+                output_dir=pathlib.Path(temp_dir) / "pages",
+            )
+
+            self.assertEqual([page.page_number for page in page_files], [1, 2])
+            self.assertEqual([page.path.name for page in page_files], ["page-0001.pdf", "page-0002.pdf"])
+            self.assertEqual(len(PdfReader(str(page_files[0].path)).pages), 1)
+            self.assertEqual(len(PdfReader(str(page_files[1].path)).pages), 1)
+
     def test_phase_3_entry_accepts_continuation_matcher(self) -> None:
         self.assertIsNotNone(
             parse_pdf_articles,

@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 
+from pypdf import PdfReader, PdfWriter
+
 
 @dataclass(frozen=True)
 class ArticleFragment:
@@ -17,6 +19,12 @@ class ArticleFragment:
 class ParsedMarkdownPage:
     page_number: int
     markdown_text: str
+
+
+@dataclass(frozen=True)
+class SinglePagePdf:
+    page_number: int
+    path: Path
 
 
 @dataclass(frozen=True)
@@ -59,6 +67,24 @@ class ParseResult:
     fragments: list[ArticleFragment]
     match_decisions: list[ParseMatchDecision]
     articles: list[ParsedArticle]
+
+
+def split_pdf_into_single_page_files(*, pdf_path: Path, output_dir: Path) -> list[SinglePagePdf]:
+    pdf_path = Path(pdf_path)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    reader = PdfReader(str(pdf_path))
+    page_files: list[SinglePagePdf] = []
+    for zero_based_index, page in enumerate(reader.pages):
+        page_number = zero_based_index + 1
+        writer = PdfWriter()
+        writer.add_page(page)
+        page_path = output_dir / f"page-{page_number:04d}.pdf"
+        with page_path.open("wb") as output:
+            writer.write(output)
+        page_files.append(SinglePagePdf(page_number=page_number, path=page_path))
+    return page_files
 
 
 def extract_article_fragments_from_mineru_markdown(

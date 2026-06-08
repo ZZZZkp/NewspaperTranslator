@@ -122,6 +122,26 @@ class AppSettingsTests(unittest.TestCase):
         self.assertEqual(settings.model, "gemini-2.5-flash")
         self.assertEqual(settings.timeout_seconds, 45)
 
+    def test_mineru_settings_reads_rate_limit_defaults_and_overrides(self) -> None:
+        from newspaper_translator.config import MineruSettings
+
+        defaults = MineruSettings.from_env({"MINERU_API_TOKEN": "t"})
+        self.assertEqual(defaults.submit_rate_per_min, 45)
+        self.assertEqual(defaults.rate_limit_pause_seconds, 120)
+        self.assertEqual(defaults.rate_limit_max_pauses, 2)
+
+        overridden = MineruSettings.from_env(
+            {
+                "MINERU_API_TOKEN": "t",
+                "MINERU_SUBMIT_RATE_PER_MIN": "30",
+                "MINERU_RATE_LIMIT_PAUSE_SECONDS": "180",
+                "MINERU_RATE_LIMIT_MAX_PAUSES": "4",
+            }
+        )
+        self.assertEqual(overridden.submit_rate_per_min, 30)
+        self.assertEqual(overridden.rate_limit_pause_seconds, 180)
+        self.assertEqual(overridden.rate_limit_max_pauses, 4)
+
     def test_fails_fast_when_required_gemini_token_is_missing(self) -> None:
         self.assertIsNotNone(GeminiSettings, "GeminiSettings should be importable from newspaper_translator.config")
         self.assertIsNotNone(ConfigurationError, "ConfigurationError should be importable from newspaper_translator.config")

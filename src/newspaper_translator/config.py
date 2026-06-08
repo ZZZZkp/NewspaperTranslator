@@ -34,6 +34,9 @@ class MineruSettings:
     page_ranges: str
     poll_interval_seconds: int
     poll_timeout_seconds: int
+    submit_rate_per_min: int = 45
+    rate_limit_pause_seconds: int = 120
+    rate_limit_max_pauses: int = 2
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "MineruSettings":
@@ -54,6 +57,21 @@ class MineruSettings:
                 env,
                 "MINERU_POLL_TIMEOUT_SECONDS",
                 default=300,
+            ),
+            submit_rate_per_min=_read_int_setting(
+                env,
+                "MINERU_SUBMIT_RATE_PER_MIN",
+                default=45,
+            ),
+            rate_limit_pause_seconds=_read_int_setting(
+                env,
+                "MINERU_RATE_LIMIT_PAUSE_SECONDS",
+                default=120,
+            ),
+            rate_limit_max_pauses=_read_int_setting(
+                env,
+                "MINERU_RATE_LIMIT_MAX_PAUSES",
+                default=2,
             ),
         )
 

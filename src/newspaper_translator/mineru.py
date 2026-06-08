@@ -1,10 +1,10 @@
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import ssl
 import time
 from typing import Protocol
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib import request
 import zipfile
 
@@ -42,6 +42,7 @@ class MineruParsedDocument:
 class _TransportResponse:
     status_code: int
     body: bytes
+    headers: dict[str, str] = field(default_factory=dict)
 
 
 class _Transport(Protocol):
@@ -429,5 +430,16 @@ class _UrllibTransport:
     ) -> _TransportResponse:
         http_request = request.Request(url=url, data=body, headers=headers or {}, method=method)
         ssl_context = ssl.create_default_context(cafile=certifi.where())
-        with request.urlopen(http_request, timeout=timeout, context=ssl_context) as response:
-            return _TransportResponse(status_code=response.getcode(), body=response.read())
+        try:
+            with request.urlopen(http_request, timeout=timeout, context=ssl_context) as response:
+                return _TransportResponse(
+                    status_code=response.getcode(),
+                    body=response.read(),
+                    headers={key: value for key, value in response.headers.items()},
+                )
+        except HTTPError as exc:
+            return _TransportResponse(
+                status_code=exc.code,
+                body=exc.read(),
+                headers={key: value for key, value in (exc.headers or {}).items()},
+            )

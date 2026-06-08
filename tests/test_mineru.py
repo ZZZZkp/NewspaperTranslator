@@ -135,6 +135,8 @@ class MineruClientTests(unittest.TestCase):
             def read(self):
                 return b"ok"
 
+            headers = {}
+
         with patch("newspaper_translator.mineru.request.urlopen", return_value=_Response()) as urlopen:
             response = transport.request(method="GET", url="https://mineru.net/healthz")
 
@@ -269,6 +271,33 @@ class MineruClientTests(unittest.TestCase):
         self.assertEqual(result.file_id, "sample")
         self.assertEqual(result.markdown_text, "# Headline\n\nBody\n")
 
+    def test_urllib_transport_returns_429_response_with_headers(self) -> None:
+        self.assertIsNotNone(_UrllibTransport)
+        from urllib.error import HTTPError
+
+        def _raise_http_error(*_args, **_kwargs):
+            raise HTTPError(
+                url="https://mineru.net/api/v4/file-urls/batch",
+                code=429,
+                msg="Too Many Requests",
+                hdrs={"Retry-After": "90"},
+                fp=io.BytesIO(b"rate limited"),
+            )
+
+        transport = _UrllibTransport()
+        with patch("newspaper_translator.mineru.request.urlopen", _raise_http_error):
+            response = transport.request(
+                method="POST",
+                url="https://mineru.net/api/v4/file-urls/batch",
+                headers={},
+                body=b"{}",
+                timeout=30,
+            )
+
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(response.body, b"rate limited")
+        self.assertEqual(response.headers.get("Retry-After"), "90")
+
     def test_parse_pdf_by_pages_uploads_single_page_files_in_batches_of_30(self) -> None:
         from newspaper_translator.mineru import MineruParsedPage
 
@@ -370,9 +399,10 @@ class _RetryingFakeTransport:
 
 
 class _FakeResponse:
-    def __init__(self, *, status_code: int, body: bytes) -> None:
+    def __init__(self, *, status_code: int, body: bytes, headers: dict[str, str] | None = None) -> None:
         self.status_code = status_code
         self.body = body
+        self.headers = headers or {}
 
 
 def _build_result_zip_bytes(markdown_text: str) -> bytes:

@@ -1,7 +1,9 @@
+import multiprocessing
 import pathlib
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -14,6 +16,29 @@ try:
     from newspaper_translator.database import run_pending_migrations
 except ImportError:
     run_pending_migrations = None
+
+
+def _concurrent_migration_worker(
+    database_url: str, ready_dir: str, worker_count: int, index: int
+) -> str | None:
+    """Run migrations in a separate process, started near-simultaneously with peers
+    via a filesystem barrier. Returns the error repr if migration raised, else None.
+
+    Defined at module level so it is importable by the ``spawn`` start method.
+    """
+    ready = pathlib.Path(ready_dir)
+    (ready / f"ready-{index}").write_text("1")
+    deadline = time.time() + 30
+    while len(list(ready.glob("ready-*"))) < worker_count and time.time() < deadline:
+        time.sleep(0.005)
+
+    from newspaper_translator.database import run_pending_migrations as _run
+
+    try:
+        _run(database_url)
+        return None
+    except Exception as exc:  # noqa: BLE001 - reported back for assertion
+        return repr(exc)
 
 
 class DatabaseMigrationTests(unittest.TestCase):
@@ -526,6 +551,76 @@ class DatabaseMigrationTests(unittest.TestCase):
 
         self.assertIn("content_type", columns)
         self.assertIn("classification_reason", columns)
+
+
+class ConcurrentMigrationTests(unittest.TestCase):
+    def test_concurrent_first_boot_migrations_do_not_collide(self) -> None:
+        """Multiple services starting at once against a fresh shared SQLite DB must
+        not double-apply migrations (which raised 'duplicate column name')."""
+        self.assertIsNotNone(
+            run_pending_migrations,
+            "run_pending_migrations should be importable from newspaper_translator.database",
+        )
+
+        worker_count = 8
+        context = multiprocessing.get_context("spawn")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            ready_dir = pathlib.Path(temp_dir) / "ready"
+            ready_dir.mkdir()
+
+            arguments = [
+                (database_url, str(ready_dir), worker_count, index)
+                for index in range(worker_count)
+            ]
+            with context.Pool(worker_count) as pool:
+                results = pool.starmap(_concurrent_migration_worker, arguments)
+            errors = [result for result in results if result is not None]
+
+            connection = sqlite3.connect(database_path)
+            try:
+                recorded_versions = [
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT version FROM schema_migrations ORDER BY version"
+                    )
+                ]
+            finally:
+                connection.close()
+
+        self.assertEqual(errors, [], f"concurrent migrations raised: {errors}")
+        self.assertEqual(
+            len(recorded_versions),
+            len(set(recorded_versions)),
+            f"a migration was recorded more than once: {recorded_versions}",
+        )
+        self.assertIn("0001_initial", recorded_versions)
+        self.assertIn("0003_checkpointing_retry", recorded_versions)
+
+    def test_rerunning_migrations_on_existing_database_is_noop(self) -> None:
+        """A normal restart (DB already migrated) applies nothing new and never errors."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+
+            first_applied = run_pending_migrations(database_url)
+            second_applied = run_pending_migrations(database_url)
+
+            connection = sqlite3.connect(database_path)
+            try:
+                recorded_versions = [
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT version FROM schema_migrations ORDER BY version"
+                    )
+                ]
+            finally:
+                connection.close()
+
+        self.assertIn("0001_initial", first_applied)
+        self.assertEqual(second_applied, [])
+        self.assertEqual(len(recorded_versions), len(set(recorded_versions)))
 
 
 if __name__ == "__main__":

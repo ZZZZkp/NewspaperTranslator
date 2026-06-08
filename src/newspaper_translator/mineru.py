@@ -11,6 +11,7 @@ import zipfile
 import certifi
 
 from newspaper_translator.config import MineruSettings
+from newspaper_translator.mineru_throttle import MineruRateLimitError, MineruSubmissionThrottle
 from newspaper_translator.pdf import split_pdf_into_single_page_files
 
 
@@ -66,12 +67,20 @@ class MineruClient:
         sleep=time.sleep,
         monotonic=time.monotonic,
         max_request_attempts: int = 3,
+        throttle: MineruSubmissionThrottle | None = None,
     ) -> None:
         self._settings = settings
         self._transport = transport or _UrllibTransport()
         self._sleep = sleep
         self._monotonic = monotonic
         self._max_request_attempts = max_request_attempts
+        self._throttle = throttle or MineruSubmissionThrottle(
+            rate_per_min=settings.submit_rate_per_min,
+            pause_seconds=settings.rate_limit_pause_seconds,
+            max_pauses=settings.rate_limit_max_pauses,
+            sleep=sleep,
+            monotonic=monotonic,
+        )
 
     def parse_pdf(self, *, pdf_path: Path, output_root: Path) -> MineruParsedDocument:
         pdf_path = Path(pdf_path)
@@ -113,21 +122,25 @@ class MineruClient:
                 }
             ],
         }
-        response = self._request_json(
-            method="POST",
-            url="https://mineru.net/api/v4/file-urls/batch",
-            headers=self._auth_headers(),
-            body=json.dumps(payload).encode("utf-8"),
+        body = json.dumps(payload).encode("utf-8")
+        response = self._throttle.submit(
+            n_files=1,
+            perform=lambda: self._request_with_retries(
+                method="POST",
+                url="https://mineru.net/api/v4/file-urls/batch",
+                headers=self._auth_headers(),
+                body=body,
+                timeout=self._settings.poll_timeout_seconds,
+            ),
         )
-        data = response.get("data") or {}
+        payload_json = self._validate_json_response(response)
+        data = payload_json.get("data") or {}
         file_urls = data.get("file_urls") or []
         if not data.get("batch_id") or not file_urls:
             raise MineruError("MinerU batch upload response is missing batch_id or file_urls")
-
-        file_url = str(file_urls[0])
         return {
             "batch_id": str(data["batch_id"]),
-            "upload_url": file_url,
+            "upload_url": str(file_urls[0]),
         }
 
     def _upload_file(self, *, pdf_path: Path, upload_url: str) -> None:
@@ -254,13 +267,19 @@ class MineruClient:
                 for page in page_files
             ],
         }
-        response = self._request_json(
-            method="POST",
-            url="https://mineru.net/api/v4/file-urls/batch",
-            headers=self._auth_headers(),
-            body=json.dumps(payload).encode("utf-8"),
+        body = json.dumps(payload).encode("utf-8")
+        response = self._throttle.submit(
+            n_files=len(page_files),
+            perform=lambda: self._request_with_retries(
+                method="POST",
+                url="https://mineru.net/api/v4/file-urls/batch",
+                headers=self._auth_headers(),
+                body=body,
+                timeout=self._settings.poll_timeout_seconds,
+            ),
         )
-        data = response.get("data") or {}
+        payload_json = self._validate_json_response(response)
+        data = payload_json.get("data") or {}
         file_urls = data.get("file_urls") or []
         if not data.get("batch_id") or len(file_urls) != len(page_files):
             raise MineruError("MinerU batch upload response did not match submitted page files")
@@ -359,6 +378,14 @@ class MineruClient:
         markdown_text = markdown_path.read_text(encoding="utf-8")
         return markdown_path, markdown_text
 
+    def _validate_json_response(self, response: _TransportResponse) -> dict[str, object]:
+        if response.status_code < 200 or response.status_code >= 300:
+            raise MineruError(f"MinerU request failed with status {response.status_code}")
+        payload = json.loads(response.body.decode("utf-8"))
+        if payload.get("code") not in {0, 200}:
+            raise MineruError(f"MinerU request failed with payload code {payload.get('code')}")
+        return payload
+
     def _request_json(
         self,
         *,
@@ -374,13 +401,7 @@ class MineruClient:
             body=body,
             timeout=self._settings.poll_timeout_seconds,
         )
-        if response.status_code < 200 or response.status_code >= 300:
-            raise MineruError(f"MinerU request failed with status {response.status_code}")
-
-        payload = json.loads(response.body.decode("utf-8"))
-        if payload.get("code") not in {0, 200}:
-            raise MineruError(f"MinerU request failed with payload code {payload.get('code')}")
-        return payload
+        return self._validate_json_response(response)
 
     def _auth_headers(self) -> dict[str, str]:
         return {

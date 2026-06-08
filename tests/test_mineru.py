@@ -352,6 +352,52 @@ class MineruClientTests(unittest.TestCase):
         self.assertEqual(len(first_payload["files"]), 30)
         self.assertEqual(len(second_payload["files"]), 1)
 
+    def test_batch_create_pauses_on_429_then_succeeds(self) -> None:
+        settings = MineruSettings(
+            api_token="t", model_version="vlm", language="en", enable_ocr=False,
+            enable_table=True, enable_formula=True, page_ranges="",
+            poll_interval_seconds=0, poll_timeout_seconds=30,
+        )
+        clock = _FakeThrottleClock()
+        success_body = json.dumps(
+            {"code": 0, "data": {"batch_id": "b1", "file_urls": ["https://upload/sample.pdf"]}}
+        ).encode("utf-8")
+        transport = _FakeTransport(
+            responses=[
+                _FakeResponse(status_code=429, body=b"", headers={"Retry-After": "120"}),
+                _FakeResponse(status_code=200, body=success_body),
+            ]
+        )
+        client = MineruClient(
+            settings=settings, transport=transport,
+            sleep=clock.sleep, monotonic=clock.monotonic,
+        )
+
+        result = client._create_batch_upload(pathlib.Path("/tmp/sample.pdf"))
+
+        self.assertEqual(result["batch_id"], "b1")
+        self.assertGreaterEqual(clock.now, 120.0)  # paused before retrying
+
+    def test_batch_create_raises_rate_limit_error_when_persistent(self) -> None:
+        from newspaper_translator.mineru import MineruRateLimitError
+
+        settings = MineruSettings(
+            api_token="t", model_version="vlm", language="en", enable_ocr=False,
+            enable_table=True, enable_formula=True, page_ranges="",
+            poll_interval_seconds=0, poll_timeout_seconds=30,
+        )
+        clock = _FakeThrottleClock()
+        transport = _FakeTransport(
+            responses=[_FakeResponse(status_code=429, body=b"") for _ in range(5)]
+        )
+        client = MineruClient(
+            settings=settings, transport=transport,
+            sleep=clock.sleep, monotonic=clock.monotonic,
+        )
+
+        with self.assertRaises(MineruRateLimitError):
+            client._create_batch_upload(pathlib.Path("/tmp/sample.pdf"))
+
 
 class _FakeTransport:
     def __init__(self, *, responses: list["_FakeResponse"]) -> None:
@@ -403,6 +449,17 @@ class _FakeResponse:
         self.status_code = status_code
         self.body = body
         self.headers = headers or {}
+
+
+class _FakeThrottleClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
 
 
 def _build_result_zip_bytes(markdown_text: str) -> bytes:

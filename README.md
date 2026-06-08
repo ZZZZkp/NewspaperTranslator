@@ -95,6 +95,9 @@ Planned MinerU configuration:
 - `MINERU_ENABLE_FORMULA`, default `true`
 - `MINERU_POLL_INTERVAL_SECONDS`
 - `MINERU_POLL_TIMEOUT_SECONDS`
+- `MINERU_SUBMIT_RATE_PER_MIN`, default `45` — token-bucket ceiling on file submissions per minute; kept below MinerU's account limit of 50 files/min to avoid 429s
+- `MINERU_RATE_LIMIT_PAUSE_SECONDS`, default `120` — how long all MinerU submissions pause after a 429 (honors a longer `Retry-After` if the server sends one)
+- `MINERU_RATE_LIMIT_MAX_PAUSES`, default `2` — number of 429 pauses a single document tolerates before it is re-queued as `failed_retryable` (rate limiting never marks a document `failed_terminal`)
 
 DeepSeek configuration:
 

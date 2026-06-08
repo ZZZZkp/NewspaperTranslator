@@ -51,7 +51,16 @@ class MineruSubmissionThrottle:
             self._tokens = min(self._capacity, self._tokens + elapsed * self._refill_per_second)
             self._last_refill = now
 
+    def _wait_for_pause(self) -> None:
+        while True:
+            with self._lock:
+                remaining = self._paused_until - self._monotonic()
+            if remaining <= 0:
+                return
+            self._sleep(remaining)
+
     def acquire(self, n_files: int) -> None:
+        self._wait_for_pause()
         while True:
             with self._lock:
                 self._refill_locked()
@@ -63,3 +72,23 @@ class MineruSubmissionThrottle:
                 deficit = target - self._tokens
                 wait_seconds = deficit / self._refill_per_second
             self._sleep(wait_seconds)
+
+    def note_rate_limited(self, retry_after_seconds: int) -> None:
+        with self._lock:
+            self._paused_until = self._monotonic() + retry_after_seconds
+
+    def submit(self, *, n_files: int, perform):
+        pauses = 0
+        while True:
+            self.acquire(n_files)
+            response = perform()
+            if getattr(response, "status_code", None) != 429:
+                return response
+            if pauses >= self._max_pauses:
+                raise MineruRateLimitError(
+                    "MinerU rate limit persisted after maximum pauses"
+                )
+            pauses += 1
+            self.note_rate_limited(
+                parse_retry_after(getattr(response, "headers", {}), self._pause_seconds)
+            )

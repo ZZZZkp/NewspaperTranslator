@@ -212,6 +212,12 @@ class MineruClient:
             state = existing_states.get(page.page_number)
             if state is not None and state.state == "done" and state.markdown_path:
                 markdown_path = Path(state.markdown_path)
+                try:
+                    markdown_text = markdown_path.read_text(encoding="utf-8")
+                except OSError as exc:
+                    raise MineruError(
+                        f"MinerU stored markdown missing for page {page.page_number}: {exc}"
+                    ) from exc
                 parsed_pages.append(
                     MineruParsedPage(
                         page_number=page.page_number,
@@ -219,7 +225,7 @@ class MineruClient:
                         file_id=page.path.stem,
                         file_name=state.file_name or page.path.name,
                         markdown_path=markdown_path,
-                        markdown_text=markdown_path.read_text(encoding="utf-8"),
+                        markdown_text=markdown_text,
                     )
                 )
                 if state.batch_id:

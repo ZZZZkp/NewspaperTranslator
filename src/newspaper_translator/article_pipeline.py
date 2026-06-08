@@ -13,6 +13,7 @@ from newspaper_translator.article_store import (
 )
 from newspaper_translator.database import sqlite_path_from_database_url
 from newspaper_translator.logging_utils import format_log_event
+from newspaper_translator.mineru_page_state import MineruPageParseStateStore
 from newspaper_translator.pdf import ParsedMarkdownPage, build_parse_result_from_mineru_pages
 
 _GMAIL_MESSAGE_TZ = ZoneInfo("Asia/Shanghai")
@@ -42,6 +43,8 @@ def persist_document_articles(
     parsed_document = mineru_client.parse_pdf_by_pages(
         pdf_path=Path(document.raw_path),
         output_root=Path(output_root),
+        document_key=document_key,
+        page_state_store=MineruPageParseStateStore(database_url=database_url),
     )
     publication_date = resolve_publication_date(
         original_filename=document.original_filename,

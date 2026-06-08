@@ -523,7 +523,7 @@ class _FakePageSlicedMineruClient:
         self._parsed_document = parsed_document
         self.calls: list[dict[str, object]] = []
 
-    def parse_pdf_by_pages(self, *, pdf_path: pathlib.Path, output_root: pathlib.Path):
+    def parse_pdf_by_pages(self, *, pdf_path: pathlib.Path, output_root: pathlib.Path, document_key=None, page_state_store=None):
         self.calls.append(
             {
                 "method": "parse_pdf_by_pages",

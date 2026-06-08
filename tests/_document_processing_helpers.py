@@ -550,5 +550,5 @@ class _FakeMineruClient:
     def __init__(self, *, parsed_document) -> None:
         self._parsed_document = parsed_document
 
-    def parse_pdf_by_pages(self, *, pdf_path: pathlib.Path, output_root: pathlib.Path):
+    def parse_pdf_by_pages(self, *, pdf_path: pathlib.Path, output_root: pathlib.Path, document_key=None, page_state_store=None):
         return self._parsed_document

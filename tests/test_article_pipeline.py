@@ -456,6 +456,87 @@ class ArticlePipelineTests(unittest.TestCase):
         self.assertEqual(articles[0].source_page_numbers, [1, 7])
         self.assertEqual(mineru_client.calls[0]["method"], "parse_pdf_by_pages")
 
+    def test_persist_document_articles_passes_document_key_and_store(self) -> None:
+        from newspaper_translator import article_pipeline
+        from newspaper_translator.database import run_pending_migrations as _run_migrations
+
+        captured: dict[str, object] = {}
+
+        class _FakeMineru:
+            def parse_pdf_by_pages(
+                self,
+                *,
+                pdf_path,
+                output_root,
+                document_key=None,
+                page_state_store=None,
+            ):
+                captured["document_key"] = document_key
+                captured["store_type"] = type(page_state_store).__name__
+                import pathlib as _pl
+                from types import SimpleNamespace as _SN
+                return _SN(
+                    batch_id="b1",
+                    file_id="f1",
+                    file_name="x.pdf",
+                    markdown_path=_pl.Path(output_root) / "x.md",
+                    markdown_text="2026-01-02 news",
+                    pages=(),
+                )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "db.sqlite"
+            database_url = f"sqlite:///{database_path}"
+            _run_migrations(database_url)
+
+            raw_pdf = pathlib.Path(temp_dir) / "paper-2026-01-02.pdf"
+            raw_pdf.write_bytes(b"%PDF-1.4 sample")
+            connection = sqlite3.connect(database_path)
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO documents (
+                        document_key, source_name, source_message_id,
+                        source_attachment_id, sender, original_filename,
+                        content_hash, raw_path, import_status,
+                        source_message_internal_date
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "doc-1",
+                        "gmail",
+                        "message-1",
+                        "attachment-1",
+                        "news@example.com",
+                        "paper-2026-01-02.pdf",
+                        "hash-1",
+                        str(raw_pdf),
+                        "imported",
+                        None,
+                    ),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            try:
+                article_pipeline.persist_document_articles(
+                    database_url=database_url,
+                    document_key="doc-1",
+                    output_root=pathlib.Path(temp_dir) / "out",
+                    mineru_client=_FakeMineru(),
+                    continuation_matcher=None,
+                    parser_name="mineru",
+                    parser_version="vlm",
+                    continuation_matcher_name="",
+                    continuation_matcher_version="",
+                )
+            except Exception:
+                pass  # downstream pipeline steps are out of scope
+
+        self.assertEqual(captured["document_key"], "doc-1")
+        self.assertEqual(captured["store_type"], "MineruPageParseStateStore")
+
     def _insert_document(
         self,
         database_path: pathlib.Path,
@@ -506,7 +587,7 @@ class _FakeMineruClient:
         self._parsed_document = parsed_document
         self.calls: list[dict[str, object]] = []
 
-    def parse_pdf_by_pages(self, *, pdf_path: pathlib.Path, output_root: pathlib.Path):
+    def parse_pdf_by_pages(self, *, pdf_path: pathlib.Path, output_root: pathlib.Path, document_key=None, page_state_store=None):
         self.calls.append({"method": "parse_pdf_by_pages", "pdf_path": pdf_path, "output_root": output_root})
         return self._parsed_document
 

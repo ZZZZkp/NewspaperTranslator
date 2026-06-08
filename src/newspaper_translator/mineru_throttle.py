@@ -31,6 +31,8 @@ class MineruSubmissionThrottle:
         monotonic=time.monotonic,
         sleep=time.sleep,
     ) -> None:
+        if rate_per_min <= 0:
+            raise ValueError(f"rate_per_min must be positive, got {rate_per_min}")
         self._capacity = float(rate_per_min)
         self._refill_per_second = float(rate_per_min) / 60.0
         self._tokens = float(rate_per_min)
@@ -53,9 +55,11 @@ class MineruSubmissionThrottle:
         while True:
             with self._lock:
                 self._refill_locked()
-                if self._tokens >= n_files:
+                if self._tokens >= n_files or self._tokens >= self._capacity:
                     self._tokens -= n_files
                     return
-                deficit = n_files - self._tokens
+                # When n_files exceeds capacity, wait only until the bucket is full.
+                target = min(float(n_files), self._capacity)
+                deficit = target - self._tokens
                 wait_seconds = deficit / self._refill_per_second
             self._sleep(wait_seconds)

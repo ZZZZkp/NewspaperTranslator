@@ -336,6 +336,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 "0011_drop_processing_tasks",
                 "0012_article_enrichment_classification",
                 "0013_documents_source_metadata",
+                "0014_mineru_page_parse_state",
             ],
         )
 
@@ -530,6 +531,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 "0011_drop_processing_tasks",
                 "0012_article_enrichment_classification",
                 "0013_documents_source_metadata",
+                "0014_mineru_page_parse_state",
             ],
         )
 

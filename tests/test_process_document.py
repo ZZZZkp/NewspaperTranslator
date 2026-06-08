@@ -434,6 +434,30 @@ class ProcessDocumentTests(DocumentProcessingTestMixin, unittest.TestCase):
         self.assertEqual(article_processing_run.article_id, article.article_id)
         self.assertEqual(article_processing_run.status, "pending")
 
+    def test_rate_limit_failure_is_retryable_and_not_counted(self) -> None:
+        from newspaper_translator.mineru import MineruRateLimitError
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_url = f"sqlite:///{pathlib.Path(temp_dir) / 'db.sqlite'}"
+            run_pending_migrations(database_url)
+            document_key = "doc-rl"
+
+            def _raise_rate_limit(*, document_key):
+                raise MineruRateLimitError("limited")
+
+            run = process_document(
+                database_url=database_url,
+                document_key=document_key,
+                locked_by="w1",
+                parse_persist_document=_raise_rate_limit,
+                enrich_document=lambda *, document_key: None,
+                step_retry_limit=2,
+            )
+
+            self.assertEqual(run.status, "failed_retryable")
+            self.assertEqual(run.automatic_failure_count, 0)
+            self.assertEqual(run.last_failure_step, "parse_persist")
+
     def test_process_document_can_use_real_parse_and_enqueue_article_processing_wiring(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
         self.assertIsNotNone(process_document)

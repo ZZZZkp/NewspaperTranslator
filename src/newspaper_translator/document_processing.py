@@ -10,6 +10,7 @@ from newspaper_translator.article_pipeline import persist_document_articles
 from newspaper_translator.article_store import get_final_article, list_latest_document_articles
 from newspaper_translator.logging_utils import format_log_event
 from newspaper_translator.database import sqlite_path_from_database_url
+from newspaper_translator.mineru import MineruRateLimitError
 
 
 @dataclass(frozen=True)
@@ -907,6 +908,56 @@ def fail_document_processing_run(
     return updated_run
 
 
+def mark_document_rate_limited(
+    *,
+    database_url: str,
+    document_key: str,
+    failed_step: str,
+    error_message: str,
+    log_event=None,
+) -> DocumentProcessingRun:
+    def callback():
+        connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+        try:
+            connection.execute(
+                """
+                UPDATE document_processing_runs
+                SET
+                    status = 'failed_retryable',
+                    current_step = ?,
+                    last_failure_step = ?,
+                    last_error_message = ?,
+                    last_attempt_finished_at = CURRENT_TIMESTAMP,
+                    locked_by = NULL,
+                    lock_expires_at = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE document_key = ?
+                """,
+                (failed_step, failed_step, error_message, document_key),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    _run_with_database_retries(callback)
+    updated_run = _run_with_database_retries(
+        lambda: get_document_processing_run(
+            database_url=database_url, document_key=document_key,
+        ),
+    )
+    _log_event(
+        log_event,
+        event="document.rate_limited",
+        details={
+            "document_key": document_key,
+            "failed_step": failed_step,
+            "status": updated_run.status,
+            "error_message": error_message,
+        },
+    )
+    return updated_run
+
+
 def fail_article_processing_run(
     *,
     database_url: str,
@@ -1429,6 +1480,14 @@ def process_document(
                 "status": "failed",
             },
         )
+        if isinstance(parse_error, MineruRateLimitError):
+            return mark_document_rate_limited(
+                database_url=database_url,
+                document_key=document_key,
+                failed_step="parse_persist",
+                error_message=str(parse_error),
+                log_event=log_event,
+            )
         return fail_document_processing_run(
             database_url=database_url,
             document_key=document_key,
@@ -1613,6 +1672,8 @@ def _run_step_with_retry(
         try:
             callback(document_key=document_key)
             return None
+        except MineruRateLimitError as exc:
+            return exc
         except Exception as exc:  # noqa: BLE001
             last_error = exc
             if attempt < step_retry_limit:

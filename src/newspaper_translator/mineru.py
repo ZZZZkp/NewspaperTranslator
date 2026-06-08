@@ -186,6 +186,8 @@ class MineruClient:
         pdf_path: Path,
         output_root: Path,
         max_batch_size: int = 30,
+        document_key: str | None = None,
+        page_state_store=None,
     ) -> MineruParsedDocument:
         pdf_path = Path(pdf_path)
         output_root = Path(output_root)
@@ -194,16 +196,70 @@ class MineruClient:
             pdf_path=pdf_path,
             output_dir=page_output_dir,
         )
+        page_markdown_root = output_root / pdf_path.stem / "page-markdown"
+        existing_states = (
+            page_state_store.load(document_key=document_key)
+            if page_state_store is not None and document_key is not None
+            else {}
+        )
+
         parsed_pages: list[MineruParsedPage] = []
         batch_ids: list[str] = []
+        resume_pages = []  # (page, state) for state == "submitted"
+        pending_pages = []  # need a fresh submit
 
-        for index in range(0, len(page_files), max_batch_size):
-            batch_pages = page_files[index:index + max_batch_size]
+        for page in page_files:
+            state = existing_states.get(page.page_number)
+            if state is not None and state.state == "done" and state.markdown_path:
+                markdown_path = Path(state.markdown_path)
+                parsed_pages.append(
+                    MineruParsedPage(
+                        page_number=page.page_number,
+                        batch_id=state.batch_id or "",
+                        file_id=page.path.stem,
+                        file_name=state.file_name or page.path.name,
+                        markdown_path=markdown_path,
+                        markdown_text=markdown_path.read_text(encoding="utf-8"),
+                    )
+                )
+                if state.batch_id:
+                    batch_ids.append(state.batch_id)
+            elif state is not None and state.state == "submitted" and state.batch_id:
+                resume_pages.append((page, state))
+            else:
+                pending_pages.append(page)
+
+        # Re-poll already-submitted batches without re-uploading.
+        resume_by_batch: dict[str, list] = {}
+        for page, state in resume_pages:
+            resume_by_batch.setdefault(state.batch_id, []).append((page, state))
+        for batch_id, items in resume_by_batch.items():
+            batch_ids.append(batch_id)
+            results = self._wait_for_extract_results(
+                batch_id=batch_id,
+                file_names={state.file_name or page.path.name for page, state in items},
+            )
+            for page, state in items:
+                file_name = state.file_name or page.path.name
+                self._finish_page(
+                    page=page, batch_id=batch_id, result=results[file_name],
+                    page_markdown_root=page_markdown_root, parsed_pages=parsed_pages,
+                    document_key=document_key, page_state_store=page_state_store,
+                )
+
+        # Submit fresh pages in batches.
+        for index in range(0, len(pending_pages), max_batch_size):
+            batch_pages = pending_pages[index:index + max_batch_size]
             upload = self._create_batch_upload_for_files(batch_pages)
             batch_id = str(upload["batch_id"])
             batch_ids.append(batch_id)
             for page, upload_url in zip(batch_pages, upload["file_urls"]):
                 self._upload_file(pdf_path=page.path, upload_url=upload_url)
+                if page_state_store is not None and document_key is not None:
+                    page_state_store.mark_submitted(
+                        document_key=document_key, page_number=page.page_number,
+                        batch_id=batch_id, file_name=page.path.name,
+                    )
             results = self._wait_for_extract_results(
                 batch_id=batch_id,
                 file_names={page.path.name for page in batch_pages},
@@ -214,26 +270,10 @@ class MineruClient:
                     raise MineruError(
                         f"MinerU page parse missing result for physical page {page.page_number}"
                     )
-                zip_bytes = self._download_bytes(result["full_zip_url"])
-                try:
-                    markdown_path, markdown_text = self._extract_full_markdown(
-                        zip_bytes=zip_bytes,
-                        output_root=output_root / pdf_path.stem / "page-markdown",
-                        file_stem=f"page-{page.page_number:04d}",
-                    )
-                except Exception as exc:
-                    raise MineruError(
-                        f"MinerU page parse failed for physical page {page.page_number}: {exc}"
-                    ) from exc
-                parsed_pages.append(
-                    MineruParsedPage(
-                        page_number=page.page_number,
-                        batch_id=batch_id,
-                        file_id=result["file_id"],
-                        file_name=page.path.name,
-                        markdown_path=markdown_path,
-                        markdown_text=markdown_text,
-                    )
+                self._finish_page(
+                    page=page, batch_id=batch_id, result=result,
+                    page_markdown_root=page_markdown_root, parsed_pages=parsed_pages,
+                    document_key=document_key, page_state_store=page_state_store,
                 )
 
         parsed_pages.sort(key=lambda page: page.page_number)
@@ -243,13 +283,52 @@ class MineruClient:
             file_stem=pdf_path.stem,
         )
         return MineruParsedDocument(
-            batch_id=",".join(batch_ids),
+            batch_id=",".join(dict.fromkeys(batch_ids)),
             file_id=pdf_path.stem,
             file_name=pdf_path.name,
             markdown_path=merged_markdown_path,
             markdown_text=merged_markdown_text,
             pages=tuple(parsed_pages),
         )
+
+    def _finish_page(
+        self,
+        *,
+        page,
+        batch_id: str,
+        result: dict,
+        page_markdown_root: Path,
+        parsed_pages: list,
+        document_key: str | None,
+        page_state_store,
+    ) -> None:
+        zip_bytes = self._download_bytes(result["full_zip_url"])
+        try:
+            markdown_path, markdown_text = self._extract_full_markdown(
+                zip_bytes=zip_bytes,
+                output_root=page_markdown_root,
+                file_stem=f"page-{page.page_number:04d}",
+            )
+        except Exception as exc:
+            raise MineruError(
+                f"MinerU page parse failed for physical page {page.page_number}: {exc}"
+            ) from exc
+        parsed_pages.append(
+            MineruParsedPage(
+                page_number=page.page_number,
+                batch_id=batch_id,
+                file_id=result["file_id"],
+                file_name=page.path.name,
+                markdown_path=markdown_path,
+                markdown_text=markdown_text,
+            )
+        )
+        if page_state_store is not None and document_key is not None:
+            page_state_store.mark_done(
+                document_key=document_key, page_number=page.page_number,
+                batch_id=batch_id, file_name=page.path.name,
+                full_zip_url=result["full_zip_url"], markdown_path=str(markdown_path),
+            )
 
     def _create_batch_upload_for_files(self, page_files) -> dict[str, object]:
         payload = {

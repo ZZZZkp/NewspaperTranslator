@@ -398,6 +398,80 @@ class MineruClientTests(unittest.TestCase):
         with self.assertRaises(MineruRateLimitError):
             client._create_batch_upload(pathlib.Path("/tmp/sample.pdf"))
 
+    def test_parse_pdf_by_pages_skips_done_pages_from_store(self) -> None:
+        settings = MineruSettings(
+            api_token="t", model_version="vlm", language="en", enable_ocr=False,
+            enable_table=True, enable_formula=True, page_ranges="",
+            poll_interval_seconds=0, poll_timeout_seconds=30,
+        )
+        page_files = [
+            SimpleNamespace(page_number=n, path=pathlib.Path(f"/tmp/page-{n:04d}.pdf"))
+            for n in range(1, 3)
+        ]
+
+        class _FakeStore:
+            def __init__(self) -> None:
+                self.done_marks: list[int] = []
+
+            def load(self, *, document_key):
+                return {
+                    1: SimpleNamespace(
+                        page_number=1, batch_id="b0", file_name="page-0001.pdf",
+                        state="done", full_zip_url="https://z/1.zip",
+                        markdown_path=str(self._md_path),
+                    ),
+                }
+
+            def mark_submitted(self, **_kwargs):
+                pass
+
+            def mark_done(self, *, page_number, **_kwargs):
+                self.done_marks.append(page_number)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            md_path = pathlib.Path(temp_dir) / "page-0001" / "full.md"
+            md_path.parent.mkdir(parents=True)
+            md_path.write_text("# Page 1\n\nDone earlier\n", encoding="utf-8")
+            store = _FakeStore()
+            store._md_path = md_path
+
+            # Only page 2 should be submitted: one batch POST (1 file), one upload, one poll, one download.
+            page2_create = json.dumps(
+                {"code": 0, "data": {"batch_id": "b1", "file_urls": ["https://upload/page-0002.pdf"]}}
+            ).encode("utf-8")
+            page2_poll = json.dumps(
+                {"code": 0, "data": {"batch_id": "b1", "extract_result": [
+                    {"data_id": "page-0002", "file_name": "page-0002.pdf",
+                     "state": "done", "full_zip_url": "https://z/2.zip"}]}}
+            ).encode("utf-8")
+            transport = _FakeTransport(responses=[
+                _FakeResponse(status_code=200, body=page2_create),
+                _FakeResponse(status_code=200, body=b""),
+                _FakeResponse(status_code=200, body=page2_poll),
+                _FakeResponse(status_code=200, body=_build_result_zip_bytes("# Page 2\n\nNew\n")),
+            ])
+
+            with patch("newspaper_translator.mineru.split_pdf_into_single_page_files", return_value=page_files):
+                with patch.object(pathlib.Path, "read_bytes", return_value=b"%PDF page"):
+                    source_pdf = pathlib.Path(temp_dir) / "sample.pdf"
+                    source_pdf.write_bytes(b"%PDF sample")
+                    client = MineruClient(settings=settings, transport=transport)
+                    result = client.parse_pdf_by_pages(
+                        pdf_path=source_pdf,
+                        output_root=pathlib.Path(temp_dir) / "out",
+                        document_key="doc-1",
+                        page_state_store=store,
+                    )
+
+        create_calls = [c for c in transport.calls
+                        if c["method"] == "POST" and c["url"].endswith("/file-urls/batch")]
+        self.assertEqual(len(create_calls), 1)  # page 1 not resubmitted
+        submitted_files = json.loads(create_calls[0]["body"].decode("utf-8"))["files"]
+        self.assertEqual([f["name"] for f in submitted_files], ["page-0002.pdf"])
+        self.assertEqual({p.page_number for p in result.pages}, {1, 2})
+        self.assertIn("Done earlier", dict((p.page_number, p.markdown_text) for p in result.pages)[1])
+        self.assertEqual(store.done_marks, [2])
+
 
 class _FakeTransport:
     def __init__(self, *, responses: list["_FakeResponse"]) -> None:

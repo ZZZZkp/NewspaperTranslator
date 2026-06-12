@@ -19,6 +19,7 @@ from newspaper_translator.api.queries import (
     list_focus_tag_article_card_views,
 )
 from newspaper_translator.document_processing import (
+    get_document_processing_max_failure_count,
     list_document_processing_runs,
     request_manual_article_retry,
     request_manual_document_retry,
@@ -203,14 +204,24 @@ def create_app(env: Mapping[str, str]):
             return _json_response(start_response, "200 OK", payload)
 
         if path in {"/document-processing", "/api/document-processing"}:
-            payload = {
-                "runs": _to_jsonable(
-                    list_document_processing_runs(
-                        database_url=database_url,
-                        limit=_query_int(query, "limit", default=50),
-                        status=_query_value(query, "status"),
-                    )
+            try:
+                runs = list_document_processing_runs(
+                    database_url=database_url,
+                    limit=_query_int(query, "limit", default=50),
+                    status=_query_value(query, "status"),
+                    min_failure_count=_query_optional_int(query, "min_failure_count"),
                 )
+            except _QueryParamError:
+                return _json_response(
+                    start_response,
+                    "400 Bad Request",
+                    {"status": "invalid_query_parameter"},
+                )
+            payload = {
+                "runs": _to_jsonable(runs),
+                "max_failure_count": get_document_processing_max_failure_count(
+                    database_url=database_url,
+                ),
             }
             return _json_response(start_response, "200 OK", payload)
 
@@ -227,6 +238,7 @@ def create_app(env: Mapping[str, str]):
                     publication_date_to=_query_value(query, "publication_date_to"),
                     step=_query_value(query, "step"),
                     error_message=_query_value(query, "error_message"),
+                    min_failure_count=_query_optional_int(query, "min_failure_count"),
                     include_pagination=True,
                 )
             except _QueryParamError:
@@ -242,16 +254,24 @@ def create_app(env: Mapping[str, str]):
             return _json_response(start_response, "200 OK", payload)
 
         if path == "/api/article-processing/filter-options":
-            payload = _to_jsonable(
-                get_article_processing_filter_options_view(
-                    database_url=database_url,
-                    status=_query_value(query, "status"),
-                    source=_query_value(query, "source"),
-                    publication_date_from=_query_value(query, "publication_date_from"),
-                    publication_date_to=_query_value(query, "publication_date_to"),
-                    step=_query_value(query, "step"),
+            try:
+                payload = _to_jsonable(
+                    get_article_processing_filter_options_view(
+                        database_url=database_url,
+                        status=_query_value(query, "status"),
+                        source=_query_value(query, "source"),
+                        publication_date_from=_query_value(query, "publication_date_from"),
+                        publication_date_to=_query_value(query, "publication_date_to"),
+                        step=_query_value(query, "step"),
+                        min_failure_count=_query_optional_int(query, "min_failure_count"),
+                    )
                 )
-            )
+            except _QueryParamError:
+                return _json_response(
+                    start_response,
+                    "400 Bad Request",
+                    {"status": "invalid_query_parameter"},
+                )
             return _json_response(start_response, "200 OK", payload)
 
         if path == "/api/article-processing/retry-batch":
@@ -473,6 +493,19 @@ def _query_int(query: dict[str, list[str]], key: str, *, default: int) -> int:
         return int(value)
     except ValueError as exc:
         raise _QueryParamError(key) from exc
+
+
+def _query_optional_int(query: dict[str, list[str]], key: str) -> int | None:
+    value = _query_value(query, key)
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise _QueryParamError(key) from exc
+    if parsed < 0:
+        raise _QueryParamError(key)
+    return parsed
 
 
 def _to_jsonable(value):

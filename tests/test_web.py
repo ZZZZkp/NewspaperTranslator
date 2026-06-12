@@ -39,6 +39,7 @@ try:
     from newspaper_translator.document_processing import (
         create_article_processing_run,
         create_document_processing_run,
+        fail_document_processing_run,
         request_manual_article_retry,
         request_manual_document_retry,
         retry_article_processing_runs,
@@ -50,6 +51,7 @@ except ImportError:
     create_parse_run = None
     create_article_processing_run = None
     create_document_processing_run = None
+    fail_document_processing_run = None
     create_import_run = None
     get_article_detail_view = None
     get_filter_options_view = None
@@ -457,6 +459,120 @@ class WebApiEndpointTests(unittest.TestCase):
         self.assertEqual(status_retry, "200 OK")
         self.assertEqual(retry_payload["run"]["document_key"], document_key)
         self.assertEqual(retry_payload["run"]["status"], "manual_retry_requested")
+
+    def test_document_processing_endpoint_exposes_max_failure_count_and_filters(self) -> None:
+        self.assertIsNotNone(create_document_processing_run)
+        self.assertIsNotNone(fail_document_processing_run)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            clean_document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-1:attachment-1:hash-1",
+            )
+            failing_document_key = self._insert_document(
+                database_path=database_path,
+                document_key="message-2:attachment-1:hash-2",
+            )
+            create_document_processing_run(
+                database_url=database_url,
+                document_key=clean_document_key,
+            )
+            create_document_processing_run(
+                database_url=database_url,
+                document_key=failing_document_key,
+            )
+            for _ in range(2):
+                fail_document_processing_run(
+                    database_url=database_url,
+                    document_key=failing_document_key,
+                    failed_step="parse",
+                    error_message="mineru timeout",
+                    automatic_failure_limit=99,
+                )
+
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status_all, _, body_all = _perform_wsgi_request(
+                app,
+                path="/api/document-processing",
+            )
+            status_filtered, _, body_filtered = _perform_wsgi_request(
+                app,
+                path="/api/document-processing",
+                query_string="min_failure_count=2",
+            )
+
+        all_payload = json.loads(body_all.decode("utf-8"))
+        filtered_payload = json.loads(body_filtered.decode("utf-8"))
+
+        self.assertEqual(status_all, "200 OK")
+        self.assertEqual(all_payload["max_failure_count"], 2)
+        self.assertEqual(status_filtered, "200 OK")
+        self.assertEqual(
+            [item["document_key"] for item in filtered_payload["runs"]],
+            [failing_document_key],
+        )
+
+    def test_document_processing_endpoint_rejects_invalid_min_failure_count(self) -> None:
+        self.assertIsNotNone(create_app)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path="/api/document-processing",
+                query_string="min_failure_count=abc",
+            )
+
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(status, "400 Bad Request")
+        self.assertEqual(payload["status"], "invalid_query_parameter")
+
+    def test_article_processing_filter_options_includes_max_failure_count(self) -> None:
+        self.assertIsNotNone(create_app)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path="/api/article-processing/filter-options",
+            )
+
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(status, "200 OK")
+        self.assertIn("max_failure_count", payload)
 
     def test_api_article_processing_endpoints_return_current_state_and_support_retry(self) -> None:
         self.assertIsNotNone(create_article_processing_run)

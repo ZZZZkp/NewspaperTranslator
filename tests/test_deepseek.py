@@ -282,125 +282,6 @@ class DeepSeekClientTests(unittest.TestCase):
 
         self.assertEqual(matches, [(1, 2)])
 
-    def test_translator_parses_classification_and_translation(self) -> None:
-        from newspaper_translator.article_store import StoredFinalArticle
-        from newspaper_translator.config import DeepSeekSettings
-        from newspaper_translator.deepseek import DeepSeekArticleTranslator
-
-        translator = DeepSeekArticleTranslator(
-            settings=DeepSeekSettings(
-                api_key="deepseek-key",
-                base_url="https://api.deepseek.com",
-                model="deepseek-chat",
-                timeout_seconds=45,
-            ),
-            transport=_FakeTransport(
-                responses=[
-                    _FakeResponse(
-                        status_code=200,
-                        body=json.dumps(
-                            {
-                                "choices": [
-                                    {
-                                        "message": {
-                                            "content": json.dumps(
-                                                {
-                                                    "content_type": "article",
-                                                    "classification_reason": "Regular newspaper article.",
-                                                    "translated_title_zh": "标题",
-                                                    "translated_body_zh": "正文",
-                                                }
-                                            )
-                                        }
-                                    }
-                                ]
-                            }
-                        ).encode("utf-8"),
-                    )
-                ]
-            ),
-        )
-
-        result = translator(
-            StoredFinalArticle(
-                article_id="article-1",
-                article_key="article-key-1",
-                parse_run_id="parse-run-1",
-                document_key="document-1",
-                publication_date="2026-06-05",
-                article_order=1,
-                primary_source_order=1,
-                source_fragment_count=1,
-                title_en="Title",
-                body_text_en="Body",
-                created_at="",
-                source_page_numbers=[1],
-            )
-        )
-
-        self.assertEqual(result.content_type, "article")
-        self.assertEqual(result.translated_title_zh, "标题")
-        self.assertEqual(result.translated_body_zh, "正文")
-
-    def test_summarizer_tagger_parses_summary_and_tags(self) -> None:
-        from newspaper_translator.article_store import StoredFinalArticle
-        from newspaper_translator.config import DeepSeekSettings
-        from newspaper_translator.deepseek import DeepSeekArticleSummarizerTagger
-
-        summarizer = DeepSeekArticleSummarizerTagger(
-            settings=DeepSeekSettings(
-                api_key="deepseek-key",
-                base_url="https://api.deepseek.com",
-                model="deepseek-chat",
-                timeout_seconds=45,
-            ),
-            transport=_FakeTransport(
-                responses=[
-                    _FakeResponse(
-                        status_code=200,
-                        body=json.dumps(
-                            {
-                                "choices": [
-                                    {
-                                        "message": {
-                                            "content": json.dumps(
-                                                {
-                                                    "summary_zh": "一段中文摘要。",
-                                                    "tags": ["经济", "市场", "企业"],
-                                                }
-                                            )
-                                        }
-                                    }
-                                ]
-                            }
-                        ).encode("utf-8"),
-                    )
-                ]
-            ),
-        )
-
-        result = summarizer(
-            article=StoredFinalArticle(
-                article_id="article-1",
-                article_key="article-key-1",
-                parse_run_id="parse-run-1",
-                document_key="document-1",
-                publication_date="2026-06-05",
-                article_order=1,
-                primary_source_order=1,
-                source_fragment_count=1,
-                title_en="Title",
-                body_text_en="Body",
-                created_at="",
-                source_page_numbers=[1],
-            ),
-            translated_title_zh="标题",
-            translated_body_zh="正文",
-        )
-
-        self.assertEqual(result.summary_zh, "一段中文摘要。")
-        self.assertEqual(result.tags, ["经济", "市场", "企业"])
-
     def test_continuation_matcher_returns_empty_for_no_fragments(self) -> None:
         from newspaper_translator.deepseek import DeepSeekContinuationMatcher
 
@@ -461,126 +342,34 @@ class DeepSeekClientTests(unittest.TestCase):
                 ]
             )
 
-    def test_translator_raises_for_unsupported_content_type(self) -> None:
-        from newspaper_translator.deepseek import DeepSeekArticleTranslator, DeepSeekError
 
-        translator = DeepSeekArticleTranslator(
+class DeepSeekArticleEnricherTests(unittest.TestCase):
+    def test_runs_full_multi_round_conversation(self) -> None:
+        from newspaper_translator.deepseek import DeepSeekArticleEnricher
+
+        enricher = DeepSeekArticleEnricher(
             settings=_deepseek_settings(),
             transport=_FakeTransport(
                 responses=[
                     _chat_response(
-                        {
-                            "content_type": "bogus",
-                            "classification_reason": "",
-                            "translated_title_zh": "",
-                            "translated_body_zh": "",
-                        }
-                    )
-                ]
-            ),
-        )
-
-        with self.assertRaises(DeepSeekError):
-            translator(_stored_article())
-
-    def test_translator_raises_when_article_translation_empty(self) -> None:
-        from newspaper_translator.deepseek import DeepSeekArticleTranslator, DeepSeekError
-
-        translator = DeepSeekArticleTranslator(
-            settings=_deepseek_settings(),
-            transport=_FakeTransport(
-                responses=[
+                        {"content_type": "article", "classification_reason": "normal"}
+                    ),
                     _chat_response(
-                        {
-                            "content_type": "article",
-                            "classification_reason": "ok",
-                            "translated_title_zh": "",
-                            "translated_body_zh": "",
-                        }
-                    )
+                        {"translated_title_zh": "标题", "translated_body_zh": "正文"}
+                    ),
+                    _chat_response({"summary_zh": "一段摘要。"}),
+                    _chat_response({"tags": ["经济", "市场", "企业"]}),
                 ]
             ),
         )
 
-        with self.assertRaises(DeepSeekError):
-            translator(_stored_article())
+        result = enricher(_stored_article())
 
-    def test_translator_allows_empty_translation_for_advertisement(self) -> None:
-        from newspaper_translator.deepseek import DeepSeekArticleTranslator
-
-        translator = DeepSeekArticleTranslator(
-            settings=_deepseek_settings(),
-            transport=_FakeTransport(
-                responses=[
-                    _chat_response(
-                        {
-                            "content_type": "advertisement",
-                            "classification_reason": "Display ad",
-                            "translated_title_zh": "",
-                            "translated_body_zh": "",
-                        }
-                    )
-                ]
-            ),
-        )
-
-        result = translator(_stored_article())
-
-        self.assertEqual(result.content_type, "advertisement")
-        self.assertEqual(result.translated_title_zh, "")
-
-    def test_summarizer_tagger_raises_when_summary_contains_newline(self) -> None:
-        from newspaper_translator.deepseek import DeepSeekArticleSummarizerTagger, DeepSeekError
-
-        summarizer = DeepSeekArticleSummarizerTagger(
-            settings=_deepseek_settings(),
-            transport=_FakeTransport(
-                responses=[
-                    _chat_response(
-                        {"summary_zh": "line one\nline two", "tags": ["a", "b", "c"]}
-                    )
-                ]
-            ),
-        )
-
-        with self.assertRaises(DeepSeekError):
-            summarizer(article=_stored_article(), translated_title_zh="标题", translated_body_zh="正文")
-
-    def test_summarizer_tagger_raises_when_tag_count_below_minimum(self) -> None:
-        from newspaper_translator.deepseek import DeepSeekArticleSummarizerTagger, DeepSeekError
-
-        summarizer = DeepSeekArticleSummarizerTagger(
-            settings=_deepseek_settings(),
-            transport=_FakeTransport(
-                responses=[
-                    _chat_response({"summary_zh": "摘要。", "tags": ["a", "b"]})
-                ]
-            ),
-        )
-
-        with self.assertRaises(DeepSeekError):
-            summarizer(article=_stored_article(), translated_title_zh="标题", translated_body_zh="正文")
-
-    def test_summarizer_tagger_deduplicates_and_strips_tags(self) -> None:
-        from newspaper_translator.deepseek import DeepSeekArticleSummarizerTagger
-
-        summarizer = DeepSeekArticleSummarizerTagger(
-            settings=_deepseek_settings(),
-            transport=_FakeTransport(
-                responses=[
-                    _chat_response(
-                        {
-                            "summary_zh": "摘要。",
-                            "tags": ["  经济  ", "经济", "市场", "企业"],
-                        }
-                    )
-                ]
-            ),
-        )
-
-        result = summarizer(article=_stored_article(), translated_title_zh="标题", translated_body_zh="正文")
-
+        self.assertEqual(result.content_type, "article")
+        self.assertEqual(result.translated_title_zh, "标题")
+        self.assertEqual(result.summary_zh, "一段摘要。")
         self.assertEqual(result.tags, ["经济", "市场", "企业"])
+        self.assertEqual(result.tagging_status, "succeeded")
 
 
 class _FakeResponse:

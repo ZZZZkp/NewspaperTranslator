@@ -928,6 +928,56 @@ class ArticleQueryTests(unittest.TestCase):
 
         self.assertEqual([card.article_key for card in cards], [second_article_key])
 
+    def test_article_processing_cards_filter_by_min_failure_count(self) -> None:
+        self.assertIsNotNone(list_article_processing_card_views)
+        self.assertIsNotNone(get_article_processing_filter_options_view)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                original_filename="ft-2026-04-22.pdf",
+                source_name="Financial Times",
+                document_key="message-1:attachment-1:hash-1",
+            )
+            article_id = self._insert_succeeded_article_with_enrichment(
+                database_url=database_url,
+                document_key=document_key,
+                publication_date="2026-04-22",
+                title="Only article",
+                body_suffix="Body.",
+                translated_title_zh="文章",
+                summary_zh="摘要",
+                translated_body_zh="正文。",
+                tags=["A", "B", "C"],
+            )
+            article_key = self._get_article_key(database_path=database_path, article_id=article_id)
+            self._insert_article_processing_run(
+                database_path=database_path,
+                article_key=article_key,
+                article_id=article_id,
+                status="failed_terminal",
+                current_step="enrich",
+                last_error_message="boom",
+                automatic_failure_count=2,
+            )
+
+            matched = list_article_processing_card_views(
+                database_url=database_url,
+                min_failure_count=2,
+            )
+            excluded = list_article_processing_card_views(
+                database_url=database_url,
+                min_failure_count=3,
+            )
+            options = get_article_processing_filter_options_view(database_url=database_url)
+
+        self.assertEqual([card.article_key for card in matched], [article_key])
+        self.assertEqual(excluded, [])
+        self.assertEqual(options.max_failure_count, 2)
+
     def test_article_processing_card_views_support_pagination_step_and_error_message(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
         self.assertIsNotNone(list_article_processing_card_views)
@@ -1979,6 +2029,7 @@ class ArticleQueryTests(unittest.TestCase):
         status: str,
         current_step: str,
         last_error_message: str | None = None,
+        automatic_failure_count: int = 0,
     ) -> None:
         connection = sqlite3.connect(database_path)
         try:
@@ -1990,8 +2041,9 @@ class ArticleQueryTests(unittest.TestCase):
                     article_id,
                     status,
                     current_step,
-                    last_error_message
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    last_error_message,
+                    automatic_failure_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     f"article-processing-{article_key}",
@@ -2000,6 +2052,7 @@ class ArticleQueryTests(unittest.TestCase):
                     status,
                     current_step,
                     last_error_message,
+                    automatic_failure_count,
                 ),
             )
             connection.commit()

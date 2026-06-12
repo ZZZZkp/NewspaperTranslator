@@ -102,6 +102,7 @@ class ArticleProcessingFilterOptionsView:
     sources: list[str]
     steps: list[str]
     error_messages: list[str]
+    max_failure_count: int
 
 
 @dataclass(frozen=True)
@@ -215,6 +216,7 @@ def _build_article_processing_where_clauses(
     publication_date_to: str | None = None,
     step: str | None = None,
     error_message: str | None = None,
+    min_failure_count: int | None = None,
 ) -> tuple[list[str], list[object]]:
     clauses: list[str] = []
     params: list[object] = []
@@ -236,6 +238,9 @@ def _build_article_processing_where_clauses(
     if error_message:
         clauses.append("r.last_error_message = ?")
         params.append(error_message)
+    if min_failure_count is not None:
+        clauses.append("r.automatic_failure_count >= ?")
+        params.append(min_failure_count)
     return clauses, params
 
 
@@ -700,6 +705,7 @@ def list_article_processing_card_views(
     publication_date_to: str | None = None,
     step: str | None = None,
     error_message: str | None = None,
+    min_failure_count: int | None = None,
     include_pagination: Literal[False] = False,
 ) -> ArticleProcessingCardList: ...
 
@@ -717,6 +723,7 @@ def list_article_processing_card_views(
     publication_date_to: str | None = None,
     step: str | None = None,
     error_message: str | None = None,
+    min_failure_count: int | None = None,
     include_pagination: Literal[True],
 ) -> ArticleProcessingCardPage: ...
 
@@ -733,6 +740,7 @@ def list_article_processing_card_views(
     publication_date_to: str | None = None,
     step: str | None = None,
     error_message: str | None = None,
+    min_failure_count: int | None = None,
     include_pagination: bool = False,
 ) -> ArticleProcessingCardList | ArticleProcessingCardPage:
     """List article-processing runs.
@@ -766,6 +774,7 @@ def list_article_processing_card_views(
             publication_date_to=publication_date_to,
             step=step,
             error_message=error_message,
+            min_failure_count=min_failure_count,
         )
         if clauses:
             base_query += " WHERE " + " AND ".join(clauses)
@@ -833,6 +842,7 @@ def get_article_processing_filter_options_view(
     publication_date_from: str | None = None,
     publication_date_to: str | None = None,
     step: str | None = None,
+    min_failure_count: int | None = None,
 ) -> ArticleProcessingFilterOptionsView:
     connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
     try:
@@ -841,18 +851,21 @@ def get_article_processing_filter_options_view(
             publication_date_from=publication_date_from,
             publication_date_to=publication_date_to,
             step=step,
+            min_failure_count=min_failure_count,
         )
         source_clauses, source_params = _build_article_processing_where_clauses(
             status=status,
             publication_date_from=publication_date_from,
             publication_date_to=publication_date_to,
             step=step,
+            min_failure_count=min_failure_count,
         )
         step_clauses, step_params = _build_article_processing_where_clauses(
             status=status,
             source=source,
             publication_date_from=publication_date_from,
             publication_date_to=publication_date_to,
+            min_failure_count=min_failure_count,
         )
         error_clauses, error_params = _build_article_processing_where_clauses(
             status=status,
@@ -860,6 +873,7 @@ def get_article_processing_filter_options_view(
             publication_date_from=publication_date_from,
             publication_date_to=publication_date_to,
             step=step,
+            min_failure_count=min_failure_count,
         )
 
         def fetch_distinct(column: str, clauses: list[str], params: list[object]) -> list[str]:
@@ -880,11 +894,19 @@ def get_article_processing_filter_options_view(
             rows = connection.execute(query, tuple(params)).fetchall()
             return [row[0] for row in rows]
 
+        max_failure_row = connection.execute(
+            """
+            SELECT COALESCE(MAX(r.automatic_failure_count), 0)
+            FROM article_processing_runs r
+            """
+        ).fetchone()
+
         return ArticleProcessingFilterOptionsView(
             statuses=fetch_distinct("r.status", status_clauses, status_params),
             sources=fetch_distinct("d.source_name", source_clauses, source_params),
             steps=fetch_distinct("r.current_step", step_clauses, step_params),
             error_messages=fetch_distinct("r.last_error_message", error_clauses, error_params),
+            max_failure_count=int(max_failure_row[0]),
         )
     finally:
         connection.close()

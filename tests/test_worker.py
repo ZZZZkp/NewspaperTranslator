@@ -604,6 +604,36 @@ class WorkerErrorHelperTests(unittest.TestCase):
             True,
         )
 
+    def test_read_timeout_is_retryable(self) -> None:
+        import requests
+        from newspaper_translator.worker import _is_retryable_worker_loop_error
+
+        self.assertTrue(
+            _is_retryable_worker_loop_error(
+                requests.exceptions.ReadTimeout("read timed out")
+            )
+        )
+
+    def test_connect_timeout_is_retryable(self) -> None:
+        import requests
+        from newspaper_translator.worker import _is_retryable_worker_loop_error
+
+        self.assertTrue(
+            _is_retryable_worker_loop_error(
+                requests.exceptions.ConnectTimeout("connect timed out")
+            )
+        )
+
+    def test_connection_error_is_retryable(self) -> None:
+        import requests
+        from newspaper_translator.worker import _is_retryable_worker_loop_error
+
+        self.assertTrue(
+            _is_retryable_worker_loop_error(
+                requests.exceptions.ConnectionError("connection refused")
+            )
+        )
+
     def test_non_locked_operational_error_is_not_retryable(self) -> None:
         from newspaper_translator.worker import _is_retryable_worker_loop_error
 

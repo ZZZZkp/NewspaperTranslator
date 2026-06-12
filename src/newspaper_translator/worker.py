@@ -4,6 +4,8 @@ from pathlib import Path
 import sqlite3
 import time
 
+import requests
+
 from newspaper_translator.config import AppSettings, DeepSeekSettings, MineruSettings
 from newspaper_translator.document_processing import (
     get_latest_scheduler_run,
@@ -601,6 +603,11 @@ def _is_retryable_worker_loop_error(exc: BaseException) -> bool:
         return True
     if isinstance(exc, FatalWorkerError):
         return False
+    if isinstance(
+        exc,
+        (requests.exceptions.Timeout, requests.exceptions.ConnectionError),
+    ):
+        return True
     if isinstance(exc, sqlite3.OperationalError):
         message = str(exc).lower()
         return any(

@@ -549,6 +549,32 @@ class WebApiEndpointTests(unittest.TestCase):
         self.assertEqual(status, "400 Bad Request")
         self.assertEqual(payload["status"], "invalid_query_parameter")
 
+    def test_document_processing_endpoint_rejects_negative_min_failure_count(self) -> None:
+        self.assertIsNotNone(create_app)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            app = create_app(
+                {
+                    "APP_ENV": "test",
+                    "DATABASE_URL": database_url,
+                    "STORAGE_ROOT": temp_dir,
+                    "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+                }
+            )
+
+            status, _, body = _perform_wsgi_request(
+                app,
+                path="/api/document-processing",
+                query_string="min_failure_count=-1",
+            )
+
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(status, "400 Bad Request")
+        self.assertEqual(payload["status"], "invalid_query_parameter")
+
     def test_article_processing_filter_options_includes_max_failure_count(self) -> None:
         self.assertIsNotNone(create_app)
 

@@ -731,9 +731,9 @@ class WorkerErrorHelperTests(unittest.TestCase):
             run_processing_tick_fn=lambda: SimpleNamespace(did_work=False),
         )
 
-        # Retryable path: the loop slept the first backoff (5s) and returned
-        # normally instead of raising FatalWorkerError.
-        self.assertIn(5, sleeps)
+        # Retryable path: the loop slept exactly the first backoff (5s) and
+        # returned normally instead of raising FatalWorkerError.
+        self.assertEqual(sleeps, [5])
 
 
 class WorkerRoleDispatchTests(unittest.TestCase):

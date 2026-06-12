@@ -12,8 +12,6 @@ if str(SRC_ROOT) not in sys.path:
 try:
     from newspaper_translator.config import GeminiSettings
     from newspaper_translator.gemini import (
-        GeminiArticleTranslator,
-        GeminiArticleSummarizerTagger,
         GeminiContinuationMatcher,
         GeminiError,
     )
@@ -21,8 +19,6 @@ try:
     from newspaper_translator.article_store import StoredFinalArticle
 except ImportError:
     GeminiSettings = None
-    GeminiArticleTranslator = None
-    GeminiArticleSummarizerTagger = None
     GeminiContinuationMatcher = None
     GeminiError = None
     ArticleFragment = None
@@ -289,116 +285,30 @@ class GeminiContinuationMatcherTests(unittest.TestCase):
             )
 
 
-class GeminiArticleTranslatorTests(unittest.TestCase):
-    def test_builds_strict_generate_content_request_for_article_translation(self) -> None:
-        self.assertIsNotNone(GeminiSettings)
-        self.assertIsNotNone(GeminiArticleTranslator)
-        self.assertIsNotNone(StoredFinalArticle)
+class GeminiArticleEnricherTests(unittest.TestCase):
+    def test_runs_full_multi_round_conversation(self) -> None:
+        from newspaper_translator.config import GeminiSettings
+        from newspaper_translator.gemini import GeminiArticleEnricher
 
-        transport = _FakeTransport(
-            response_payload={
-                "candidates": [
-                    {
-                        "content": {
-                            "parts": [
-                                {
-                                    "text": json.dumps(
-                                        {
-                                            "content_type": "article",
-                                            "classification_reason": "Regular newspaper article, not an advertisement.",
-                                            "translated_title_zh": "大型石油公司远赴他处避开中东动荡",
-                                            "translated_body_zh": "多家能源企业正加速在非洲和南美寻找新机会。",
-                                        }
-                                    )
-                                }
-                            ]
-                        }
-                    }
-                ]
-            }
-        )
-        translator = GeminiArticleTranslator(
-            settings=GeminiSettings(api_token="gemini-token", model="gemini-2.5-flash", timeout_seconds=45),
-            transport=transport,
-        )
-
-        result = translator(
-            StoredFinalArticle(
-                article_id="article-1",
-                parse_run_id="parse-run-1",
-                document_key="message-1:attachment-1:hash-1",
-                publication_date="2026-04-20",
-                article_order=1,
-                primary_source_order=1,
-                source_fragment_count=2,
-                title_en="Big Oil Explores Farther Afield To Dodge Middle East Turmoil",
-                body_text_en=(
-                    "Exxon, Chevron and others turn to Africa and South America for next prospects.\n"
-                    "Please turn to page A7"
-                ),
-                created_at="2026-04-28 00:00:00",
-            )
-        )
-
-        self.assertEqual(result.translated_title_zh, "大型石油公司远赴他处避开中东动荡")
-        self.assertEqual(
-            result.translated_body_zh,
-            "多家能源企业正加速在非洲和南美寻找新机会。",
-        )
-        self.assertEqual(len(transport.requests), 1)
-
-        request = transport.requests[0]
-        self.assertEqual(request["method"], "POST")
-        self.assertIn("gemini-2.5-flash:generateContent", request["url"])
-        self.assertEqual(request["headers"]["x-goog-api-key"], "gemini-token")
-
-        payload = json.loads(request["body"].decode("utf-8"))
-        self.assertEqual(payload["generationConfig"]["responseMimeType"], "application/json")
-        self.assertEqual(payload["generationConfig"]["temperature"], 0)
-        prompt_text = payload["contents"][0]["parts"][0]["text"]
-        self.assertIn("return JSON only", prompt_text)
-        self.assertIn("newspaper content", prompt_text)
-        self.assertIn("content_type", prompt_text)
-        self.assertIn("Preserve continuation markers", prompt_text)
-        self.assertIn("Please turn to page A7", prompt_text)
-        self.assertIn("translated_title_zh", prompt_text)
-        self.assertIn("Big Oil Explores Farther Afield To Dodge Middle East Turmoil", prompt_text)
-
-    def test_uses_openai_compatible_chat_completions_request_for_article_translation(self) -> None:
-        self.assertIsNotNone(GeminiSettings)
-        self.assertIsNotNone(GeminiArticleTranslator)
-        self.assertIsNotNone(StoredFinalArticle)
-
-        transport = _FakeTransport(
-            response_payload={
-                "choices": [
-                    {
-                        "message": {
-                            "content": json.dumps(
-                                {
-                                    "content_type": "article",
-                                    "classification_reason": "Regular newspaper article, not an advertisement.",
-                                    "translated_title_zh": "测试标题",
-                                    "translated_body_zh": "这是一段测试翻译。",
-                                }
-                            )
-                        }
-                    }
-                ]
-            }
-        )
-        translator = GeminiArticleTranslator(
+        enricher = GeminiArticleEnricher(
             settings=GeminiSettings(
-                api_token="proxy-gemini-key",
-                model="gemini-2.5-flash",
-                timeout_seconds=45,
+                api_token="gemini-key",
                 base_url="https://nuoapi.com/v1beta",
                 api_compat_mode="openai_compatible",
+                model="gemini-2.5-flash",
+                timeout_seconds=45,
             ),
-            transport=transport,
+            transport=_FakeSequenceTransport(
+                response_payloads=[
+                    _openai_response({"content_type": "article", "classification_reason": "normal"}),
+                    _openai_response({"translated_title_zh": "标题", "translated_body_zh": "正文"}),
+                    _openai_response({"summary_zh": "一段摘要。"}),
+                    _openai_response({"tags": ["经济", "市场", "企业"]}),
+                ]
+            ),
         )
 
-        result = translator(
+        result = enricher(
             StoredFinalArticle(
                 article_id="article-1",
                 parse_run_id="parse-run-1",
@@ -406,324 +316,20 @@ class GeminiArticleTranslatorTests(unittest.TestCase):
                 publication_date="2026-04-20",
                 article_order=1,
                 primary_source_order=1,
-                source_fragment_count=2,
-                title_en="Big Oil Explores Farther Afield To Dodge Middle East Turmoil",
-                body_text_en="Exxon, Chevron and others turn to Africa and South America for next prospects.",
+                source_fragment_count=1,
+                title_en="Headline",
+                body_text_en="Body.",
                 created_at="2026-04-28 00:00:00",
             )
         )
 
-        self.assertEqual(result.translated_title_zh, "测试标题")
-        self.assertEqual(result.translated_body_zh, "这是一段测试翻译。")
-
-        request = transport.requests[0]
-        self.assertEqual(request["method"], "POST")
-        self.assertEqual(request["url"], "https://nuoapi.com/v1beta/chat/completions")
-        self.assertEqual(request["headers"]["Authorization"], "Bearer proxy-gemini-key")
-
-        payload = json.loads(request["body"].decode("utf-8"))
-        self.assertEqual(payload["model"], "gemini-2.5-flash")
-        self.assertEqual(payload["temperature"], 0)
-        self.assertEqual(payload["response_format"]["type"], "json_object")
-        self.assertEqual(payload["messages"][0]["role"], "user")
-        self.assertIn("return JSON only", payload["messages"][0]["content"])
-
-    def _minimal_article(self) -> "StoredFinalArticle":
-        return StoredFinalArticle(
-            article_id="article-1",
-            parse_run_id="parse-run-1",
-            document_key="message-1:attachment-1:hash-1",
-            publication_date="2026-04-20",
-            article_order=1,
-            primary_source_order=1,
-            source_fragment_count=1,
-            title_en="Headline",
-            body_text_en="Body.",
-            created_at="2026-04-28 00:00:00",
-        )
-
-    def test_returns_classification_for_normal_article(self) -> None:
-        transport = _FakeTransport(
-            response_payload={
-                "candidates": [
-                    {
-                        "content": {
-                            "parts": [
-                                {
-                                    "text": json.dumps(
-                                        {
-                                            "content_type": "article",
-                                            "classification_reason": "Regular newspaper coverage.",
-                                            "translated_title_zh": "测试标题",
-                                            "translated_body_zh": "正文",
-                                        }
-                                    )
-                                }
-                            ]
-                        }
-                    }
-                ]
-            }
-        )
-        translator = GeminiArticleTranslator(
-            settings=GeminiSettings(api_token="t", model="gemini-2.5-flash", timeout_seconds=45),
-            transport=transport,
-        )
-
-        result = translator(self._minimal_article())
-
-        self.assertEqual(result.content_type, "article")
-        self.assertEqual(result.classification_reason, "Regular newspaper coverage.")
-        self.assertEqual(result.translated_title_zh, "测试标题")
-        self.assertEqual(result.translated_body_zh, "正文")
-
-    def test_allows_empty_translation_for_advertisement(self) -> None:
-        transport = _FakeTransport(
-            response_payload={
-                "candidates": [
-                    {
-                        "content": {
-                            "parts": [
-                                {
-                                    "text": json.dumps(
-                                        {
-                                            "content_type": "advertisement",
-                                            "classification_reason": "Display ad block.",
-                                            "translated_title_zh": "",
-                                            "translated_body_zh": "",
-                                        }
-                                    )
-                                }
-                            ]
-                        }
-                    }
-                ]
-            }
-        )
-        translator = GeminiArticleTranslator(
-            settings=GeminiSettings(api_token="t", model="gemini-2.5-flash", timeout_seconds=45),
-            transport=transport,
-        )
-
-        result = translator(self._minimal_article())
-
-        self.assertEqual(result.content_type, "advertisement")
-        self.assertEqual(result.translated_title_zh, "")
-        self.assertEqual(result.translated_body_zh, "")
-
-    def test_treats_uncertain_as_translation_required(self) -> None:
-        transport = _FakeTransport(
-            response_payload={
-                "candidates": [
-                    {
-                        "content": {
-                            "parts": [
-                                {
-                                    "text": json.dumps(
-                                        {
-                                            "content_type": "uncertain",
-                                            "classification_reason": "Borderline case.",
-                                            "translated_title_zh": "标题",
-                                            "translated_body_zh": "正文",
-                                        }
-                                    )
-                                }
-                            ]
-                        }
-                    }
-                ]
-            }
-        )
-        translator = GeminiArticleTranslator(
-            settings=GeminiSettings(api_token="t", model="gemini-2.5-flash", timeout_seconds=45),
-            transport=transport,
-        )
-
-        result = translator(self._minimal_article())
-
-        self.assertEqual(result.content_type, "uncertain")
         self.assertEqual(result.translated_title_zh, "标题")
-
-    def test_rejects_article_with_missing_translation(self) -> None:
-        transport = _FakeTransport(
-            response_payload={
-                "candidates": [
-                    {
-                        "content": {
-                            "parts": [
-                                {
-                                    "text": json.dumps(
-                                        {
-                                            "content_type": "article",
-                                            "classification_reason": "",
-                                            "translated_title_zh": "",
-                                            "translated_body_zh": "",
-                                        }
-                                    )
-                                }
-                            ]
-                        }
-                    }
-                ]
-            }
-        )
-        translator = GeminiArticleTranslator(
-            settings=GeminiSettings(api_token="t", model="gemini-2.5-flash", timeout_seconds=45),
-            transport=transport,
-        )
-
-        with self.assertRaises(GeminiError):
-            translator(self._minimal_article())
-
-    def test_rejects_unknown_content_type(self) -> None:
-        transport = _FakeTransport(
-            response_payload={
-                "candidates": [
-                    {
-                        "content": {
-                            "parts": [
-                                {
-                                    "text": json.dumps(
-                                        {
-                                            "content_type": "promo",
-                                            "classification_reason": "",
-                                            "translated_title_zh": "标题",
-                                            "translated_body_zh": "正文",
-                                        }
-                                    )
-                                }
-                            ]
-                        }
-                    }
-                ]
-            }
-        )
-        translator = GeminiArticleTranslator(
-            settings=GeminiSettings(api_token="t", model="gemini-2.5-flash", timeout_seconds=45),
-            transport=transport,
-        )
-
-        with self.assertRaises(GeminiError):
-            translator(self._minimal_article())
+        self.assertEqual(result.tags, ["经济", "市场", "企业"])
+        self.assertEqual(result.tagging_status, "succeeded")
 
 
-class GeminiArticleSummarizerTaggerTests(unittest.TestCase):
-    def test_builds_strict_generate_content_request_for_summary_and_tags(self) -> None:
-        self.assertIsNotNone(GeminiSettings)
-        self.assertIsNotNone(GeminiArticleSummarizerTagger)
-        self.assertIsNotNone(StoredFinalArticle)
-
-        transport = _FakeTransport(
-            response_payload={
-                "candidates": [
-                    {
-                        "content": {
-                            "parts": [
-                                {
-                                    "text": json.dumps(
-                                        {
-                                            "summary_zh": "油企为避开中东风险，正把勘探重点转向非洲和南美。",
-                                            "tags": ["能源", "石油", "中东局势"],
-                                        }
-                                    )
-                                }
-                            ]
-                        }
-                    }
-                ]
-            }
-        )
-        summarizer = GeminiArticleSummarizerTagger(
-            settings=GeminiSettings(api_token="gemini-token", model="gemini-2.5-flash", timeout_seconds=45),
-            transport=transport,
-        )
-
-        result = summarizer(
-            article=StoredFinalArticle(
-                article_id="article-1",
-                parse_run_id="parse-run-1",
-                document_key="message-1:attachment-1:hash-1",
-                publication_date="2026-04-20",
-                article_order=1,
-                primary_source_order=1,
-                source_fragment_count=2,
-                title_en="Big Oil Explores Farther Afield To Dodge Middle East Turmoil",
-                body_text_en="Exxon, Chevron and others turn to Africa and South America for next prospects.",
-                created_at="2026-04-28 00:00:00",
-            ),
-            translated_title_zh="大型石油公司远赴他处避开中东动荡",
-            translated_body_zh="多家能源企业正加速在非洲和南美寻找新机会。",
-        )
-
-        self.assertEqual(
-            result.summary_zh,
-            "油企为避开中东风险，正把勘探重点转向非洲和南美。",
-        )
-        self.assertEqual(result.tags, ["能源", "石油", "中东局势"])
-        self.assertEqual(len(transport.requests), 1)
-
-        request = transport.requests[0]
-        self.assertEqual(request["method"], "POST")
-        self.assertIn("gemini-2.5-flash:generateContent", request["url"])
-        self.assertEqual(request["headers"]["x-goog-api-key"], "gemini-token")
-
-        payload = json.loads(request["body"].decode("utf-8"))
-        self.assertEqual(payload["generationConfig"]["responseMimeType"], "application/json")
-        self.assertEqual(payload["generationConfig"]["temperature"], 0)
-        prompt_text = payload["contents"][0]["parts"][0]["text"]
-        self.assertIn("summary_zh", prompt_text)
-        self.assertIn("tags", prompt_text)
-        self.assertIn("translated_title_zh", prompt_text)
-        self.assertIn("大型石油公司远赴他处避开中东动荡", prompt_text)
-
-    def test_rejects_summary_payload_with_line_breaks(self) -> None:
-        self.assertIsNotNone(GeminiSettings)
-        self.assertIsNotNone(GeminiArticleSummarizerTagger)
-        self.assertIsNotNone(GeminiError)
-        self.assertIsNotNone(StoredFinalArticle)
-
-        transport = _FakeTransport(
-            response_payload={
-                "candidates": [
-                    {
-                        "content": {
-                            "parts": [
-                                {
-                                    "text": json.dumps(
-                                        {
-                                            "summary_zh": "第一段摘要。\n第二段摘要。",
-                                            "tags": ["能源", "石油", "中东局势"],
-                                        }
-                                    )
-                                }
-                            ]
-                        }
-                    }
-                ]
-            }
-        )
-        summarizer = GeminiArticleSummarizerTagger(
-            settings=GeminiSettings(api_token="gemini-token", model="gemini-2.5-flash", timeout_seconds=45),
-            transport=transport,
-        )
-
-        with self.assertRaises(GeminiError):
-            summarizer(
-                article=StoredFinalArticle(
-                    article_id="article-1",
-                    parse_run_id="parse-run-1",
-                    document_key="message-1:attachment-1:hash-1",
-                    publication_date="2026-04-20",
-                    article_order=1,
-                    primary_source_order=1,
-                    source_fragment_count=2,
-                    title_en="Big Oil Explores Farther Afield To Dodge Middle East Turmoil",
-                    body_text_en="Exxon, Chevron and others turn to Africa and South America for next prospects.",
-                    created_at="2026-04-28 00:00:00",
-                ),
-                translated_title_zh="大型石油公司远赴他处避开中东动荡",
-                translated_body_zh="多家能源企业正加速在非洲和南美寻找新机会。",
-            )
+def _openai_response(payload: dict) -> dict:
+    return {"choices": [{"message": {"content": json.dumps(payload)}}]}
 
 
 class _FakeTransport:
@@ -755,6 +361,42 @@ class _FakeTransport:
             {
                 "status_code": 200,
                 "body": json.dumps(self._response_payload).encode("utf-8"),
+            },
+        )()
+
+
+class _FakeSequenceTransport:
+    """Like _FakeTransport but pops responses from a list, one per call."""
+
+    def __init__(self, *, response_payloads: list[dict[str, object]]) -> None:
+        self._response_payloads = list(response_payloads)
+        self.requests: list[dict[str, object]] = []
+
+    def request(
+        self,
+        *,
+        method: str,
+        url: str,
+        headers: dict[str, str] | None = None,
+        body: bytes | None = None,
+        timeout: int | None = None,
+    ):
+        self.requests.append(
+            {
+                "method": method,
+                "url": url,
+                "headers": headers or {},
+                "body": body or b"",
+                "timeout": timeout,
+            }
+        )
+        payload = self._response_payloads.pop(0)
+        return type(
+            "FakeTransportResponse",
+            (),
+            {
+                "status_code": 200,
+                "body": json.dumps(payload).encode("utf-8"),
             },
         )()
 

@@ -164,5 +164,12 @@ class FrontendStaticTests(unittest.TestCase):
         self.assertIn('id="article-processing-retry-filtered-button"', index_text)
 
 
+    def test_article_processing_tab_can_hide_document_status_row(self) -> None:
+        index_text = (PROJECT_ROOT / "frontend" / "index.html").read_text()
+        app_text = (PROJECT_ROOT / "frontend" / "app.js").read_text()
+        self.assertIn('id="document-processing-filter-form"', index_text)
+        self.assertIn("documentProcessingFilterForm", app_text)
+
+
 if __name__ == "__main__":
     unittest.main()

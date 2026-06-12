@@ -42,6 +42,7 @@ const detailSinglePane = document.querySelector("#detail-single-pane");
 const detailComparePane = document.querySelector("#detail-compare-pane");
 const documentProcessingSection = document.querySelector("#document-processing-section");
 const documentStatusFilter = document.querySelector("#document-status-filter");
+const documentProcessingFilterForm = document.querySelector("#document-processing-filter-form");
 const documentRefreshButton = document.querySelector("#document-refresh-button");
 const articleProcessingFilterForm = document.querySelector("#article-processing-filter-form");
 const articleProcessingStatusFilter = document.querySelector("#article-processing-status-filter");
@@ -165,6 +166,7 @@ function showDocumentProcessingPage() {
   articleProcessingDetailView.classList.add("hidden");
   articleProcessingFilterForm.classList.add("hidden");
   articleProcessingBatchBar.classList.add("hidden");
+  documentProcessingFilterForm.classList.remove("hidden");
   documentRefreshButton.classList.remove("hidden");
   setActiveWorkbenchTab("documents");
   setActiveNav("documents");
@@ -181,6 +183,7 @@ function showArticleProcessingPage() {
   articleProcessingSection.classList.remove("hidden");
   articleProcessingDetailView.classList.add("hidden");
   articleProcessingFilterForm.classList.remove("hidden");
+  documentProcessingFilterForm.classList.add("hidden");
   documentRefreshButton.classList.add("hidden");
   setActiveWorkbenchTab("articles");
   setActiveNav("documents");

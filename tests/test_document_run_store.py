@@ -18,6 +18,8 @@ from _document_processing_helpers import (
     claim_document_processing_run,
     get_document_processing_run,
     list_eligible_document_processing_runs,
+    list_document_processing_runs,
+    get_document_processing_max_failure_count,
     fail_document_processing_run,
     request_manual_document_retry,
     create_article_processing_run,
@@ -380,6 +382,92 @@ class DocumentRunStoreTests(DocumentProcessingTestMixin, unittest.TestCase):
 
         self.assertEqual(stored_run.status, "manual_retry_requested")
         self.assertEqual(log_events, [f"document.manual_retry_requested:{document_key}"])
+
+    def test_lists_document_processing_runs_filtered_by_min_failure_count(self) -> None:
+        self.assertIsNotNone(list_document_processing_runs)
+        self.assertIsNotNone(get_document_processing_max_failure_count)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            create_document_processing_run(database_url=database_url, document_key="doc-zero")
+            create_document_processing_run(database_url=database_url, document_key="doc-one")
+            create_document_processing_run(database_url=database_url, document_key="doc-two")
+            # doc-one: 1 failure (failed_retryable)
+            fail_document_processing_run(
+                database_url=database_url,
+                document_key="doc-one",
+                failed_step="parse_persist",
+                error_message="boom",
+            )
+            # doc-two: 2 failures (failed_terminal)
+            fail_document_processing_run(
+                database_url=database_url,
+                document_key="doc-two",
+                failed_step="parse_persist",
+                error_message="boom",
+            )
+            fail_document_processing_run(
+                database_url=database_url,
+                document_key="doc-two",
+                failed_step="parse_persist",
+                error_message="boom",
+            )
+
+            at_least_one = list_document_processing_runs(
+                database_url=database_url,
+                limit=50,
+                min_failure_count=1,
+            )
+            at_least_two = list_document_processing_runs(
+                database_url=database_url,
+                limit=50,
+                min_failure_count=2,
+            )
+            with_status = list_document_processing_runs(
+                database_url=database_url,
+                limit=50,
+                status="failed_retryable",
+                min_failure_count=1,
+            )
+
+        self.assertEqual({run.document_key for run in at_least_one}, {"doc-one", "doc-two"})
+        self.assertEqual({run.document_key for run in at_least_two}, {"doc-two"})
+        self.assertEqual({run.document_key for run in with_status}, {"doc-one"})
+
+    def test_document_processing_max_failure_count_returns_global_max(self) -> None:
+        self.assertIsNotNone(get_document_processing_max_failure_count)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            self.assertEqual(
+                get_document_processing_max_failure_count(database_url=database_url),
+                0,
+            )
+
+            create_document_processing_run(database_url=database_url, document_key="doc-two")
+            fail_document_processing_run(
+                database_url=database_url,
+                document_key="doc-two",
+                failed_step="parse_persist",
+                error_message="boom",
+            )
+            fail_document_processing_run(
+                database_url=database_url,
+                document_key="doc-two",
+                failed_step="parse_persist",
+                error_message="boom",
+            )
+
+            self.assertEqual(
+                get_document_processing_max_failure_count(database_url=database_url),
+                2,
+            )
 
     def test_claims_one_eligible_article_processing_run_without_double_claim(self) -> None:
         self.assertIsNotNone(run_pending_migrations)

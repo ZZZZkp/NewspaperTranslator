@@ -712,62 +712,64 @@ def list_document_processing_runs(
     database_url: str,
     limit: int,
     status: str | None = None,
+    min_failure_count: int | None = None,
 ) -> list[DocumentProcessingRun]:
+    clauses: list[str] = []
+    params: list[object] = []
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    if min_failure_count is not None:
+        clauses.append("automatic_failure_count >= ?")
+        params.append(min_failure_count)
+    where_sql = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+
     connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
     try:
-        if status:
-            rows = connection.execute(
-                """
-                SELECT
-                    processing_run_id,
-                    scheduler_run_id,
-                    document_key,
-                    status,
-                    current_step,
-                    automatic_failure_count,
-                    last_failure_step,
-                    last_error_message,
-                    last_attempt_started_at,
-                    last_attempt_finished_at,
-                    locked_by,
-                    lock_expires_at,
-                    created_at,
-                    updated_at
-                FROM document_processing_runs
-                WHERE status = ?
-                ORDER BY updated_at DESC, created_at DESC, rowid DESC
-                LIMIT ?
-                """,
-                (status, limit),
-            ).fetchall()
-        else:
-            rows = connection.execute(
-                """
-                SELECT
-                    processing_run_id,
-                    scheduler_run_id,
-                    document_key,
-                    status,
-                    current_step,
-                    automatic_failure_count,
-                    last_failure_step,
-                    last_error_message,
-                    last_attempt_started_at,
-                    last_attempt_finished_at,
-                    locked_by,
-                    lock_expires_at,
-                    created_at,
-                    updated_at
-                FROM document_processing_runs
-                ORDER BY updated_at DESC, created_at DESC, rowid DESC
-                LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
+        rows = connection.execute(
+            """
+            SELECT
+                processing_run_id,
+                scheduler_run_id,
+                document_key,
+                status,
+                current_step,
+                automatic_failure_count,
+                last_failure_step,
+                last_error_message,
+                last_attempt_started_at,
+                last_attempt_finished_at,
+                locked_by,
+                lock_expires_at,
+                created_at,
+                updated_at
+            FROM document_processing_runs
+            """
+            + where_sql
+            + """
+            ORDER BY updated_at DESC, created_at DESC, rowid DESC
+            LIMIT ?
+            """,
+            tuple([*params, limit]),
+        ).fetchall()
     finally:
         connection.close()
 
     return [_row_to_document_processing_run(row) for row in rows]
+
+
+def get_document_processing_max_failure_count(*, database_url: str) -> int:
+    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+    try:
+        row = connection.execute(
+            """
+            SELECT COALESCE(MAX(automatic_failure_count), 0)
+            FROM document_processing_runs
+            """
+        ).fetchone()
+    finally:
+        connection.close()
+    return int(row[0])
 
 
 def list_article_processing_runs(

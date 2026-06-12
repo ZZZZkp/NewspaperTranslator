@@ -72,6 +72,8 @@ try:
         get_scheduler_run,
         list_eligible_article_processing_runs,
         list_eligible_document_processing_runs,
+        list_document_processing_runs,
+        get_document_processing_max_failure_count,
         process_article_processing_run,
         process_document,
         ProcessingTickResult,
@@ -105,6 +107,8 @@ except ImportError:
     get_scheduler_run = None
     list_eligible_article_processing_runs = None
     list_eligible_document_processing_runs = None
+    list_document_processing_runs = None
+    get_document_processing_max_failure_count = None
     process_article_processing_run = None
     process_document = None
     ProcessingTickResult = None

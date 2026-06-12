@@ -27,7 +27,7 @@ try:
         list_latest_document_articles,
         record_parse_run_result,
     )
-    from newspaper_translator.gemini import ArticleSummaryTagResult, ArticleTranslationResult
+    from newspaper_translator.enrichment_conversation import EnrichmentResult
     from newspaper_translator.mineru import MineruParsedDocument, MineruParsedPage
     from newspaper_translator.pdf import (
         ArticleFragment,
@@ -42,8 +42,7 @@ except ImportError:
     get_latest_article_enrichment = None
     list_latest_document_articles = None
     record_parse_run_result = None
-    ArticleSummaryTagResult = None
-    ArticleTranslationResult = None
+    EnrichmentResult = None
     MineruParsedDocument = None
     MineruParsedPage = None
     ArticleFragment = None
@@ -509,45 +508,76 @@ class DocumentProcessingTestMixin:
         )
 
 
-class _FakeTranslator:
-    def __call__(self, article):
-        return ArticleTranslationResult(
-            content_type="article",
-            classification_reason="Regular newspaper article.",
-            translated_title_zh="大型石油公司远赴他处避开中东动荡",
-            translated_body_zh="多家能源企业正加速在非洲和南美寻找新机会。",
-        )
+def _ok_enrichment_result(content_type="article"):
+    return EnrichmentResult(
+        content_type=content_type,
+        classification_reason="Regular newspaper article.",
+        translation_status="succeeded",
+        summary_status="succeeded",
+        tagging_status="succeeded",
+        translated_title_zh="标题",
+        translated_body_zh="正文",
+        summary_zh="一段摘要。",
+        tags=["经济", "市场", "企业"],
+        failed_step=None,
+        error_message=None,
+    )
 
 
-class _SelectiveFailingTranslator:
-    def __init__(self, *, failing_titles: set[str]) -> None:
-        self._failing_titles = failing_titles
-
-    def __call__(self, article):
-        if article.title_en in self._failing_titles:
-            raise RuntimeError("translation timeout")
-        return ArticleTranslationResult(
-            content_type="article",
-            classification_reason="Regular newspaper article.",
-            translated_title_zh=f"{article.title_en} 中文",
-            translated_body_zh=f"{article.body_text_en} 中文",
-        )
+class _FakeEnricher:
+    def __call__(self, article, *, on_step_advance=None):
+        if on_step_advance is not None:
+            for step in ("ad_judgment", "translation", "summary", "tagging"):
+                on_step_advance(step)
+        return _ok_enrichment_result()
 
 
-class _FakeSummarizerTagger:
-    def __call__(self, *, article, translated_title_zh: str, translated_body_zh: str):
-        return ArticleSummaryTagResult(
-            summary_zh="油企为避开中东风险，正把勘探重点转向非洲和南美。",
-            tags=["能源", "石油", "中东局势"],
-        )
-
-
-class _FailingSummarizerTagger:
-    def __init__(self, message: str) -> None:
+class _FailingSummaryEnricher:
+    def __init__(self, message: str = "summary timeout") -> None:
         self._message = message
 
-    def __call__(self, *, article, translated_title_zh: str, translated_body_zh: str):
-        raise RuntimeError(self._message)
+    def __call__(self, article, *, on_step_advance=None):
+        if on_step_advance is not None:
+            for step in ("ad_judgment", "translation", "summary"):
+                on_step_advance(step)
+        return EnrichmentResult(
+            content_type="article",
+            classification_reason="ok",
+            translation_status="succeeded",
+            summary_status="failed",
+            tagging_status="failed",
+            translated_title_zh="标题",
+            translated_body_zh="正文",
+            summary_zh=None,
+            tags=[],
+            failed_step="summary",
+            error_message=self._message,
+        )
+
+
+class _SelectiveFailingEnricher:
+    def __init__(self, *, failing_titles: set[str]) -> None:
+        self._failing_titles = set(failing_titles)
+
+    def __call__(self, article, *, on_step_advance=None):
+        if on_step_advance is not None:
+            on_step_advance("ad_judgment")
+            on_step_advance("translation")
+        if article.title_en in self._failing_titles:
+            return EnrichmentResult(
+                content_type="article",
+                classification_reason="ok",
+                translation_status="failed",
+                summary_status="skipped",
+                tagging_status="skipped",
+                translated_title_zh=None,
+                translated_body_zh=None,
+                summary_zh=None,
+                tags=[],
+                failed_step="translation",
+                error_message="translation timeout",
+            )
+        return _ok_enrichment_result()
 
 
 class _FakeMineruClient:

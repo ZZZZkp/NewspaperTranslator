@@ -41,6 +41,8 @@ As of 2026-05-06, the project has:
 - added a manual Gmail import API and operator-workbench button for fetching latest mail attachments into the queue
 - extended the frontend Nginx API proxy timeout so slower Gmail imports do not fail with a proxy `504`
 - added Gemini direct API mode plus OpenAI-compatible gateway mode
+- added a workbench failure-count (`≥N`) filter for document and article processing, with thresholds derived from the current maximum failure count
+- added inline article reading (Chinese, English, and comparison modes) inside the article-processing detail, replacing the jump to the standalone reading view
 - validated Gmail Desktop OAuth locally
 - validated Gmail API access through a local proxy or VPN
 - validated direct PDF links such as `https://dl.dengtazk.xin/...pdf`
@@ -226,9 +228,11 @@ Current frontend capabilities:
 - article detail view with Chinese, English, and comparison modes
 - document-processing workbench list and document detail views
 - article-processing workbench list and article-processing detail views
+- document-processing and article-processing list filtering, including a failure-count (`≥N`) filter on both tabs whose thresholds adapt to the current maximum failure count
+- inline article content (Chinese, English, and comparison modes) inside the article-processing detail, shown in a `文章内容` tab without leaving the workbench
 - manual Gmail import from the processing workbench through `立即拉取邮件`
 - manual retry actions for document and article processing
-- navigation between reading detail, owning document detail, and article-processing detail
+- cross-navigation between the reading detail and its owning document detail, and from an article-processing run to its owning document detail
 
 Current API surfaces include:
 

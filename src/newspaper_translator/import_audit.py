@@ -385,6 +385,30 @@ def list_import_runs(*, database_url: str, limit: int) -> list[ImportRun]:
     ]
 
 
+def get_last_successful_import_run_started_at(*, database_url: str) -> str | None:
+    """Return the started_at of the most recent import run that actually
+    completed (``succeeded`` or ``partial``).
+
+    Runs that are still ``running`` or that ended ``failed`` are ignored so a
+    transient import failure does not advance the worker's import cadence gate
+    and defer the next attempt by a full interval.
+    """
+    connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+    try:
+        row = connection.execute(
+            """
+            SELECT started_at
+            FROM import_runs
+            WHERE status IN ('succeeded', 'partial')
+            ORDER BY started_at DESC, rowid DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    finally:
+        connection.close()
+    return row[0] if row else None
+
+
 def list_import_run_items(
     *,
     database_url: str,

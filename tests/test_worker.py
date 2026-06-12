@@ -22,7 +22,6 @@ try:
         build_startup_report,
         build_startup_log_line,
         build_run_scheduler_tick_from_env,
-        get_last_import_run_started_at,
         run_startup_maintenance,
         run_worker_loop,
         should_run_catch_up_tick,
@@ -34,7 +33,6 @@ except ImportError:
     build_run_import_tick_from_env = None
     build_run_processing_tick_from_env = None
     build_run_scheduler_tick_from_env = None
-    get_last_import_run_started_at = None
     run_pending_migrations = None
     run_startup_maintenance = None
     run_worker_loop = None
@@ -284,22 +282,6 @@ class WorkerStartupTests(unittest.TestCase):
         self.assertEqual(process_article.call_args.kwargs["model_name"], "deepseek-chat")
         self.assertEqual(process_article.call_args.kwargs["translator"].name, "translator")
         self.assertEqual(process_article.call_args.kwargs["summarizer_tagger"].name, "summarizer")
-
-    def test_last_import_started_at_uses_import_runs_not_processing_scheduler_runs(self) -> None:
-        self.assertIsNotNone(get_last_import_run_started_at)
-
-        with patch("newspaper_translator.worker.list_import_runs") as list_import_runs:
-            list_import_runs.return_value = [
-                SimpleNamespace(started_at="2026-05-06T09:15:00")
-            ]
-
-            started_at = get_last_import_run_started_at(
-                database_url="sqlite:////tmp/newspaper-translator.db",
-            )
-
-        self.assertEqual(started_at, "2026-05-06T09:15:00")
-        self.assertEqual(list_import_runs.call_args.kwargs["database_url"], "sqlite:////tmp/newspaper-translator.db")
-        self.assertEqual(list_import_runs.call_args.kwargs["limit"], 1)
 
     def test_worker_loop_runs_processing_each_poll_without_overdue_import(self) -> None:
         self.assertIsNotNone(run_worker_loop)

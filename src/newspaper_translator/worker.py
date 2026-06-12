@@ -24,7 +24,7 @@ from newspaper_translator.deepseek import (
     DeepSeekContinuationMatcher,
 )
 from newspaper_translator.gmail import import_from_gmail
-from newspaper_translator.import_audit import list_import_runs
+from newspaper_translator.import_audit import get_last_successful_import_run_started_at
 from newspaper_translator.logging_utils import format_log_event
 from newspaper_translator.mineru import MineruClient
 from newspaper_translator.runtime import build_runtime_report
@@ -117,13 +117,6 @@ def get_last_scheduler_run_started_at(*, database_url: str) -> str | None:
     if latest_scheduler_run is None:
         return None
     return latest_scheduler_run.started_at
-
-
-def get_last_import_run_started_at(*, database_url: str) -> str | None:
-    latest_import_runs = list_import_runs(database_url=database_url, limit=1)
-    if not latest_import_runs:
-        return None
-    return latest_import_runs[0].started_at
 
 
 def build_run_scheduler_tick_from_env(env: dict[str, str]):
@@ -423,7 +416,7 @@ def run_worker_loop(
     sleep_fn=None,
     max_loops: int | None = None,
     run_startup_maintenance_fn=run_startup_maintenance,
-    get_last_scheduler_run_started_at_fn=get_last_import_run_started_at,
+    get_last_scheduler_run_started_at_fn=get_last_successful_import_run_started_at,
     recover_stale_document_runs_fn=None,
     recover_stale_article_runs_fn=None,
     run_scheduler_tick_fn=None,

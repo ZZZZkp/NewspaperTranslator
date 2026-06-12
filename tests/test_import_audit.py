@@ -1,5 +1,6 @@
 import json
 import pathlib
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -15,9 +16,11 @@ try:
     from newspaper_translator.import_audit import (
         claim_failed_message_for_retry,
         create_import_run,
+        fail_import_run,
         finalize_import_run,
         get_import_run,
         get_import_checkpoint,
+        get_last_successful_import_run_started_at,
         list_failed_messages_for_retry,
         list_import_run_items,
         list_import_runs,
@@ -31,9 +34,11 @@ try:
 except ImportError:
     claim_failed_message_for_retry = None
     create_import_run = None
+    fail_import_run = None
     finalize_import_run = None
     get_import_run = None
     get_import_checkpoint = None
+    get_last_successful_import_run_started_at = None
     list_failed_messages_for_retry = None
     list_import_run_items = None
     list_import_runs = None
@@ -47,6 +52,82 @@ except ImportError:
 
 
 class ImportAuditRepositoryTests(unittest.TestCase):
+    def _create_gmail_run(self, database_url: str):
+        return create_import_run(
+            database_url=database_url,
+            source_name="gmail",
+            query="newer_than:7d",
+            allowed_senders=["briefing@example.com"],
+            max_results=25,
+        )
+
+    def _set_started_at(self, database_path, run_id: str, started_at: str) -> None:
+        connection = sqlite3.connect(database_path)
+        try:
+            connection.execute(
+                "UPDATE import_runs SET started_at = ? WHERE run_id = ?",
+                (started_at, run_id),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def test_last_successful_import_run_ignores_failed_and_running_runs(self) -> None:
+        self.assertIsNotNone(get_last_successful_import_run_started_at)
+        self.assertIsNotNone(fail_import_run)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            succeeded = self._create_gmail_run(database_url)
+            finalize_import_run(
+                database_url=database_url,
+                run_id=succeeded.run_id,
+                fetched_message_count=1,
+                imported_attachment_count=1,
+                created_document_count=1,
+                skipped_document_count=0,
+                checkpoint_after=None,
+            )
+
+            failed = self._create_gmail_run(database_url)
+            fail_import_run(database_url=database_url, run_id=failed.run_id)
+
+            # A run still in flight (status "running").
+            running = self._create_gmail_run(database_url)
+
+            # Force the failed and running runs to be the most recent by
+            # started_at, so an unfiltered "latest run" query would return them.
+            self._set_started_at(database_path, succeeded.run_id, "2020-01-01 00:00:00")
+            self._set_started_at(database_path, failed.run_id, "2099-01-01 00:00:00")
+            self._set_started_at(database_path, running.run_id, "2099-06-01 00:00:00")
+
+            result = get_last_successful_import_run_started_at(
+                database_url=database_url,
+            )
+
+        self.assertEqual(result, "2020-01-01 00:00:00")
+
+    def test_last_successful_import_run_is_none_without_completed_runs(self) -> None:
+        self.assertIsNotNone(get_last_successful_import_run_started_at)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            self._create_gmail_run(database_url)  # stays "running"
+            failed = self._create_gmail_run(database_url)
+            fail_import_run(database_url=database_url, run_id=failed.run_id)
+
+            result = get_last_successful_import_run_started_at(
+                database_url=database_url,
+            )
+
+        self.assertIsNone(result)
+
     def test_creates_import_run_with_config_snapshot(self) -> None:
         self.assertIsNotNone(
             run_pending_migrations,

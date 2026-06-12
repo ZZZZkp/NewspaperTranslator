@@ -17,8 +17,6 @@ if str(TESTS_ROOT) not in sys.path:
 
 from _document_processing_helpers import (
     DocumentProcessingTestMixin,
-    _FakeTranslator,
-    _FakeSummarizerTagger,
     run_pending_migrations,
     document_processing_module,
     create_document_processing_run,

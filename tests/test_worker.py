@@ -604,6 +604,36 @@ class WorkerErrorHelperTests(unittest.TestCase):
             True,
         )
 
+    def test_read_timeout_is_retryable(self) -> None:
+        import requests
+        from newspaper_translator.worker import _is_retryable_worker_loop_error
+
+        self.assertTrue(
+            _is_retryable_worker_loop_error(
+                requests.exceptions.ReadTimeout("read timed out")
+            )
+        )
+
+    def test_connect_timeout_is_retryable(self) -> None:
+        import requests
+        from newspaper_translator.worker import _is_retryable_worker_loop_error
+
+        self.assertTrue(
+            _is_retryable_worker_loop_error(
+                requests.exceptions.ConnectTimeout("connect timed out")
+            )
+        )
+
+    def test_connection_error_is_retryable(self) -> None:
+        import requests
+        from newspaper_translator.worker import _is_retryable_worker_loop_error
+
+        self.assertTrue(
+            _is_retryable_worker_loop_error(
+                requests.exceptions.ConnectionError("connection refused")
+            )
+        )
+
     def test_non_locked_operational_error_is_not_retryable(self) -> None:
         from newspaper_translator.worker import _is_retryable_worker_loop_error
 
@@ -669,6 +699,41 @@ class WorkerErrorHelperTests(unittest.TestCase):
         self.assertEqual(context.exception.stage, "config")
         self.assertIsInstance(context.exception.cause, ValueError)
         self.assertIs(context.exception.__cause__, context.exception.cause)
+
+    def test_import_tick_network_timeout_is_retryable_not_fatal(self) -> None:
+        import requests
+
+        self.assertIsNotNone(run_worker_loop)
+
+        env = {
+            "APP_ENV": "test",
+            "DATABASE_URL": "sqlite:////tmp/newspaper-translator.db",
+            "STORAGE_ROOT": "/tmp/newspaper-translator-data",
+            "GMAIL_CONFIG_PATH": "/tmp/gmail-config.json",
+            "GMAIL_IMPORT_INTERVAL_SECONDS": "7200",
+            "PROCESSING_POLL_INTERVAL_SECONDS": "60",
+        }
+        sleeps: list[int] = []
+
+        def failing_import(*, trigger_type: str) -> str:
+            raise requests.exceptions.ReadTimeout("read timed out")
+
+        run_worker_loop(
+            env=env,
+            now_fn=lambda: "2026-05-06T12:31:00",
+            sleep_fn=lambda seconds: sleeps.append(seconds),
+            max_loops=1,
+            run_startup_maintenance_fn=lambda **kwargs: None,
+            get_last_scheduler_run_started_at_fn=lambda *, database_url: "2026-05-06T10:30:00",
+            recover_stale_document_runs_fn=lambda: [],
+            recover_stale_article_runs_fn=lambda: [],
+            run_import_tick_fn=failing_import,
+            run_processing_tick_fn=lambda: SimpleNamespace(did_work=False),
+        )
+
+        # Retryable path: the loop slept exactly the first backoff (5s) and
+        # returned normally instead of raising FatalWorkerError.
+        self.assertEqual(sleeps, [5])
 
 
 class WorkerRoleDispatchTests(unittest.TestCase):

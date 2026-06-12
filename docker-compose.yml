@@ -1,5 +1,6 @@
 services:
   frontend:
+    restart: on-failure:5
     build:
       context: ./frontend
       dockerfile: Dockerfile
@@ -15,6 +16,7 @@ services:
         condition: service_started
 
   web:
+    restart: on-failure:5
     build:
       context: .
       dockerfile: Dockerfile
@@ -72,6 +74,7 @@ services:
         condition: service_started
 
   worker:
+    restart: on-failure:5
     build:
       context: .
       dockerfile: Dockerfile
@@ -131,6 +134,7 @@ services:
         condition: service_started
 
   article-worker:
+    restart: on-failure:5
     build:
       context: .
       dockerfile: Dockerfile
@@ -175,6 +179,7 @@ services:
       retries: 3
 
   db:
+    restart: on-failure:5
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: newspaper_translator

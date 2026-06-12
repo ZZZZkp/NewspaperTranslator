@@ -515,7 +515,7 @@ class DocumentRunStoreTests(DocumentProcessingTestMixin, unittest.TestCase):
             )
 
         self.assertEqual(created_run.status, "pending")
-        self.assertEqual(created_run.current_step, "enrich")
+        self.assertEqual(created_run.current_step, "await_ad_judgment")
         self.assertIsNotNone(claimed_run)
         self.assertEqual(claimed_run.status, "running")
         self.assertEqual(claimed_run.locked_by, "worker-1")

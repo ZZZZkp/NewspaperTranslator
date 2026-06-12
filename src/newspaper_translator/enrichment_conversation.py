@@ -1,3 +1,6 @@
+import json
+from dataclasses import dataclass
+
 from newspaper_translator.llm import LlmProviderError
 
 STEP_AD_JUDGMENT = "ad_judgment"
@@ -118,3 +121,183 @@ def _normalize_tags(raw_tags: object) -> list[str]:
         normalized_tags.append(normalized_tag)
         seen_tags.add(normalized_tag)
     return normalized_tags
+
+
+@dataclass(frozen=True)
+class EnrichmentResult:
+    content_type: str | None
+    classification_reason: str | None
+    translation_status: str
+    summary_status: str
+    tagging_status: str
+    translated_title_zh: str | None
+    translated_body_zh: str | None
+    summary_zh: str | None
+    tags: list[str]
+    failed_step: str | None
+    error_message: str | None
+
+
+class _StepFailed(Exception):
+    def __init__(self, step: str, message: str) -> None:
+        super().__init__(message)
+        self.step = step
+        self.message = message
+
+
+def _loads_json_object(text: str) -> dict:
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise EnrichmentFormatError("enrichment response was not valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise EnrichmentFormatError("enrichment response JSON must be an object")
+    return payload
+
+
+class MultiRoundArticleEnricher:
+    def __init__(self, *, send, step_retry_limit: int = 2) -> None:
+        self._send = send
+        self._step_retry_limit = step_retry_limit
+
+    def __call__(self, article, *, on_step_advance=None) -> EnrichmentResult:
+        committed: list[dict] = []
+        try:
+            (content_type, classification_reason), committed = self._run_step(
+                committed,
+                STEP_AD_JUDGMENT,
+                build_ad_judgment_message(article),
+                parse_ad_judgment,
+                on_step_advance,
+            )
+        except _StepFailed as failure:
+            return _failed_before_translation(failure)
+
+        if content_type == "advertisement":
+            return EnrichmentResult(
+                content_type="advertisement",
+                classification_reason=classification_reason,
+                translation_status="skipped",
+                summary_status="skipped",
+                tagging_status="skipped",
+                translated_title_zh=None,
+                translated_body_zh=None,
+                summary_zh=None,
+                tags=[],
+                failed_step=None,
+                error_message=None,
+            )
+
+        try:
+            (translated_title_zh, translated_body_zh), committed = self._run_step(
+                committed,
+                STEP_TRANSLATION,
+                build_translation_message(),
+                lambda payload: parse_translation(payload, content_type=content_type),
+                on_step_advance,
+            )
+        except _StepFailed as failure:
+            return EnrichmentResult(
+                content_type=content_type,
+                classification_reason=classification_reason,
+                translation_status="failed",
+                summary_status="skipped",
+                tagging_status="skipped",
+                translated_title_zh=None,
+                translated_body_zh=None,
+                summary_zh=None,
+                tags=[],
+                failed_step=failure.step,
+                error_message=failure.message,
+            )
+
+        try:
+            summary_zh, committed = self._run_step(
+                committed,
+                STEP_SUMMARY,
+                build_summary_message(),
+                parse_summary,
+                on_step_advance,
+            )
+        except _StepFailed as failure:
+            return EnrichmentResult(
+                content_type=content_type,
+                classification_reason=classification_reason,
+                translation_status="succeeded",
+                summary_status="failed",
+                tagging_status="failed",
+                translated_title_zh=translated_title_zh,
+                translated_body_zh=translated_body_zh,
+                summary_zh=None,
+                tags=[],
+                failed_step=failure.step,
+                error_message=failure.message,
+            )
+
+        try:
+            tags, committed = self._run_step(
+                committed,
+                STEP_TAGGING,
+                build_tagging_message(),
+                parse_tags,
+                on_step_advance,
+            )
+        except _StepFailed as failure:
+            return EnrichmentResult(
+                content_type=content_type,
+                classification_reason=classification_reason,
+                translation_status="succeeded",
+                summary_status="succeeded",
+                tagging_status="failed",
+                translated_title_zh=translated_title_zh,
+                translated_body_zh=translated_body_zh,
+                summary_zh=summary_zh,
+                tags=[],
+                failed_step=failure.step,
+                error_message=failure.message,
+            )
+
+        return EnrichmentResult(
+            content_type=content_type,
+            classification_reason=classification_reason,
+            translation_status="succeeded",
+            summary_status="succeeded",
+            tagging_status="succeeded",
+            translated_title_zh=translated_title_zh,
+            translated_body_zh=translated_body_zh,
+            summary_zh=summary_zh,
+            tags=tags,
+            failed_step=None,
+            error_message=None,
+        )
+
+    def _run_step(self, committed, step_key, user_message, parse_fn, on_step_advance):
+        if on_step_advance is not None:
+            on_step_advance(step_key)
+        last_error_message = f"{step_key} step failed"
+        for _ in range(self._step_retry_limit + 1):
+            messages = committed + [{"role": "user", "content": user_message}]
+            try:
+                text = self._send(messages)
+                value = parse_fn(_loads_json_object(text))
+            except (LlmProviderError, OSError) as exc:
+                last_error_message = str(exc) or last_error_message
+                continue
+            return value, messages + [{"role": "assistant", "content": text}]
+        raise _StepFailed(step_key, last_error_message)
+
+
+def _failed_before_translation(failure: "_StepFailed") -> EnrichmentResult:
+    return EnrichmentResult(
+        content_type=None,
+        classification_reason=None,
+        translation_status="skipped",
+        summary_status="skipped",
+        tagging_status="skipped",
+        translated_title_zh=None,
+        translated_body_zh=None,
+        summary_zh=None,
+        tags=[],
+        failed_step=failure.step,
+        error_message=failure.message,
+    )

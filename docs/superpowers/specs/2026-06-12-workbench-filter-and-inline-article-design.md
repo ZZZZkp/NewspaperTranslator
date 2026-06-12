@@ -19,7 +19,6 @@
 ## 非目标（YAGNI）
 
 - 批量重试（retry-batch）按失败次数筛选——保持 `_RETRY_BATCH_FILTER_KEYS` 不变。
-- 失败次数下拉的动态数据驱动选项——使用静态阈值（见下）。
 - 文档详情页内联文章阅读——本次只改文章处理详情。
 
 ---
@@ -42,43 +41,47 @@
 ### 语义
 
 - 匹配逻辑：`automatic_failure_count >= N`（含 N）。
-- 静态阈值选项：`全部 / ≥1 / ≥2 / ≥3`。基准是 `automatic_failure_limit` 默认 2（计数取值 0/1/2），`≥3` 兜住人工重试反复累计导致计数超过上限的情况。
-- 缺省（"全部"）时不附带该参数。
+- 阈值选项**动态生成**：后端暴露当前最大失败次数 `max_failure_count = MAX(automatic_failure_count)`，前端据此生成 `全部 / ≥1 次 … ≥max 次`。`max == 0`（无任何失败）时只有「全部」。
+- `max_failure_count` 取**全局值（不随当前筛选缩放）**，确保已选阈值不会因列表过滤后行数变少而消失。
+- 缺省（"全部"）时不附带 `min_failure_count` 参数。
 
 ### 前端
 
-- `frontend/index.html`：在文档筛选表单与文章处理筛选表单各加一个：
+- `frontend/index.html`：在文档筛选表单与文章处理筛选表单各加一个**空壳**下拉（选项由 JS 注入）：
   ```html
   <label>
     <span>失败次数</span>
     <select id="document-failure-count-filter" name="document_failure_count">
       <option value="">全部</option>
-      <option value="1">≥1 次</option>
-      <option value="2">≥2 次</option>
-      <option value="3">≥3 次</option>
     </select>
   </label>
   ```
   文章侧同构，id 用 `article-processing-failure-count-filter`、name 用 `article_processing_failure_count`。
 - `frontend/app.js`：
   - 新增两个常量绑定上述元素。
-  - `buildDocumentProcessingQueryString()`：若有值，`params.set("min_failure_count", value)`。
-  - `buildArticleProcessingQueryString()`：同上。
-  - 文章筛选重置（`article-processing-reset-filters`）与文档刷新逻辑中清空/读取该控件值，行为与既有筛选项一致。
+  - 新增 `renderFailureCountOptions(selectEl, maxFailureCount)`：清空后重建 `全部` + `≥1 次 … ≥max 次`；重建前记下当前 `value`，若仍 `<= max` 则保留选中，否则回落「全部」。
+  - **文档**：`max_failure_count` 来自 `/api/document-processing` 列表响应（见后端），每次刷新列表后调用 `renderFailureCountOptions`。
+  - **文章**：`max_failure_count` 来自 `/api/article-processing/filter-options`，在既有 `loadArticleProcessingFilterOptions`（填充 source/step/error 的同一处）里一并重建。
+  - `buildDocumentProcessingQueryString()` / `buildArticleProcessingQueryString()`：若有值，`params.set("min_failure_count", value)`。
+  - 文章筛选重置（`article-processing-reset-filters`）清空该控件选中值（保留选项列表）。
 
 ### 后端
 
 - `src/newspaper_translator/document_processing.py` → `list_document_processing_runs`：
   - 新增参数 `min_failure_count: int | None = None`。
   - 把当前「status 有/无」两分支重构为动态拼接 WHERE：可叠加 `status = ?` 与 `automatic_failure_count >= ?`，再统一 `ORDER BY ... LIMIT ?`。
+  - 新增 `get_document_processing_max_failure_count(*, database_url) -> int`：`SELECT COALESCE(MAX(automatic_failure_count), 0) FROM document_processing_runs`（全局，不带筛选）。
 - `src/newspaper_translator/api/queries.py`：
   - `_build_article_processing_where_clauses`：新增 `min_failure_count: int | None = None`，追加 `clauses.append("r.automatic_failure_count >= ?")`、`params.append(min_failure_count)`。
   - `list_article_processing_card_views`：新增同名参数并透传给 where 构造器（两处重载签名同步更新）。
-  - `get_article_processing_filter_options_view`：新增同名参数并透传，保证交叉筛选时其他下拉选项与失败次数过滤一致。
+  - `get_article_processing_filter_options_view`：
+    - 新增同名参数并透传，保证交叉筛选时其他下拉选项与失败次数过滤一致。
+    - `ArticleProcessingFilterOptionsView` 新增字段 `max_failure_count: int`，由全局 `SELECT COALESCE(MAX(r.automatic_failure_count), 0) FROM article_processing_runs r`（**不带任何筛选**）计算。
 - `src/newspaper_translator/web.py`：
   - 新增解析辅助：`_query_optional_int(query, name)`——缺省返回 `None`，非法（非整数/负数）抛 `_QueryParamError`。
-  - `/api/document-processing`：解析 `min_failure_count` 传入 `list_document_processing_runs`。该路由当前未包裹 `_QueryParamError`→400，需补上 try/except 返回 `{"status": "invalid_query_parameter"}`。
-  - `/api/article-processing` 与 `/api/article-processing/filter-options`：解析 `min_failure_count` 透传。
+  - `/api/document-processing`：解析 `min_failure_count` 传入 `list_document_processing_runs`；响应 payload 增加 `"max_failure_count": get_document_processing_max_failure_count(...)`。该路由当前未包裹 `_QueryParamError`→400，需补上 try/except 返回 `{"status": "invalid_query_parameter"}`。
+  - `/api/article-processing`：解析 `min_failure_count` 透传。
+  - `/api/article-processing/filter-options`：解析 `min_failure_count` 透传（响应已含 `max_failure_count` 字段）。
 
 ---
 
@@ -133,10 +136,10 @@ function createArticleReader(elements) {
 
 ## 测试
 
-- `tests/test_document_run_store.py`：`list_document_processing_runs` 按 `min_failure_count` 过滤（含与 status 叠加、阈值边界 = N 命中、< N 排除）。
-- `tests/test_api_queries.py`：`list_article_processing_card_views` 与 `get_article_processing_filter_options_view` 的 `min_failure_count` 过滤行为。
-- `tests/test_web.py`：`/api/document-processing` 与 `/api/article-processing` 透传 `min_failure_count`；非法值返回 400。
-- `tests/test_frontend_static.py`：断言新增的失败次数下拉、内嵌 reader 容器、文章/处理信息选项卡元素存在；断言文档状态行具备可切换 id。
+- `tests/test_document_run_store.py`：`list_document_processing_runs` 按 `min_failure_count` 过滤（含与 status 叠加、阈值边界 = N 命中、< N 排除）；`get_document_processing_max_failure_count` 返回全局最大值、空表返回 0。
+- `tests/test_api_queries.py`：`list_article_processing_card_views` 的 `min_failure_count` 过滤行为；`get_article_processing_filter_options_view` 的 `min_failure_count` 透传与 `max_failure_count` 字段（全局最大、不随其他筛选缩放、空表为 0）。
+- `tests/test_web.py`：`/api/document-processing` 响应含 `max_failure_count` 且透传 `min_failure_count`；`/api/article-processing` 透传 `min_failure_count`；`/api/article-processing/filter-options` 响应含 `max_failure_count`；非法 `min_failure_count` 返回 400。
+- `tests/test_frontend_static.py`：断言新增的失败次数下拉（空壳）、内嵌 reader 容器、文章/处理信息选项卡元素存在；断言文档状态行具备可切换 id。
 
 ## 影响面
 

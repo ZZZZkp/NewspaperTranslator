@@ -49,14 +49,14 @@ class ChatJsonClient:
         self._transport = transport or UrllibTransport()
 
     def complete_json_text(self, prompt: str) -> str:
+        return self.complete_json_text_messages(
+            [{"role": "user", "content": prompt}]
+        )
+
+    def complete_json_text_messages(self, messages: list[dict[str, str]]) -> str:
         payload = {
             "model": self._settings.model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
+            "messages": messages,
             "temperature": 0,
             "response_format": {
                 "type": "json_object",

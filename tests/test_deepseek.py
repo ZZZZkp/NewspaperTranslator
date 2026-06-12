@@ -147,6 +147,42 @@ class ChatJsonClientTests(unittest.TestCase):
         with self.assertRaises(LlmProviderError):
             client.complete_json_text("Return JSON only.")
 
+    def test_complete_json_text_messages_posts_full_history(self) -> None:
+        from newspaper_translator.llm import ChatCompletionSettings, ChatJsonClient
+
+        transport = _FakeTransport(
+            responses=[
+                _FakeResponse(
+                    status_code=200,
+                    body=json.dumps(
+                        {"choices": [{"message": {"content": "{\"ok\": true}"}}]}
+                    ).encode("utf-8"),
+                )
+            ]
+        )
+        client = ChatJsonClient(
+            settings=ChatCompletionSettings(
+                api_key="deepseek-key",
+                base_url="https://api.deepseek.com",
+                model="deepseek-chat",
+                timeout_seconds=45,
+            ),
+            transport=transport,
+        )
+
+        messages = [
+            {"role": "user", "content": "judge"},
+            {"role": "assistant", "content": "{\"content_type\": \"article\"}"},
+            {"role": "user", "content": "translate"},
+        ]
+        text = client.complete_json_text_messages(messages)
+
+        self.assertEqual(text, "{\"ok\": true}")
+        payload = json.loads(transport.calls[0]["body"].decode("utf-8"))
+        self.assertEqual(payload["messages"], messages)
+        self.assertEqual(payload["temperature"], 0)
+        self.assertEqual(payload["response_format"], {"type": "json_object"})
+
 
 def _chat_response(content_obj) -> "_FakeResponse":
     return _FakeResponse(

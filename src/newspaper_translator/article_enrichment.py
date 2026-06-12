@@ -16,11 +16,11 @@ def enrich_article(
     *,
     database_url: str,
     article_id: str,
-    translator,
-    summarizer_tagger,
+    enricher,
     provider_name: str,
     model_name: str,
     prompt_version: str,
+    on_step_advance=None,
     force_reenrich: bool = False,
 ) -> ArticleEnrichmentRun:
     article = get_final_article(
@@ -47,79 +47,73 @@ def enrich_article(
     )
 
     try:
-        translation = translator(article)
-        if translation.content_type == "advertisement":
-            record_article_enrichment_outputs(
-                database_url=database_url,
-                enrichment_run_id=enrichment_run.enrichment_run_id,
-                translated_title_zh=None,
-                summary_zh=None,
-                translated_body_zh=None,
-                translation_status="skipped",
-                summary_status="skipped",
-                tagging_status="skipped",
-                tags=[],
-                content_type="advertisement",
-                classification_reason=translation.classification_reason,
-            )
-            finalize_article_enrichment_run(
-                database_url=database_url,
-                enrichment_run_id=enrichment_run.enrichment_run_id,
-                status="skipped_advertisement",
-            )
-        else:
-            try:
-                summary_and_tags = summarizer_tagger(
-                    article=article,
-                    translated_title_zh=translation.translated_title_zh,
-                    translated_body_zh=translation.translated_body_zh,
-                )
-            except Exception as exc:
-                record_article_enrichment_outputs(
-                    database_url=database_url,
-                    enrichment_run_id=enrichment_run.enrichment_run_id,
-                    translated_title_zh=translation.translated_title_zh,
-                    summary_zh=None,
-                    translated_body_zh=translation.translated_body_zh,
-                    translation_status="succeeded",
-                    summary_status="failed",
-                    tagging_status="failed",
-                    tags=[],
-                    content_type=translation.content_type,
-                    classification_reason=translation.classification_reason,
-                )
-                finalize_article_enrichment_run(
-                    database_url=database_url,
-                    enrichment_run_id=enrichment_run.enrichment_run_id,
-                    status="partial",
-                    error_message=str(exc),
-                )
-            else:
-                record_article_enrichment_outputs(
-                    database_url=database_url,
-                    enrichment_run_id=enrichment_run.enrichment_run_id,
-                    translated_title_zh=translation.translated_title_zh,
-                    summary_zh=summary_and_tags.summary_zh,
-                    translated_body_zh=translation.translated_body_zh,
-                    translation_status="succeeded",
-                    summary_status="succeeded",
-                    tagging_status="succeeded",
-                    tags=summary_and_tags.tags,
-                    content_type=translation.content_type,
-                    classification_reason=translation.classification_reason,
-                )
-                finalize_article_enrichment_run(
-                    database_url=database_url,
-                    enrichment_run_id=enrichment_run.enrichment_run_id,
-                    status="succeeded",
-                )
-    except Exception as exc:
+        result = enricher(article, on_step_advance=on_step_advance)
+    except Exception as exc:  # noqa: BLE001
         finalize_article_enrichment_run(
             database_url=database_url,
             enrichment_run_id=enrichment_run.enrichment_run_id,
             status="failed",
             error_message=str(exc),
         )
+        return get_article_enrichment_run(
+            database_url=database_url,
+            enrichment_run_id=enrichment_run.enrichment_run_id,
+        )
+
+    if result.content_type == "advertisement":
+        record_article_enrichment_outputs(
+            database_url=database_url,
+            enrichment_run_id=enrichment_run.enrichment_run_id,
+            translated_title_zh=None,
+            summary_zh=None,
+            translated_body_zh=None,
+            translation_status="skipped",
+            summary_status="skipped",
+            tagging_status="skipped",
+            tags=[],
+            content_type="advertisement",
+            classification_reason=result.classification_reason or "",
+        )
+        finalize_article_enrichment_run(
+            database_url=database_url,
+            enrichment_run_id=enrichment_run.enrichment_run_id,
+            status="skipped_advertisement",
+        )
+    elif result.translation_status != "succeeded":
+        finalize_article_enrichment_run(
+            database_url=database_url,
+            enrichment_run_id=enrichment_run.enrichment_run_id,
+            status="failed",
+            error_message=result.error_message
+            or "article enrichment failed before translation",
+        )
+    else:
+        record_article_enrichment_outputs(
+            database_url=database_url,
+            enrichment_run_id=enrichment_run.enrichment_run_id,
+            translated_title_zh=result.translated_title_zh,
+            summary_zh=result.summary_zh if result.summary_status == "succeeded" else None,
+            translated_body_zh=result.translated_body_zh,
+            translation_status="succeeded",
+            summary_status=result.summary_status,
+            tagging_status=result.tagging_status,
+            tags=result.tags if result.tagging_status == "succeeded" else [],
+            content_type=result.content_type,
+            classification_reason=result.classification_reason or "",
+        )
+        if result.summary_status == "succeeded" and result.tagging_status == "succeeded":
+            finalize_article_enrichment_run(
+                database_url=database_url,
+                enrichment_run_id=enrichment_run.enrichment_run_id,
+                status="succeeded",
+            )
+        else:
+            finalize_article_enrichment_run(
+                database_url=database_url,
+                enrichment_run_id=enrichment_run.enrichment_run_id,
+                status="partial",
+                error_message=result.error_message,
+            )
 
     return get_article_enrichment_run(
         database_url=database_url,

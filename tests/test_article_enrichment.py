@@ -20,7 +20,7 @@ try:
         record_parse_run_result,
     )
     from newspaper_translator.database import run_pending_migrations
-    from newspaper_translator.gemini import ArticleSummaryTagResult, ArticleTranslationResult
+    from newspaper_translator.enrichment_conversation import EnrichmentResult
     from newspaper_translator.pdf import (
         ArticleFragment,
         ArticleSource,
@@ -36,8 +36,7 @@ except ImportError:
     list_parse_run_final_articles = None
     record_parse_run_result = None
     run_pending_migrations = None
-    ArticleSummaryTagResult = None
-    ArticleTranslationResult = None
+    EnrichmentResult = None
     ArticleFragment = None
     ArticleSource = None
     ParseMatchDecision = None
@@ -91,22 +90,21 @@ class ArticleEnrichmentTests(unittest.TestCase):
                 database_url=database_url,
                 parse_run_id=parse_run.parse_run_id,
             )[0]
-            translator = _CapturingTranslator()
+            capturing = _CapturingEnricher()
 
             enrich_article(
                 database_url=database_url,
                 article_id=article.article_id,
-                translator=translator,
-                summarizer_tagger=_FakeSummarizerTagger(),
+                enricher=capturing,
                 provider_name="gemini",
                 model_name="gemini-2.5-flash",
                 prompt_version="article-enrichment-v1",
             )
 
-        self.assertIsNotNone(translator.article)
-        self.assertNotIn("oil-map.jpg", translator.article.body_text_en)
-        self.assertNotIn("oil-chart.png", translator.article.body_text_en)
-        self.assertIn("The oil companies want to maximize their production.", translator.article.body_text_en)
+        self.assertIsNotNone(capturing.article)
+        self.assertNotIn("oil-map.jpg", capturing.article.body_text_en)
+        self.assertNotIn("oil-chart.png", capturing.article.body_text_en)
+        self.assertIn("The oil companies want to maximize their production.", capturing.article.body_text_en)
 
     def test_persists_a_succeeded_enrichment_run(self) -> None:
         self.assertIsNotNone(enrich_article)
@@ -154,8 +152,7 @@ class ArticleEnrichmentTests(unittest.TestCase):
             run = enrich_article(
                 database_url=database_url,
                 article_id=article.article_id,
-                translator=_FakeTranslator(),
-                summarizer_tagger=_FakeSummarizerTagger(),
+                enricher=_FakeEnricher(),
                 provider_name="gemini",
                 model_name="gemini-2.5-flash",
                 prompt_version="article-enrichment-v1",
@@ -233,8 +230,7 @@ class ArticleEnrichmentTests(unittest.TestCase):
             run = enrich_article(
                 database_url=database_url,
                 article_id=article.article_id,
-                translator=_FakeTranslator(),
-                summarizer_tagger=_FailingSummarizerTagger("summary timeout"),
+                enricher=_FailingSummaryEnricher("summary timeout"),
                 provider_name="gemini",
                 model_name="gemini-2.5-flash",
                 prompt_version="article-enrichment-v1",
@@ -304,8 +300,7 @@ class ArticleEnrichmentTests(unittest.TestCase):
             run = enrich_article(
                 database_url=database_url,
                 article_id=article.article_id,
-                translator=_FailingTranslator("translation timeout"),
-                summarizer_tagger=_FakeSummarizerTagger(),
+                enricher=_FailingTranslationEnricher("translation timeout"),
                 provider_name="gemini",
                 model_name="gemini-2.5-flash",
                 prompt_version="article-enrichment-v1",
@@ -362,14 +357,12 @@ class ArticleEnrichmentTests(unittest.TestCase):
                 database_url=database_url,
                 parse_run_id=first_parse_run.parse_run_id,
             )[0]
-            translator = _CountingTranslator()
-            summarizer = _CountingSummarizerTagger()
+            enricher = _CountingEnricher()
 
             first_run = enrich_article(
                 database_url=database_url,
                 article_id=first_article.article_id,
-                translator=translator,
-                summarizer_tagger=summarizer,
+                enricher=enricher,
                 provider_name="gemini",
                 model_name="gemini-2.5-flash",
                 prompt_version="article-enrichment-v1",
@@ -404,8 +397,7 @@ class ArticleEnrichmentTests(unittest.TestCase):
             second_run = enrich_article(
                 database_url=database_url,
                 article_id=second_article.article_id,
-                translator=translator,
-                summarizer_tagger=summarizer,
+                enricher=enricher,
                 provider_name="gemini",
                 model_name="gemini-2.5-flash",
                 prompt_version="article-enrichment-v1",
@@ -423,8 +415,7 @@ class ArticleEnrichmentTests(unittest.TestCase):
         self.assertNotEqual(first_article.article_id, second_article.article_id)
         self.assertEqual(second_run.enrichment_run_id, first_run.enrichment_run_id)
         self.assertEqual(enrichment_run_count, 1)
-        self.assertEqual(translator.call_count, 1)
-        self.assertEqual(summarizer.call_count, 1)
+        self.assertEqual(enricher.call_count, 1)
 
     def test_marks_advertisement_classifications_as_skipped_advertisement(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -464,12 +455,10 @@ class ArticleEnrichmentTests(unittest.TestCase):
                 parse_run_id=parse_run.parse_run_id,
             )[0]
 
-            summarizer = _CountingSummarizerTagger()
             run = enrich_article(
                 database_url=database_url,
                 article_id=article.article_id,
-                translator=_AdvertisementTranslator(),
-                summarizer_tagger=summarizer,
+                enricher=_AdvertisementEnricher(),
                 provider_name="gemini",
                 model_name="gemini-2.5-flash",
                 prompt_version="article-enrichment-v3",
@@ -480,7 +469,6 @@ class ArticleEnrichmentTests(unittest.TestCase):
             )
 
         self.assertEqual(run.status, "skipped_advertisement")
-        self.assertEqual(summarizer.call_count, 0)
         self.assertEqual(latest.content_type, "advertisement")
         self.assertEqual(latest.translation_status, "skipped")
         self.assertEqual(latest.summary_status, "skipped")
@@ -525,12 +513,10 @@ class ArticleEnrichmentTests(unittest.TestCase):
                 parse_run_id=parse_run.parse_run_id,
             )[0]
 
-            summarizer = _CountingSummarizerTagger()
             run = enrich_article(
                 database_url=database_url,
                 article_id=article.article_id,
-                translator=_UncertainTranslator(),
-                summarizer_tagger=summarizer,
+                enricher=_UncertainEnricher(),
                 provider_name="gemini",
                 model_name="gemini-2.5-flash",
                 prompt_version="article-enrichment-v3",
@@ -541,7 +527,6 @@ class ArticleEnrichmentTests(unittest.TestCase):
             )
 
         self.assertEqual(run.status, "succeeded")
-        self.assertEqual(summarizer.call_count, 1)
         self.assertEqual(latest.content_type, "uncertain")
         self.assertEqual(latest.translation_status, "succeeded")
         self.assertEqual(latest.summary_status, "succeeded")
@@ -631,98 +616,105 @@ class ArticleEnrichmentTests(unittest.TestCase):
         )
 
 
-class _FakeTranslator:
-    def __call__(self, article):
-        return ArticleTranslationResult(
-            content_type="article",
-            classification_reason="Regular newspaper article.",
-            translated_title_zh="大型石油公司远赴他处避开中东动荡",
-            translated_body_zh="多家能源企业正加速在非洲和南美寻找新机会。",
-        )
+def _ok_result(content_type="article"):
+    return EnrichmentResult(
+        content_type=content_type,
+        classification_reason="Regular newspaper article.",
+        translation_status="succeeded",
+        summary_status="succeeded",
+        tagging_status="succeeded",
+        translated_title_zh="大型石油公司远赴他处避开中东动荡",
+        translated_body_zh="多家能源企业正加速在非洲和南美寻找新机会。",
+        summary_zh="油企为避开中东风险，正把勘探重点转向非洲和南美。",
+        tags=["能源", "石油", "中东局势"],
+        failed_step=None,
+        error_message=None,
+    )
 
 
-class _CountingTranslator:
+class _FakeEnricher:
+    def __call__(self, article, *, on_step_advance=None):
+        return _ok_result()
+
+
+class _CountingEnricher:
     def __init__(self) -> None:
         self.call_count = 0
 
-    def __call__(self, article):
+    def __call__(self, article, *, on_step_advance=None):
         self.call_count += 1
-        return ArticleTranslationResult(
-            content_type="article",
-            classification_reason="Regular newspaper article.",
-            translated_title_zh="大型石油公司远赴他处避开中东动荡",
-            translated_body_zh="多家能源企业正加速在非洲和南美寻找新机会。",
-        )
+        return _ok_result()
 
 
-class _CapturingTranslator:
+class _CapturingEnricher:
     def __init__(self) -> None:
         self.article = None
 
-    def __call__(self, article):
+    def __call__(self, article, *, on_step_advance=None):
         self.article = article
-        return ArticleTranslationResult(
+        return _ok_result()
+
+
+class _FailingTranslationEnricher:
+    def __init__(self, message: str) -> None:
+        self._message = message
+
+    def __call__(self, article, *, on_step_advance=None):
+        return EnrichmentResult(
             content_type="article",
             classification_reason="Regular newspaper article.",
+            translation_status="failed",
+            summary_status="skipped",
+            tagging_status="skipped",
+            translated_title_zh=None,
+            translated_body_zh=None,
+            summary_zh=None,
+            tags=[],
+            failed_step="translation",
+            error_message=self._message,
+        )
+
+
+class _FailingSummaryEnricher:
+    def __init__(self, message: str) -> None:
+        self._message = message
+
+    def __call__(self, article, *, on_step_advance=None):
+        return EnrichmentResult(
+            content_type="article",
+            classification_reason="Regular newspaper article.",
+            translation_status="succeeded",
+            summary_status="failed",
+            tagging_status="failed",
             translated_title_zh="大型石油公司远赴他处避开中东动荡",
             translated_body_zh="多家能源企业正加速在非洲和南美寻找新机会。",
+            summary_zh=None,
+            tags=[],
+            failed_step="summary",
+            error_message=self._message,
         )
 
 
-class _FailingTranslator:
-    def __init__(self, message: str) -> None:
-        self._message = message
-
-    def __call__(self, article):
-        raise RuntimeError(self._message)
-
-
-class _FakeSummarizerTagger:
-    def __call__(self, *, article, translated_title_zh: str, translated_body_zh: str):
-        return ArticleSummaryTagResult(
-            summary_zh="油企为避开中东风险，正把勘探重点转向非洲和南美。",
-            tags=["能源", "石油", "中东局势"],
-        )
-
-
-class _CountingSummarizerTagger:
-    def __init__(self) -> None:
-        self.call_count = 0
-
-    def __call__(self, *, article, translated_title_zh: str, translated_body_zh: str):
-        self.call_count += 1
-        return ArticleSummaryTagResult(
-            summary_zh="油企为避开中东风险，正把勘探重点转向非洲和南美。",
-            tags=["能源", "石油", "中东局势"],
-        )
-
-
-class _FailingSummarizerTagger:
-    def __init__(self, message: str) -> None:
-        self._message = message
-
-    def __call__(self, *, article, translated_title_zh: str, translated_body_zh: str):
-        raise RuntimeError(self._message)
-
-
-class _AdvertisementTranslator:
-    def __call__(self, article):
-        return ArticleTranslationResult(
+class _AdvertisementEnricher:
+    def __call__(self, article, *, on_step_advance=None):
+        return EnrichmentResult(
             content_type="advertisement",
             classification_reason="Display ad for jewelry retailer.",
-            translated_title_zh="",
-            translated_body_zh="",
+            translation_status="skipped",
+            summary_status="skipped",
+            tagging_status="skipped",
+            translated_title_zh=None,
+            translated_body_zh=None,
+            summary_zh=None,
+            tags=[],
+            failed_step=None,
+            error_message=None,
         )
 
 
-class _UncertainTranslator:
-    def __call__(self, article):
-        return ArticleTranslationResult(
-            content_type="uncertain",
-            classification_reason="Borderline newspaper item.",
-            translated_title_zh="不确定标题",
-            translated_body_zh="不确定正文。",
-        )
+class _UncertainEnricher:
+    def __call__(self, article, *, on_step_advance=None):
+        return _ok_result(content_type="uncertain")
 
 
 if __name__ == "__main__":

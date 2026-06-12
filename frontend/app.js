@@ -534,6 +534,8 @@ function renderArticleProcessingList(runs) {
 
 function showArticleProcessingDetail(run) {
   currentArticleProcessingRun = run;
+  articleProcessingReaderLoadedId = null;
+  showArticleProcessingProcessingTab();
   showArticleProcessingPage();
   articleProcessingDetailView.classList.remove("hidden");
   articleProcessingDetailTitle.textContent = run.title_en || run.article_key;
@@ -669,76 +671,175 @@ async function loadAllArticles(page = 1) {
   renderPagination(allArticlesPagination, payload.pagination, (p) => loadAllArticles(p));
 }
 
-function renderDetailMode(mode) {
-  [modeZhButton, modeEnButton, modeCompareButton].forEach((button) => {
-    button.classList.remove("active");
-  });
+function createArticleReader(elements) {
+  let readerDetail = null;
 
-  if (mode === "compare") {
-    modeCompareButton.classList.add("active");
-    detailSinglePane.classList.add("hidden");
-    detailComparePane.classList.remove("hidden");
-    return;
+  function renderMode(mode) {
+    [elements.modeZh, elements.modeEn, elements.modeCompare].forEach((button) => {
+      button.classList.remove("active");
+    });
+    if (mode === "compare") {
+      elements.modeCompare.classList.add("active");
+      elements.singlePane.classList.add("hidden");
+      elements.comparePane.classList.remove("hidden");
+      return;
+    }
+    elements.singlePane.classList.remove("hidden");
+    elements.comparePane.classList.add("hidden");
+    if (mode === "en") {
+      elements.modeEn.classList.add("active");
+      elements.singleTitle.textContent = readerDetail.title_en;
+      elements.singleBody.textContent = readerDetail.body_text_en;
+      return;
+    }
+    elements.modeZh.classList.add("active");
+    elements.singleTitle.textContent = readerDetail.title_zh || readerDetail.title_en;
+    elements.singleBody.textContent = readerDetail.body_text_zh || readerDetail.body_text_en;
   }
 
-  detailSinglePane.classList.remove("hidden");
-  detailComparePane.classList.add("hidden");
-
-  if (mode === "en") {
-    modeEnButton.classList.add("active");
-    detailSingleTitle.textContent = currentDetail.title_en;
-    detailSingleBody.textContent = currentDetail.body_text_en;
-    return;
+  function renderImages(images) {
+    elements.imageGallery.replaceChildren();
+    if (!images?.length) {
+      elements.imageGallery.classList.add("hidden");
+      return;
+    }
+    images.forEach((imagePath, index) => {
+      const image = document.createElement("img");
+      image.className = "detail-image";
+      image.src = `/api/local-image?path=${encodeURIComponent(imagePath)}`;
+      image.alt = `${readerDetail?.title_zh || readerDetail?.title_en || "article"} image ${index + 1}`;
+      image.loading = "lazy";
+      elements.imageGallery.appendChild(image);
+    });
+    elements.imageGallery.classList.remove("hidden");
   }
 
-  modeZhButton.classList.add("active");
-  detailSingleTitle.textContent = currentDetail.title_zh || currentDetail.title_en;
-  detailSingleBody.textContent = currentDetail.body_text_zh || currentDetail.body_text_en;
+  function render(detail) {
+    readerDetail = detail;
+    if (elements.title) elements.title.textContent = detail.title_zh || detail.title_en;
+    if (elements.summary) elements.summary.textContent = detail.summary_zh || "当前没有中文摘要。";
+    if (elements.meta) elements.meta.textContent = `${detail.source_name} · ${detail.publication_date}`;
+    if (elements.tags) {
+      elements.tags.replaceChildren();
+      (detail.tags || []).forEach((tagText) => {
+        const tag = document.createElement("span");
+        tag.className = "tag";
+        tag.textContent = tagText;
+        elements.tags.appendChild(tag);
+      });
+    }
+    if (elements.processing) {
+      elements.processing.replaceChildren();
+      Object.entries(detail.processing || {}).forEach(([key, value]) => {
+        const badge = document.createElement("span");
+        badge.className = "badge";
+        badge.textContent = `${key}: ${value}`;
+        elements.processing.appendChild(badge);
+      });
+    }
+    renderImages(detail.images || []);
+    elements.zhBody.textContent = detail.body_text_zh || "当前没有中文正文。";
+    elements.enBody.textContent = detail.body_text_en;
+    renderMode("zh");
+  }
+
+  elements.modeZh.addEventListener("click", () => renderMode("zh"));
+  elements.modeEn.addEventListener("click", () => renderMode("en"));
+  elements.modeCompare.addEventListener("click", () => renderMode("compare"));
+
+  return {
+    render,
+    setMode: renderMode,
+    get detail() {
+      return readerDetail;
+    },
+  };
 }
 
-function renderDetailImages(images) {
-  detailImageGallery.replaceChildren();
-  if (!images?.length) {
-    detailImageGallery.classList.add("hidden");
+const articleDetailReader = createArticleReader({
+  title: detailTitle,
+  summary: detailSummary,
+  meta: detailMeta,
+  tags: detailTags,
+  processing: detailProcessing,
+  imageGallery: detailImageGallery,
+  modeZh: modeZhButton,
+  modeEn: modeEnButton,
+  modeCompare: modeCompareButton,
+  singlePane: detailSinglePane,
+  singleTitle: detailSingleTitle,
+  singleBody: detailSingleBody,
+  comparePane: detailComparePane,
+  zhBody: detailZhBody,
+  enBody: detailEnBody,
+});
+
+const apDetailTabProcessing = document.querySelector("#ap-detail-tab-processing");
+const apDetailTabArticle = document.querySelector("#ap-detail-tab-article");
+const apDetailProcessingPanel = document.querySelector("#ap-detail-processing-panel");
+const apDetailArticlePanel = document.querySelector("#ap-detail-article-panel");
+
+const articleProcessingReader = createArticleReader({
+  imageGallery: document.querySelector("#ap-reader-image-gallery"),
+  modeZh: document.querySelector("#ap-reader-mode-zh"),
+  modeEn: document.querySelector("#ap-reader-mode-en"),
+  modeCompare: document.querySelector("#ap-reader-mode-compare"),
+  singlePane: document.querySelector("#ap-reader-single-pane"),
+  singleTitle: document.querySelector("#ap-reader-single-title"),
+  singleBody: document.querySelector("#ap-reader-single-body"),
+  comparePane: document.querySelector("#ap-reader-compare-pane"),
+  zhBody: document.querySelector("#ap-reader-zh-body"),
+  enBody: document.querySelector("#ap-reader-en-body"),
+});
+
+let articleProcessingReaderLoadedId = null;
+
+function showArticleProcessingProcessingTab() {
+  apDetailTabProcessing.classList.add("active");
+  apDetailTabArticle.classList.remove("active");
+  apDetailProcessingPanel.classList.remove("hidden");
+  apDetailArticlePanel.classList.add("hidden");
+}
+
+async function showArticleProcessingArticleTab() {
+  apDetailTabArticle.classList.add("active");
+  apDetailTabProcessing.classList.remove("active");
+  apDetailProcessingPanel.classList.add("hidden");
+  apDetailArticlePanel.classList.remove("hidden");
+
+  const articleId = currentArticleProcessingRun?.article_id;
+  if (!articleId) {
+    setStatus("当前文章处理记录没有可用的文章标识。");
     return;
   }
-
-  images.forEach((imagePath, index) => {
-    const image = document.createElement("img");
-    image.className = "detail-image";
-    image.src = `/api/local-image?path=${encodeURIComponent(imagePath)}`;
-    image.alt = `${currentDetail?.title_zh || currentDetail?.title_en || "article"} image ${index + 1}`;
-    image.loading = "lazy";
-    detailImageGallery.appendChild(image);
-  });
-  detailImageGallery.classList.remove("hidden");
+  if (articleProcessingReaderLoadedId === articleId) {
+    return;
+  }
+  setStatus("正在加载文章内容...");
+  const payload = await fetchJson(`/api/articles/${articleId}`);
+  articleProcessingReader.render(payload.article);
+  articleProcessingReaderLoadedId = articleId;
+  setStatus("文章内容已加载。");
 }
+
+apDetailTabProcessing.addEventListener("click", () => {
+  showArticleProcessingProcessingTab();
+});
+
+apDetailTabArticle.addEventListener("click", async () => {
+  try {
+    await showArticleProcessingArticleTab();
+  } catch (error) {
+    console.error(error);
+    setStatus("文章内容加载失败。");
+  }
+});
 
 function showArticleDetail(detail) {
   currentDetail = detail;
   showDashboardSections();
   articleDetailView.classList.remove("hidden");
-  detailTitle.textContent = detail.title_zh || detail.title_en;
-  detailSummary.textContent = detail.summary_zh || "当前没有中文摘要。";
-  detailMeta.textContent = `${detail.source_name} · ${detail.publication_date}`;
-  detailTags.replaceChildren();
-  (detail.tags || []).forEach((tagText) => {
-    const tag = document.createElement("span");
-    tag.className = "tag";
-    tag.textContent = tagText;
-    detailTags.appendChild(tag);
-  });
-  detailProcessing.replaceChildren();
-  Object.entries(detail.processing || {}).forEach(([key, value]) => {
-    const badge = document.createElement("span");
-    badge.className = "badge";
-    badge.textContent = `${key}: ${value}`;
-    detailProcessing.appendChild(badge);
-  });
-  renderDetailImages(detail.images || []);
-  detailZhBody.textContent = detail.body_text_zh || "当前没有中文正文。";
-  detailEnBody.textContent = detail.body_text_en;
-  renderDetailMode("zh");
+  articleDetailReader.render(detail);
   articleDetailView.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -1131,12 +1232,13 @@ articleProcessingOpenDocumentButton.addEventListener("click", () => {
   window.location.hash = `document/${encodeURIComponent(currentArticleProcessingRun.document_key)}`;
 });
 
-articleProcessingOpenArticleButton.addEventListener("click", () => {
-  if (!currentArticleProcessingRun?.article_id) {
-    setStatus("当前文章处理记录没有可用的文章标识。");
-    return;
+articleProcessingOpenArticleButton.addEventListener("click", async () => {
+  try {
+    await showArticleProcessingArticleTab();
+  } catch (error) {
+    console.error(error);
+    setStatus("文章内容加载失败。");
   }
-  window.location.hash = `article/${encodeURIComponent(currentArticleProcessingRun.article_id)}`;
 });
 
 articleProcessingRetryButton.addEventListener("click", async () => {
@@ -1165,24 +1267,6 @@ documentRetryButton.addEventListener("click", async () => {
   } catch (error) {
     console.error(error);
     setStatus("手动重试请求失败。");
-  }
-});
-
-modeZhButton.addEventListener("click", () => {
-  if (currentDetail) {
-    renderDetailMode("zh");
-  }
-});
-
-modeEnButton.addEventListener("click", () => {
-  if (currentDetail) {
-    renderDetailMode("en");
-  }
-});
-
-modeCompareButton.addEventListener("click", () => {
-  if (currentDetail) {
-    renderDetailMode("compare");
   }
 });
 

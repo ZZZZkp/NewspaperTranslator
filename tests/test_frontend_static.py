@@ -178,6 +178,15 @@ class FrontendStaticTests(unittest.TestCase):
         self.assertIn("renderFailureCountOptions", app_text)
         self.assertIn("min_failure_count", app_text)
 
+    def test_article_processing_detail_has_inline_article_reader(self) -> None:
+        index_text = (PROJECT_ROOT / "frontend" / "index.html").read_text()
+        app_text = (PROJECT_ROOT / "frontend" / "app.js").read_text()
+        self.assertIn('id="ap-detail-tab-processing"', index_text)
+        self.assertIn('id="ap-detail-tab-article"', index_text)
+        self.assertIn('id="ap-reader-single-body"', index_text)
+        self.assertIn('id="ap-reader-compare-pane"', index_text)
+        self.assertIn("createArticleReader", app_text)
+
 
 if __name__ == "__main__":
     unittest.main()

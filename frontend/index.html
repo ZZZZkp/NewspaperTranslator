@@ -309,7 +309,12 @@
                 <button id="article-processing-back-button" class="ghost-button" type="button">返回列表</button>
               </div>
             </div>
-            <div class="detail-layout">
+            <div class="ap-detail-tabs">
+              <button id="ap-detail-tab-processing" class="language-button active" type="button">处理信息</button>
+              <button id="ap-detail-tab-article" class="language-button" type="button">文章内容</button>
+            </div>
+
+            <div id="ap-detail-processing-panel" class="detail-layout">
               <aside class="detail-sidebar">
                 <div class="detail-block">
                   <h3>状态摘要</h3>
@@ -333,6 +338,31 @@
                   <h3>运行字段</h3>
                   <div id="article-processing-detail-fields" class="key-value-list"></div>
                 </div>
+              </div>
+            </div>
+
+            <div id="ap-detail-article-panel" class="detail-main hidden">
+              <div id="ap-reader-image-gallery" class="detail-image-gallery hidden"></div>
+              <div class="detail-language-bar">
+                <button id="ap-reader-mode-zh" class="language-button active" type="button">中文</button>
+                <button id="ap-reader-mode-en" class="language-button" type="button">English</button>
+                <button id="ap-reader-mode-compare" class="language-button" type="button">对照</button>
+              </div>
+              <div id="ap-reader-single-pane" class="detail-pane">
+                <article>
+                  <h3 id="ap-reader-single-title">等待加载标题...</h3>
+                  <p id="ap-reader-single-body">等待加载正文...</p>
+                </article>
+              </div>
+              <div id="ap-reader-compare-pane" class="detail-compare hidden">
+                <article class="detail-pane">
+                  <h3>中文</h3>
+                  <p id="ap-reader-zh-body">等待加载中文正文...</p>
+                </article>
+                <article class="detail-pane">
+                  <h3>English</h3>
+                  <p id="ap-reader-en-body">Waiting for English body...</p>
+                </article>
               </div>
             </div>
           </section>

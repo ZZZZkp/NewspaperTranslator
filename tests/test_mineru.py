@@ -352,6 +352,135 @@ class MineruClientTests(unittest.TestCase):
         self.assertEqual(len(first_payload["files"]), 30)
         self.assertEqual(len(second_payload["files"]), 1)
 
+    def test_merged_page_markdown_rewrites_page_local_image_paths(self) -> None:
+        from newspaper_translator.mineru import MineruParsedPage
+
+        settings = MineruSettings(
+            api_token="mineru-token",
+            model_version="vlm",
+            language="en",
+            enable_ocr=False,
+            enable_table=True,
+            enable_formula=True,
+            page_ranges="",
+            poll_interval_seconds=0,
+            poll_timeout_seconds=30,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_root = pathlib.Path(temp_dir) / "mineru-output"
+            page_dir = output_root / "sample" / "page-markdown" / "page-0007"
+            page_dir.mkdir(parents=True)
+            markdown_path = page_dir / "sample" / "full.md"
+            markdown_path.parent.mkdir(parents=True)
+            markdown_path.write_text(
+                "# Page 7\n\n![chart](images/chart.jpg)\n\nimages/photo.png\n",
+                encoding="utf-8",
+            )
+            page = MineruParsedPage(
+                page_number=7,
+                batch_id="batch-1",
+                file_id="page-0007",
+                file_name="page-0007.pdf",
+                markdown_path=markdown_path,
+                markdown_text=markdown_path.read_text(encoding="utf-8"),
+            )
+
+            client = MineruClient(settings=settings, transport=_FakeTransport(responses=[]))
+            merged_path, merged_text = client._write_merged_page_markdown(
+                pages=[page],
+                output_root=output_root,
+                file_stem="sample",
+            )
+            self.assertTrue(merged_path.exists())
+
+        self.assertIn(
+            "![chart](page-markdown/page-0007/sample/images/chart.jpg)",
+            merged_text,
+        )
+        self.assertIn("page-markdown/page-0007/sample/images/photo.png", merged_text)
+        self.assertNotIn("](images/chart.jpg)", merged_text)
+
+    def test_parse_pdf_by_pages_returns_pages_with_rewritten_local_image_paths(self) -> None:
+        settings = MineruSettings(
+            api_token="mineru-token",
+            model_version="vlm",
+            language="en",
+            enable_ocr=False,
+            enable_table=True,
+            enable_formula=True,
+            page_ranges="",
+            poll_interval_seconds=0,
+            poll_timeout_seconds=30,
+        )
+        page_files = [
+            SimpleNamespace(page_number=1, path=pathlib.Path("/tmp/page-0001.pdf")),
+        ]
+        transport = _FakeTransport(
+            responses=[
+                _FakeResponse(
+                    status_code=200,
+                    body=json.dumps(
+                        {
+                            "code": 0,
+                            "data": {
+                                "batch_id": "batch-1",
+                                "file_urls": ["https://upload.example.com/page-0001.pdf"],
+                            },
+                        }
+                    ).encode("utf-8"),
+                ),
+                _FakeResponse(status_code=200, body=b""),
+                _FakeResponse(
+                    status_code=200,
+                    body=json.dumps(
+                        {
+                            "code": 0,
+                            "data": {
+                                "batch_id": "batch-1",
+                                "extract_result": [
+                                    {
+                                        "data_id": "page-0001",
+                                        "file_name": "page-0001.pdf",
+                                        "state": "done",
+                                        "full_zip_url": "https://download.example.com/page-0001.zip",
+                                    }
+                                ],
+                            },
+                        }
+                    ).encode("utf-8"),
+                ),
+                _FakeResponse(
+                    status_code=200,
+                    body=_build_result_zip_bytes(
+                        "# Article\n\n![](images/photo.jpg)\n\nArticle body.\n"
+                    ),
+                ),
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch("newspaper_translator.mineru.split_pdf_into_single_page_files", return_value=page_files):
+                with patch.object(pathlib.Path, "read_bytes", return_value=b"%PDF page"):
+                    source_pdf = pathlib.Path(temp_dir) / "sample.pdf"
+                    source_pdf.write_bytes(b"%PDF sample")
+                    client = MineruClient(settings=settings, transport=transport)
+                    result = client.parse_pdf_by_pages(
+                        pdf_path=source_pdf,
+                        output_root=pathlib.Path(temp_dir) / "out",
+                    )
+
+        self.assertIn(
+            "![](page-markdown/page-0001/sample/images/photo.jpg)",
+            result.pages[0].markdown_text,
+        )
+        self.assertIn(
+            "![](page-markdown/page-0001/sample/images/photo.jpg)",
+            result.markdown_text,
+        )
+        self.assertNotIn("![](images/photo.jpg)", result.pages[0].markdown_text)
+        self.assertNotIn("page-markdown/page-0001/sample/page-markdown", result.markdown_text)
+
     def test_batch_create_pauses_on_429_then_succeeds(self) -> None:
         settings = MineruSettings(
             api_token="t", model_version="vlm", language="en", enable_ocr=False,

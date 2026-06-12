@@ -1,6 +1,7 @@
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
 import ssl
 import time
 from typing import Protocol
@@ -17,6 +18,10 @@ from newspaper_translator.pdf import split_pdf_into_single_page_files
 
 class MineruError(RuntimeError):
     """Raised when the MinerU API returns an invalid or failed response."""
+
+
+_MARKDOWN_IMAGE_PATTERN = re.compile(r"(!\[[^\]]*]\()([^)]+)(\))")
+_LOCAL_IMAGE_SUFFIX = re.compile(r"\.(?:png|jpg|jpeg|webp)$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -56,6 +61,71 @@ class _Transport(Protocol):
         body: bytes | None = None,
         timeout: int | None = None,
     ) -> _TransportResponse: ...
+
+
+def _rewrite_page_local_image_paths(
+    markdown_text: str,
+    *,
+    page_markdown_path: Path,
+    merged_dir: Path,
+) -> str:
+    page_dir = Path(page_markdown_path).resolve().parent
+    merged_dir = Path(merged_dir).resolve()
+
+    def rewrite_path(value: str) -> str:
+        candidate = value.strip().strip("\"'")
+        if not _is_local_image_path(candidate):
+            return value
+        if candidate.startswith("page-markdown/"):
+            return candidate
+        absolute_path = (page_dir / candidate).resolve()
+        try:
+            return absolute_path.relative_to(merged_dir).as_posix()
+        except ValueError:
+            return str(absolute_path)
+
+    rewritten_lines: list[str] = []
+    for raw_line in markdown_text.splitlines():
+        line = _MARKDOWN_IMAGE_PATTERN.sub(
+            lambda match: f"{match.group(1)}{rewrite_path(match.group(2))}{match.group(3)}",
+            raw_line,
+        )
+        stripped = line.strip()
+        if _is_local_image_path(stripped):
+            leading = line[: len(line) - len(line.lstrip())]
+            trailing = line[len(line.rstrip()):]
+            line = f"{leading}{rewrite_path(stripped)}{trailing}"
+        rewritten_lines.append(line)
+    return "\n".join(rewritten_lines)
+
+
+def _with_rewritten_page_local_image_paths(
+    page: MineruParsedPage,
+    *,
+    merged_dir: Path,
+) -> MineruParsedPage:
+    return MineruParsedPage(
+        page_number=page.page_number,
+        batch_id=page.batch_id,
+        file_id=page.file_id,
+        file_name=page.file_name,
+        markdown_path=page.markdown_path,
+        markdown_text=_rewrite_page_local_image_paths(
+            page.markdown_text,
+            page_markdown_path=page.markdown_path,
+            merged_dir=merged_dir,
+        ),
+    )
+
+
+def _is_local_image_path(value: str) -> bool:
+    if not value:
+        return False
+    if "://" in value:
+        return False
+    if Path(value).is_absolute():
+        return False
+    return _LOCAL_IMAGE_SUFFIX.search(value) is not None
 
 
 class MineruClient:
@@ -283,6 +353,11 @@ class MineruClient:
                 )
 
         parsed_pages.sort(key=lambda page: page.page_number)
+        merged_dir = output_root / pdf_path.stem
+        parsed_pages = [
+            _with_rewritten_page_local_image_paths(page, merged_dir=merged_dir)
+            for page in parsed_pages
+        ]
         merged_markdown_path, merged_markdown_text = self._write_merged_page_markdown(
             pages=parsed_pages,
             output_root=output_root,
@@ -416,8 +491,13 @@ class MineruClient:
         merged_path = merged_dir / "full-pages.md"
         parts = []
         for page in pages:
+            page_markdown_text = _rewrite_page_local_image_paths(
+                page.markdown_text.strip(),
+                page_markdown_path=page.markdown_path,
+                merged_dir=merged_dir,
+            )
             parts.append(
-                f"<!-- PDF_PAGE_NUMBER: {page.page_number} -->\n{page.markdown_text.strip()}\n"
+                f"<!-- PDF_PAGE_NUMBER: {page.page_number} -->\n{page_markdown_text}\n"
             )
         merged_text = "\n".join(parts)
         merged_path.write_text(merged_text, encoding="utf-8")

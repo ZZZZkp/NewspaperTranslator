@@ -113,6 +113,12 @@
                   <option value="succeeded">succeeded</option>
                 </select>
               </label>
+              <label>
+                <span>失败次数</span>
+                <select id="document-failure-count-filter" name="document_failure_count">
+                  <option value="">全部</option>
+                </select>
+              </label>
               <div class="filter-actions">
                 <button id="document-refresh-button" type="button">刷新列表</button>
               </div>
@@ -154,6 +160,12 @@
                 <span>错误原因</span>
                 <select id="article-processing-error-filter" name="article_processing_error">
                   <option value="">先选择阶段</option>
+                </select>
+              </label>
+              <label>
+                <span>失败次数</span>
+                <select id="article-processing-failure-count-filter" name="article_processing_failure_count">
+                  <option value="">全部</option>
                 </select>
               </label>
               <div class="filter-actions">

@@ -86,6 +86,8 @@ const processingStatusFilter = document.querySelector("#processing-status-filter
 const allArticlesPagination = document.querySelector("#all-articles-pagination");
 const articleProcessingStepFilter = document.querySelector("#article-processing-step-filter");
 const articleProcessingErrorFilter = document.querySelector("#article-processing-error-filter");
+const documentFailureCountFilter = document.querySelector("#document-failure-count-filter");
+const articleProcessingFailureCountFilter = document.querySelector("#article-processing-failure-count-filter");
 const articleProcessingBatchBar = document.querySelector("#article-processing-batch-bar");
 const articleProcessingRetrySelectedButton = document.querySelector("#article-processing-retry-selected-button");
 const articleProcessingRetryFilteredButton = document.querySelector("#article-processing-retry-filtered-button");
@@ -226,6 +228,27 @@ function renderSelectOptions(selectElement, options, emptyLabel) {
   }
 }
 
+function renderFailureCountOptions(selectElement, maxFailureCount) {
+  const previousValue = selectElement.value;
+  selectElement.replaceChildren();
+  const allOption = document.createElement("option");
+  allOption.value = "";
+  allOption.textContent = "全部";
+  selectElement.appendChild(allOption);
+  const max = Number.isFinite(maxFailureCount) ? maxFailureCount : 0;
+  for (let threshold = 1; threshold <= max; threshold += 1) {
+    const option = document.createElement("option");
+    option.value = String(threshold);
+    option.textContent = `≥${threshold} 次`;
+    selectElement.appendChild(option);
+  }
+  if (previousValue && Number(previousValue) <= max) {
+    selectElement.value = previousValue;
+  } else {
+    selectElement.value = "";
+  }
+}
+
 function getRouteQueryParams() {
   const hash = window.location.hash.replace(/^#/, "");
   const [routeName, rawQuery = ""] = hash.split("?");
@@ -275,6 +298,7 @@ async function loadArticleProcessingFilterOptions() {
   );
   renderSelectOptions(articleProcessingStepFilter, payload.steps, "全部阶段");
   renderDependentErrorOptions(payload.error_messages);
+  renderFailureCountOptions(articleProcessingFailureCountFilter, payload.max_failure_count ?? 0);
 }
 
 async function requestBatchArticleRetry(body) {
@@ -591,6 +615,9 @@ function buildDocumentProcessingQueryString() {
   if (documentStatusFilter.value) {
     params.set("status", documentStatusFilter.value);
   }
+  if (documentFailureCountFilter.value) {
+    params.set("min_failure_count", documentFailureCountFilter.value);
+  }
   return params.toString();
 }
 
@@ -602,6 +629,7 @@ function buildArticleProcessingQueryString() {
   if (articleProcessingDateToFilter.value) params.set("publication_date_to", articleProcessingDateToFilter.value);
   if (articleProcessingStepFilter.value) params.set("step", articleProcessingStepFilter.value);
   if (articleProcessingErrorFilter.value) params.set("error_message", articleProcessingErrorFilter.value);
+  if (articleProcessingFailureCountFilter.value) params.set("min_failure_count", articleProcessingFailureCountFilter.value);
   params.set("page", String(currentArticleProcessingPage));
   params.set("page_size", String(page_size));
   return params.toString();
@@ -811,6 +839,7 @@ async function loadDocumentProcessing() {
     : "/api/document-processing";
   const payload = await fetchJson(path);
   renderDocumentList(payload.runs);
+  renderFailureCountOptions(documentFailureCountFilter, payload.max_failure_count ?? 0);
   documentProcessingMeta.textContent = `当前列表共 ${payload.runs.length} 条记录`;
   setStatus("文档处理列表已加载。");
 }

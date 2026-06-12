@@ -170,6 +170,14 @@ class FrontendStaticTests(unittest.TestCase):
         self.assertIn('id="document-processing-filter-form"', index_text)
         self.assertIn("documentProcessingFilterForm", app_text)
 
+    def test_failure_count_filters_present_for_documents_and_articles(self) -> None:
+        index_text = (PROJECT_ROOT / "frontend" / "index.html").read_text()
+        app_text = (PROJECT_ROOT / "frontend" / "app.js").read_text()
+        self.assertIn('id="document-failure-count-filter"', index_text)
+        self.assertIn('id="article-processing-failure-count-filter"', index_text)
+        self.assertIn("renderFailureCountOptions", app_text)
+        self.assertIn("min_failure_count", app_text)
+
 
 if __name__ == "__main__":
     unittest.main()

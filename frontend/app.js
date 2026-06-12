@@ -208,7 +208,20 @@ function renderSummary(overview) {
   });
 }
 
-function renderSelectOptions(selectElement, options, emptyLabel) {
+const ARTICLE_STAGE_LABELS = {
+  await_ad_judgment: "等待广告判断",
+  await_translation: "等待翻译",
+  await_summary: "等待摘要",
+  await_tagging: "等待标签",
+  completed: "完成",
+  classified_as_advertisement: "判定为广告",
+};
+
+function articleStageLabel(step) {
+  return ARTICLE_STAGE_LABELS[step] || step || "";
+}
+
+function renderSelectOptions(selectElement, options, emptyLabel, labelFn) {
   const currentValue = selectElement.value;
   selectElement.replaceChildren();
   const emptyOption = document.createElement("option");
@@ -219,7 +232,7 @@ function renderSelectOptions(selectElement, options, emptyLabel) {
   options.forEach((optionValue) => {
     const option = document.createElement("option");
     option.value = optionValue;
-    option.textContent = optionValue;
+    option.textContent = labelFn ? labelFn(optionValue) : optionValue;
     selectElement.appendChild(option);
   });
 
@@ -296,7 +309,7 @@ async function loadArticleProcessingFilterOptions() {
       ? `/api/article-processing/filter-options?${queryString}`
       : "/api/article-processing/filter-options"
   );
-  renderSelectOptions(articleProcessingStepFilter, payload.steps, "全部阶段");
+  renderSelectOptions(articleProcessingStepFilter, payload.steps, "全部阶段", articleStageLabel);
   renderDependentErrorOptions(payload.error_messages);
   renderFailureCountOptions(articleProcessingFailureCountFilter, payload.max_failure_count ?? 0);
 }
@@ -494,7 +507,7 @@ function renderArticleProcessingList(runs) {
     const node = documentCardTemplate.content.firstElementChild.cloneNode(true);
     node.querySelector(".document-card-key").textContent = run.title_en || run.article_key;
     node.querySelector(".document-card-status").textContent = run.status;
-    node.querySelector(".document-card-step").textContent = run.current_step;
+    node.querySelector(".document-card-step").textContent = articleStageLabel(run.current_step);
     node.querySelector(".document-card-updated-at").textContent =
       run.publication_date || "未知日期";
     node.querySelector(".document-card-summary").textContent =
@@ -540,13 +553,13 @@ function showArticleProcessingDetail(run) {
   articleProcessingDetailView.classList.remove("hidden");
   articleProcessingDetailTitle.textContent = run.title_en || run.article_key;
   articleProcessingDetailMeta.textContent =
-    `状态 ${run.status} · 当前步骤 ${run.current_step}`;
+    `状态 ${run.status} · 当前步骤 ${articleStageLabel(run.current_step)}`;
   articleProcessingDetailErrorSummary.textContent =
     run.latest_error_summary || "当前没有错误。";
   articleProcessingDetailBadges.replaceChildren();
   [
     `status:${run.status}`,
-    `step:${run.current_step}`,
+    `step:${articleStageLabel(run.current_step)}`,
     `failures:${run.automatic_failure_count ?? 0}`,
   ].forEach((badgeText) => {
     const badge = document.createElement("span");

@@ -231,6 +231,12 @@ class OutlineAndDetectionTests(unittest.TestCase):
         with patch("newspaper_translator.economist_edition.PdfReader", return_value=reader):
             self.assertTrue(detect_calibre_economist_edition("any.pdf"))
 
+    def test_detect_true_via_economist_dot_com_text_when_title_neutral(self) -> None:
+        reader = _economist_reader()
+        reader.metadata = {"/Producer": "calibre 9.1.0", "/Title": "Calibre Library"}
+        with patch("newspaper_translator.economist_edition.PdfReader", return_value=reader):
+            self.assertTrue(detect_calibre_economist_edition("any.pdf"))
+
     def test_detect_false_for_non_calibre_pdf(self) -> None:
         reader = _economist_reader()
         reader.metadata = {"/Producer": "Adobe", "/Title": "The Economist"}

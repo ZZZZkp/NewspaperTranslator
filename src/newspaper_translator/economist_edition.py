@@ -180,7 +180,7 @@ class ParsedEdition:
     debug_text: str
 
 
-def extract_outline_entries(reader) -> list[OutlineEntry]:
+def extract_outline_entries(reader: "PdfReader") -> list[OutlineEntry]:
     entries: list[OutlineEntry] = []
 
     def page_of(dest) -> int | None:
@@ -232,7 +232,7 @@ def extract_outline_entries(reader) -> list[OutlineEntry]:
     return entries
 
 
-def extract_article_text(reader, start_page: int, end_page: int) -> tuple[str, str]:
+def extract_article_text(reader: "PdfReader", start_page: int, end_page: int) -> tuple[str, str]:
     parts: list[str] = []
     for page_number in range(start_page, end_page):
         page = reader.pages[page_number - 1]
@@ -240,7 +240,7 @@ def extract_article_text(reader, start_page: int, end_page: int) -> tuple[str, s
     return clean_edition_text("\n".join(parts))
 
 
-def detect_calibre_economist_edition(pdf_path) -> bool:
+def detect_calibre_economist_edition(pdf_path: str | Path) -> bool:
     try:
         reader = PdfReader(str(pdf_path))
         metadata = reader.metadata or {}
@@ -263,7 +263,7 @@ def detect_calibre_economist_edition(pdf_path) -> bool:
         return False
 
 
-def parse_economist_edition(pdf_path) -> ParsedEdition:
+def parse_economist_edition(pdf_path: str | Path) -> ParsedEdition:
     reader = PdfReader(str(pdf_path))
     total_pages = len(reader.pages)
     entries = extract_outline_entries(reader)

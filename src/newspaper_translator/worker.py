@@ -19,8 +19,7 @@ from newspaper_translator.document_processing import (
     run_scheduler_tick,
 )
 from newspaper_translator.deepseek import (
-    DeepSeekArticleSummarizerTagger,
-    DeepSeekArticleTranslator,
+    DeepSeekArticleEnricher,
     DeepSeekContinuationMatcher,
 )
 from newspaper_translator.gmail import import_from_gmail
@@ -204,8 +203,6 @@ def build_process_one_document_from_env(env: dict[str, str]):
 
     mineru_client = MineruClient(settings=mineru_settings)
     continuation_matcher = _build_continuation_matcher_from_env(env)
-    translator = DeepSeekArticleTranslator(settings=deepseek_settings)
-    summarizer_tagger = DeepSeekArticleSummarizerTagger(settings=deepseek_settings)
 
     def process_one_document_callback(*, document_key: str, scheduler_run_id: str, locked_by: str):
         return process_document(
@@ -219,8 +216,6 @@ def build_process_one_document_from_env(env: dict[str, str]):
             parser_version=mineru_settings.model_version,
             continuation_matcher_name=_continuation_matcher_name_from_env(env),
             continuation_matcher_version=_continuation_matcher_version_from_env(env),
-            translator=translator,
-            summarizer_tagger=summarizer_tagger,
             provider_name="deepseek",
             model_name=deepseek_settings.model,
             prompt_version=prompt_version,
@@ -257,6 +252,11 @@ def build_process_one_article_from_env(env: dict[str, str]):
         "STEP_RETRY_LIMIT",
         default=2,
     )
+    enrichment_step_retry_limit = _read_int_setting(
+        env,
+        "ENRICHMENT_STEP_RETRY_LIMIT",
+        default=2,
+    )
     lock_timeout_seconds = _read_int_setting(
         env,
         "ARTICLE_LOCK_TIMEOUT_SECONDS",
@@ -266,16 +266,17 @@ def build_process_one_article_from_env(env: dict[str, str]):
         env.get("ARTICLE_ENRICHMENT_PROMPT_VERSION", "article-enrichment-v2").strip()
         or "article-enrichment-v2"
     )
-    translator = DeepSeekArticleTranslator(settings=deepseek_settings)
-    summarizer_tagger = DeepSeekArticleSummarizerTagger(settings=deepseek_settings)
+    enricher = DeepSeekArticleEnricher(
+        settings=deepseek_settings,
+        step_retry_limit=enrichment_step_retry_limit,
+    )
 
     def process_one_article_callback(*, article_key: str, locked_by: str):
         return process_article_processing_run(
             database_url=app_settings.database_url,
             article_key=article_key,
             locked_by=locked_by,
-            translator=translator,
-            summarizer_tagger=summarizer_tagger,
+            enricher=enricher,
             provider_name="deepseek",
             model_name=deepseek_settings.model,
             prompt_version=prompt_version,

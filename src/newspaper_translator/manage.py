@@ -25,8 +25,7 @@ from newspaper_translator.document_processing import (
     run_scheduler_tick,
 )
 from newspaper_translator.deepseek import (
-    DeepSeekArticleSummarizerTagger,
-    DeepSeekArticleTranslator,
+    DeepSeekArticleEnricher,
     DeepSeekContinuationMatcher,
 )
 from newspaper_translator.import_audit import (
@@ -259,8 +258,10 @@ def run_cli(argv: list[str]) -> tuple[int, str]:
         enrichment_run = enrich_article(
             database_url=_resolve_setting(args.database_url, "DATABASE_URL"),
             article_id=args.article_id,
-            translator=DeepSeekArticleTranslator(settings=deepseek_settings),
-            summarizer_tagger=DeepSeekArticleSummarizerTagger(settings=deepseek_settings),
+            enricher=DeepSeekArticleEnricher(
+                settings=deepseek_settings,
+                step_retry_limit=int(os.environ.get("ENRICHMENT_STEP_RETRY_LIMIT", "2")),
+            ),
             provider_name="deepseek",
             model_name=deepseek_settings.model,
             prompt_version="article-enrichment-v2",

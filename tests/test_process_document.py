@@ -13,10 +13,8 @@ if str(TESTS_ROOT) not in sys.path:
 
 from _document_processing_helpers import (
     DocumentProcessingTestMixin,
-    _FakeTranslator,
-    _SelectiveFailingTranslator,
-    _FakeSummarizerTagger,
-    _FailingSummarizerTagger,
+    _FakeEnricher,
+    _SelectiveFailingEnricher,
     _FakeMineruClient,
     run_pending_migrations,
     create_document_processing_run,
@@ -233,8 +231,7 @@ class ProcessDocumentTests(DocumentProcessingTestMixin, unittest.TestCase):
             runs = enrich_document_articles(
                 database_url=database_url,
                 document_key=document_key,
-                translator=_FakeTranslator(),
-                summarizer_tagger=_FakeSummarizerTagger(),
+                enricher=_FakeEnricher(),
                 provider_name="gemini",
                 model_name="gemini-2.5-flash",
                 prompt_version="article-enrichment-v1",
@@ -278,10 +275,9 @@ class ProcessDocumentTests(DocumentProcessingTestMixin, unittest.TestCase):
                 enrich_document_articles(
                     database_url=database_url,
                     document_key=document_key,
-                    translator=_SelectiveFailingTranslator(
+                    enricher=_SelectiveFailingEnricher(
                         failing_titles={"First article title"},
                     ),
-                    summarizer_tagger=_FakeSummarizerTagger(),
                     provider_name="gemini",
                     model_name="gemini-2.5-flash",
                     prompt_version="article-enrichment-v1",

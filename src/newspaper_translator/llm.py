@@ -49,14 +49,14 @@ class ChatJsonClient:
         self._transport = transport or UrllibTransport()
 
     def complete_json_text(self, prompt: str) -> str:
+        return self.complete_json_text_messages(
+            [{"role": "user", "content": prompt}]
+        )
+
+    def complete_json_text_messages(self, messages: list[dict[str, str]]) -> str:
         payload = {
             "model": self._settings.model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
+            "messages": messages,
             "temperature": 0,
             "response_format": {
                 "type": "json_object",
@@ -74,10 +74,10 @@ class ChatJsonClient:
         )
         if response.status_code < 200 or response.status_code >= 300:
             raise LlmProviderError(f"LLM request failed with status {response.status_code}")
-        response_payload = json.loads(response.body.decode("utf-8"))
         try:
+            response_payload = json.loads(response.body.decode("utf-8"))
             text = response_payload["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
+        except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
             raise LlmProviderError("LLM response did not contain a valid text choice") from exc
         if not isinstance(text, str) or not text.strip():
             raise LlmProviderError("LLM response text choice was empty")

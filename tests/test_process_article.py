@@ -14,9 +14,7 @@ if str(TESTS_ROOT) not in sys.path:
 
 from _document_processing_helpers import (
     DocumentProcessingTestMixin,
-    _FakeTranslator,
-    _FakeSummarizerTagger,
-    _FailingSummarizerTagger,
+    _FakeEnricher,
     run_pending_migrations,
     create_article_processing_run,
     claim_article_processing_run,
@@ -30,8 +28,7 @@ from _document_processing_helpers import (
     create_document_processing_run,
     claim_document_processing_run,
     get_document_processing_run,
-    ArticleTranslationResult,
-    ArticleSummaryTagResult,
+    EnrichmentResult,
 )
 
 
@@ -42,8 +39,7 @@ class ProcessArticleTests(DocumentProcessingTestMixin, unittest.TestCase):
         self.assertIsNotNone(process_article_processing_run)
         self.assertIsNotNone(get_article_processing_run)
         self.assertIsNotNone(list_latest_document_articles)
-        self.assertIsNotNone(ArticleTranslationResult)
-        self.assertIsNotNone(ArticleSummaryTagResult)
+        self.assertIsNotNone(EnrichmentResult)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = pathlib.Path(temp_dir) / "app.db"
@@ -70,15 +66,18 @@ class ProcessArticleTests(DocumentProcessingTestMixin, unittest.TestCase):
                 database_url=database_url,
                 article_key=article.article_key,
                 locked_by="article-worker-1",
-                translator=lambda _article: ArticleTranslationResult(
+                enricher=lambda _article, on_step_advance=None: EnrichmentResult(
                     content_type="article",
-                    classification_reason="Regular newspaper article.",
+                    classification_reason="ok",
+                    translation_status="succeeded",
+                    summary_status="succeeded",
+                    tagging_status="succeeded",
                     translated_title_zh="标题",
                     translated_body_zh="正文",
-                ),
-                summarizer_tagger=lambda **kwargs: ArticleSummaryTagResult(
-                    summary_zh="摘要",
-                    tags=["能源", "市场", "国际"],
+                    summary_zh="摘要。",
+                    tags=["a", "b", "c"],
+                    failed_step=None,
+                    error_message=None,
                 ),
                 provider_name="gemini",
                 model_name="gemini-2.5-flash",
@@ -112,8 +111,7 @@ class ProcessArticleTests(DocumentProcessingTestMixin, unittest.TestCase):
         self.assertIsNotNone(process_article_processing_run)
         self.assertIsNotNone(get_article_processing_run)
         self.assertIsNotNone(list_latest_document_articles)
-        self.assertIsNotNone(ArticleTranslationResult)
-        self.assertIsNotNone(ArticleSummaryTagResult)
+        self.assertIsNotNone(EnrichmentResult)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = pathlib.Path(temp_dir) / "app.db"
@@ -140,15 +138,18 @@ class ProcessArticleTests(DocumentProcessingTestMixin, unittest.TestCase):
                     database_url=database_url,
                     article_key=article.article_key,
                     locked_by=f"article-worker:{article.article_order}",
-                    translator=lambda _article: ArticleTranslationResult(
+                    enricher=lambda _article, on_step_advance=None: EnrichmentResult(
                         content_type="article",
-                        classification_reason="Regular newspaper article.",
+                        classification_reason="ok",
+                        translation_status="succeeded",
+                        summary_status="succeeded",
+                        tagging_status="succeeded",
                         translated_title_zh="标题",
                         translated_body_zh="正文",
-                    ),
-                    summarizer_tagger=lambda **kwargs: ArticleSummaryTagResult(
-                        summary_zh="摘要",
-                        tags=["能源", "市场", "国际"],
+                        summary_zh="摘要。",
+                        tags=["a", "b", "c"],
+                        failed_step=None,
+                        error_message=None,
                     ),
                     provider_name="gemini",
                     model_name="gemini-2.5-flash",
@@ -200,8 +201,7 @@ class ProcessArticleTests(DocumentProcessingTestMixin, unittest.TestCase):
         self.assertIsNotNone(process_article_processing_run)
         self.assertIsNotNone(request_manual_article_retry)
         self.assertIsNotNone(list_latest_document_articles)
-        self.assertIsNotNone(ArticleTranslationResult)
-        self.assertIsNotNone(ArticleSummaryTagResult)
+        self.assertIsNotNone(EnrichmentResult)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = pathlib.Path(temp_dir) / "app.db"
@@ -223,28 +223,32 @@ class ProcessArticleTests(DocumentProcessingTestMixin, unittest.TestCase):
                 database_url=database_url,
                 article_id=article.article_id,
             )
-            translator_calls: list[str] = []
+            enricher_calls: list[str] = []
 
-            def translator(_article):
-                translator_calls.append("called")
-                return ArticleTranslationResult(
+            def enricher(_article, *, on_step_advance=None):
+                enricher_calls.append("called")
+                if on_step_advance is not None:
+                    for step in ("ad_judgment", "translation", "summary", "tagging"):
+                        on_step_advance(step)
+                return EnrichmentResult(
                     content_type="article",
-                    classification_reason="Regular newspaper article.",
+                    classification_reason="ok",
+                    translation_status="succeeded",
+                    summary_status="succeeded",
+                    tagging_status="succeeded",
                     translated_title_zh="标题",
                     translated_body_zh="正文",
+                    summary_zh="摘要。",
+                    tags=["a", "b", "c"],
+                    failed_step=None,
+                    error_message=None,
                 )
-
-            summarizer = lambda **kwargs: ArticleSummaryTagResult(
-                summary_zh="摘要",
-                tags=["能源", "市场", "国际"],
-            )
 
             first_run = process_article_processing_run(
                 database_url=database_url,
                 article_key=article.article_key,
                 locked_by="article-worker-1",
-                translator=translator,
-                summarizer_tagger=summarizer,
+                enricher=enricher,
                 provider_name="gemini",
                 model_name="gemini-2.5-flash",
                 prompt_version="article-enrichment-v2",
@@ -258,8 +262,7 @@ class ProcessArticleTests(DocumentProcessingTestMixin, unittest.TestCase):
                 database_url=database_url,
                 article_key=article.article_key,
                 locked_by="article-worker-2",
-                translator=translator,
-                summarizer_tagger=summarizer,
+                enricher=enricher,
                 provider_name="gemini",
                 model_name="gemini-2.5-flash",
                 prompt_version="article-enrichment-v2",
@@ -268,7 +271,7 @@ class ProcessArticleTests(DocumentProcessingTestMixin, unittest.TestCase):
 
         self.assertEqual(first_run.status, "succeeded")
         self.assertEqual(second_run.status, "succeeded")
-        self.assertEqual(len(translator_calls), 2)
+        self.assertEqual(len(enricher_calls), 2)
 
     def test_recover_stale_article_runs_marks_stale_running_articles_retryable_or_terminal(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
@@ -366,7 +369,7 @@ class ProcessArticleTests(DocumentProcessingTestMixin, unittest.TestCase):
         )
         self.assertEqual(retryable_run.status, "failed_retryable")
         self.assertEqual(retryable_run.automatic_failure_count, 1)
-        self.assertEqual(retryable_run.current_step, "enrich")
+        self.assertEqual(retryable_run.current_step, "await_ad_judgment")
         self.assertIn("stale running timeout", retryable_run.last_error_message)
         self.assertEqual(terminal_run.status, "failed_terminal")
         self.assertEqual(terminal_run.automatic_failure_count, 2)
@@ -486,6 +489,103 @@ class ProcessArticleTests(DocumentProcessingTestMixin, unittest.TestCase):
             )
 
         self.assertEqual(log_events, [f"document.recovered_stale:{document_key}"])
+
+    def test_process_article_processing_run_reaches_completed_stage_on_success(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            self._persist_parsed_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            article = list_latest_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )[0]
+            create_article_processing_run(
+                database_url=database_url,
+                article_id=article.article_id,
+            )
+
+            process_article_processing_run(
+                database_url=database_url,
+                article_key=article.article_key,
+                locked_by="article-worker-1",
+                enricher=_FakeEnricher(),
+                provider_name="gemini",
+                model_name="gemini-2.5-flash",
+                prompt_version="article-enrichment-v2",
+                lock_timeout_seconds=600,
+            )
+            stored_run = get_article_processing_run(
+                database_url=database_url,
+                article_key=article.article_key,
+            )
+
+        self.assertEqual(stored_run.status, "succeeded")
+        self.assertEqual(stored_run.current_step, "completed")
+
+    def test_process_article_processing_run_reaches_advertisement_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            document_key = self._insert_document(
+                database_path,
+                "message-1:attachment-1:hash-1",
+            )
+            self._persist_parsed_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )
+            article = list_latest_document_articles(
+                database_url=database_url,
+                document_key=document_key,
+            )[0]
+            create_article_processing_run(
+                database_url=database_url,
+                article_id=article.article_id,
+            )
+
+            def advertisement_enricher(_article, *, on_step_advance=None):
+                if on_step_advance is not None:
+                    on_step_advance("ad_judgment")
+                return EnrichmentResult(
+                    content_type="advertisement",
+                    classification_reason="Promotional content.",
+                    translation_status="skipped",
+                    summary_status="skipped",
+                    tagging_status="skipped",
+                    translated_title_zh=None,
+                    translated_body_zh=None,
+                    summary_zh=None,
+                    tags=[],
+                    failed_step=None,
+                    error_message=None,
+                )
+
+            process_article_processing_run(
+                database_url=database_url,
+                article_key=article.article_key,
+                locked_by="article-worker-1",
+                enricher=advertisement_enricher,
+                provider_name="gemini",
+                model_name="gemini-2.5-flash",
+                prompt_version="article-enrichment-v2",
+                lock_timeout_seconds=600,
+            )
+            stored_run = get_article_processing_run(
+                database_url=database_url,
+                article_key=article.article_key,
+            )
+
+        self.assertEqual(stored_run.status, "succeeded")
+        self.assertEqual(stored_run.current_step, "classified_as_advertisement")
 
 
 if __name__ == "__main__":

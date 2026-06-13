@@ -13,6 +13,45 @@ from newspaper_translator.database import sqlite_path_from_database_url
 from newspaper_translator.mineru import MineruRateLimitError
 
 
+ARTICLE_STAGE_AWAIT_AD_JUDGMENT = "await_ad_judgment"
+ARTICLE_STAGE_AWAIT_TRANSLATION = "await_translation"
+ARTICLE_STAGE_AWAIT_SUMMARY = "await_summary"
+ARTICLE_STAGE_AWAIT_TAGGING = "await_tagging"
+ARTICLE_STAGE_COMPLETED = "completed"
+ARTICLE_STAGE_ADVERTISEMENT = "classified_as_advertisement"
+
+_ENRICH_STEP_TO_ARTICLE_STAGE = {
+    "ad_judgment": ARTICLE_STAGE_AWAIT_AD_JUDGMENT,
+    "translation": ARTICLE_STAGE_AWAIT_TRANSLATION,
+    "summary": ARTICLE_STAGE_AWAIT_SUMMARY,
+    "tagging": ARTICLE_STAGE_AWAIT_TAGGING,
+}
+
+
+def advance_article_processing_step(
+    *,
+    database_url: str,
+    article_key: str,
+    current_step: str,
+) -> None:
+    def callback():
+        connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
+        try:
+            connection.execute(
+                """
+                UPDATE article_processing_runs
+                SET current_step = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE article_key = ?
+                """,
+                (current_step, article_key),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    _run_with_database_retries(callback)
+
+
 @dataclass(frozen=True)
 class ProcessingTickResult:
     scheduler_run_id: str | None
@@ -336,7 +375,7 @@ def create_article_processing_run(
                         article_key,
                         article_id,
                         "pending",
-                        "enrich",
+                        "await_ad_judgment",
                     ),
                 )
             else:
@@ -363,7 +402,6 @@ def create_article_processing_run(
                         SET
                             article_id = ?,
                             status = 'succeeded',
-                            current_step = 'completed',
                             locked_by = NULL,
                             lock_expires_at = NULL,
                             updated_at = CURRENT_TIMESTAMP
@@ -381,7 +419,7 @@ def create_article_processing_run(
                         SET
                             article_id = ?,
                             status = 'pending',
-                            current_step = 'enrich',
+                            current_step = 'await_ad_judgment',
                             automatic_failure_count = 0,
                             last_error_message = NULL,
                             last_attempt_started_at = NULL,
@@ -1253,6 +1291,7 @@ def succeed_article_processing_run(
     database_url: str,
     article_key: str,
     last_success_input_hash: str,
+    current_step: str = "completed",
 ) -> ArticleProcessingRun:
     def callback():
         connection = sqlite3.connect(sqlite_path_from_database_url(database_url))
@@ -1262,7 +1301,7 @@ def succeed_article_processing_run(
                 UPDATE article_processing_runs
                 SET
                     status = 'succeeded',
-                    current_step = 'completed',
+                    current_step = ?,
                     last_success_input_hash = ?,
                     last_attempt_finished_at = CURRENT_TIMESTAMP,
                     locked_by = NULL,
@@ -1271,6 +1310,7 @@ def succeed_article_processing_run(
                 WHERE article_key = ?
                 """,
                 (
+                    current_step,
                     last_success_input_hash,
                     article_key,
                 ),
@@ -1293,8 +1333,7 @@ def process_article_processing_run(
     database_url: str,
     article_key: str,
     locked_by: str,
-    translator,
-    summarizer_tagger,
+    enricher,
     provider_name: str,
     model_name: str,
     prompt_version: str,
@@ -1324,31 +1363,51 @@ def process_article_processing_run(
     if not owns_run:
         return claimed_run
 
+    last_stage = {"value": ARTICLE_STAGE_AWAIT_AD_JUDGMENT}
+
+    def _on_step_advance(step_key: str) -> None:
+        stage = _ENRICH_STEP_TO_ARTICLE_STAGE[step_key]
+        last_stage["value"] = stage
+        advance_article_processing_step(
+            database_url=database_url,
+            article_key=article_key,
+            current_step=stage,
+        )
+
     enrichment_run = enrich_article(
         database_url=database_url,
         article_id=claimed_run.article_id,
-        translator=translator,
-        summarizer_tagger=summarizer_tagger,
+        enricher=enricher,
         provider_name=provider_name,
         model_name=model_name,
         prompt_version=prompt_version,
+        on_step_advance=_on_step_advance,
         force_reenrich=bool(
             existing_run is not None
             and existing_run.status in ("manual_retry_requested", "running_manual_retry")
         ),
     )
-    if enrichment_run.status in ("succeeded", "skipped_advertisement"):
+    if enrichment_run.status == "skipped_advertisement":
         return succeed_article_processing_run(
             database_url=database_url,
             article_key=article_key,
             last_success_input_hash=enrichment_run.input_hash,
+            current_step=ARTICLE_STAGE_ADVERTISEMENT,
+        )
+    if enrichment_run.status == "succeeded":
+        return succeed_article_processing_run(
+            database_url=database_url,
+            article_key=article_key,
+            last_success_input_hash=enrichment_run.input_hash,
+            current_step=ARTICLE_STAGE_COMPLETED,
         )
 
     return fail_article_processing_run(
         database_url=database_url,
         article_key=article_key,
-        failed_step="enrich",
-        error_message=enrichment_run.error_message or f"article enrichment ended with status {enrichment_run.status}",
+        failed_step=last_stage["value"],
+        error_message=enrichment_run.error_message
+        or f"article enrichment ended with status {enrichment_run.status}",
         automatic_failure_limit=automatic_failure_limit,
     )
 
@@ -1422,8 +1481,6 @@ def process_document(
     continuation_matcher_name: str = "",
     continuation_matcher_version: str = "",
     enrich_document=None,
-    translator=None,
-    summarizer_tagger=None,
     provider_name: str = "",
     model_name: str = "",
     prompt_version: str = "",
@@ -1725,8 +1782,7 @@ def enrich_document_articles(
     *,
     database_url: str,
     document_key: str,
-    translator,
-    summarizer_tagger,
+    enricher,
     provider_name: str,
     model_name: str,
     prompt_version: str,
@@ -1744,8 +1800,7 @@ def enrich_document_articles(
         run = enrich_article(
             database_url=database_url,
             article_id=article.article_id,
-            translator=translator,
-            summarizer_tagger=summarizer_tagger,
+            enricher=enricher,
             provider_name=provider_name,
             model_name=model_name,
             prompt_version=prompt_version,
@@ -1915,11 +1970,15 @@ def recover_stale_article_runs(
 
     recovered_runs = []
     for row in rows:
+        stale_run = get_article_processing_run(
+            database_url=database_url,
+            article_key=row[0],
+        )
         recovered_runs.append(
             fail_article_processing_run(
                 database_url=database_url,
-                article_key=row[0],
-                failed_step="enrich",
+                article_key=stale_run.article_key,
+                failed_step=stale_run.current_step,
                 error_message="stale running timeout during automatic recovery",
                 automatic_failure_limit=automatic_failure_limit,
             )

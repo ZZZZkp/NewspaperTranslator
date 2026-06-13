@@ -199,31 +199,27 @@ class WorkerStartupTests(unittest.TestCase):
                 with patch("newspaper_translator.worker.process_document") as process_document:
                     with patch("newspaper_translator.worker.MineruClient") as mineru_client_class:
                         with patch("newspaper_translator.worker.DeepSeekContinuationMatcher") as matcher_class:
-                            with patch("newspaper_translator.worker.DeepSeekArticleTranslator") as translator_class:
-                                with patch("newspaper_translator.worker.DeepSeekArticleSummarizerTagger") as summarizer_class:
-                                    with patch("newspaper_translator.worker.run_scheduler_tick") as run_scheduler_tick:
-                                        import_from_gmail.return_value = SimpleNamespace(run_id="import-run-1")
-                                        process_document.return_value = SimpleNamespace(status="succeeded")
-                                        mineru_client_class.return_value = SimpleNamespace(name="mineru-client")
-                                        matcher_class.return_value = SimpleNamespace(name="continuation-matcher")
-                                        translator_class.return_value = SimpleNamespace(name="translator")
-                                        summarizer_class.return_value = SimpleNamespace(name="summarizer")
+                            with patch("newspaper_translator.worker.run_scheduler_tick") as run_scheduler_tick:
+                                import_from_gmail.return_value = SimpleNamespace(run_id="import-run-1")
+                                process_document.return_value = SimpleNamespace(status="succeeded")
+                                mineru_client_class.return_value = SimpleNamespace(name="mineru-client")
+                                matcher_class.return_value = SimpleNamespace(name="continuation-matcher")
 
-                                        def fake_run_scheduler_tick(**kwargs):
-                                            import_result = kwargs["import_documents"]()
-                                            self.assertEqual(import_result.run_id, "import-run-1")
-                                            process_result = kwargs["process_one_document"](
-                                                document_key="message-1:attachment-1:hash-1",
-                                                scheduler_run_id="scheduler-run-1",
-                                                locked_by="scheduler-worker-1",
-                                            )
-                                            self.assertEqual(process_result.status, "succeeded")
-                                            return SimpleNamespace(scheduler_run_id="scheduler-run-1")
+                                def fake_run_scheduler_tick(**kwargs):
+                                    import_result = kwargs["import_documents"]()
+                                    self.assertEqual(import_result.run_id, "import-run-1")
+                                    process_result = kwargs["process_one_document"](
+                                        document_key="message-1:attachment-1:hash-1",
+                                        scheduler_run_id="scheduler-run-1",
+                                        locked_by="scheduler-worker-1",
+                                    )
+                                    self.assertEqual(process_result.status, "succeeded")
+                                    return SimpleNamespace(scheduler_run_id="scheduler-run-1")
 
-                                        run_scheduler_tick.side_effect = fake_run_scheduler_tick
+                                run_scheduler_tick.side_effect = fake_run_scheduler_tick
 
-                                        run_tick = build_run_scheduler_tick_from_env(env)
-                                        scheduler_run_id = run_tick(trigger_type="interval")
+                                run_tick = build_run_scheduler_tick_from_env(env)
+                                scheduler_run_id = run_tick(trigger_type="interval")
 
         self.assertEqual(scheduler_run_id, "scheduler-run-1")
         self.assertEqual(import_from_gmail.call_args.kwargs["config_path"], pathlib.Path("/tmp/gmail-config.json"))
@@ -241,8 +237,6 @@ class WorkerStartupTests(unittest.TestCase):
         self.assertEqual(process_document.call_args.kwargs["provider_name"], "deepseek")
         self.assertEqual(process_document.call_args.kwargs["model_name"], "deepseek-chat")
         self.assertEqual(process_document.call_args.kwargs["prompt_version"], "article-enrichment-v2")
-        self.assertEqual(process_document.call_args.kwargs["translator"].name, "translator")
-        self.assertEqual(process_document.call_args.kwargs["summarizer_tagger"].name, "summarizer")
         self.assertEqual(process_document.call_args.kwargs["continuation_matcher"].name, "continuation-matcher")
 
     def test_build_run_article_processing_tick_from_env_wires_deepseek_dependencies(self) -> None:
@@ -258,30 +252,27 @@ class WorkerStartupTests(unittest.TestCase):
         }
 
         with patch("newspaper_translator.worker.process_article_processing_run") as process_article:
-            with patch("newspaper_translator.worker.DeepSeekArticleTranslator") as translator_class:
-                with patch("newspaper_translator.worker.DeepSeekArticleSummarizerTagger") as summarizer_class:
-                    with patch("newspaper_translator.worker.run_article_processing_drain") as drain:
-                        translator_class.return_value = SimpleNamespace(name="translator")
-                        summarizer_class.return_value = SimpleNamespace(name="summarizer")
-                        process_article.return_value = SimpleNamespace(status="succeeded")
+            with patch("newspaper_translator.worker.DeepSeekArticleEnricher") as enricher_class:
+                with patch("newspaper_translator.worker.run_article_processing_drain") as drain:
+                    enricher_class.return_value = SimpleNamespace(name="enricher")
+                    process_article.return_value = SimpleNamespace(status="succeeded")
 
-                        def fake_drain(**kwargs):
-                            result = kwargs["process_one_article"](
-                                article_key="article-key-1",
-                                locked_by="worker-1",
-                            )
-                            self.assertEqual(result.status, "succeeded")
-                            return SimpleNamespace(did_work=True)
+                    def fake_drain(**kwargs):
+                        result = kwargs["process_one_article"](
+                            article_key="article-key-1",
+                            locked_by="worker-1",
+                        )
+                        self.assertEqual(result.status, "succeeded")
+                        return SimpleNamespace(did_work=True)
 
-                        drain.side_effect = fake_drain
+                    drain.side_effect = fake_drain
 
-                        run_tick = build_run_article_processing_tick_from_env(env)
-                        run_tick()
+                    run_tick = build_run_article_processing_tick_from_env(env)
+                    run_tick()
 
         self.assertEqual(process_article.call_args.kwargs["provider_name"], "deepseek")
         self.assertEqual(process_article.call_args.kwargs["model_name"], "deepseek-chat")
-        self.assertEqual(process_article.call_args.kwargs["translator"].name, "translator")
-        self.assertEqual(process_article.call_args.kwargs["summarizer_tagger"].name, "summarizer")
+        self.assertEqual(process_article.call_args.kwargs["enricher"].name, "enricher")
 
     def test_worker_loop_runs_processing_each_poll_without_overdue_import(self) -> None:
         self.assertIsNotNone(run_worker_loop)

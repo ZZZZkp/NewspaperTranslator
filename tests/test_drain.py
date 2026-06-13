@@ -17,8 +17,7 @@ if str(TESTS_ROOT) not in sys.path:
 
 from _document_processing_helpers import (
     DocumentProcessingTestMixin,
-    _FakeTranslator,
-    _FakeSummarizerTagger,
+    _FakeEnricher,
     create_scheduler_run,
     run_pending_migrations,
     document_processing_module,
@@ -35,8 +34,7 @@ from _document_processing_helpers import (
     process_article_processing_run,
     list_latest_document_articles,
     request_manual_article_retry,
-    ArticleTranslationResult,
-    ArticleSummaryTagResult,
+    EnrichmentResult,
 )
 
 
@@ -1012,8 +1010,7 @@ class DrainTests(DocumentProcessingTestMixin, unittest.TestCase):
                     database_url=database_url,
                     article_key=article.article_key,
                     locked_by="article-worker-1",
-                    translator=_FakeTranslator(),
-                    summarizer_tagger=_FakeSummarizerTagger(),
+                    enricher=_FakeEnricher(),
                     provider_name="gemini",
                     model_name="gemini-2.5-flash",
                     prompt_version="article-enrichment-v2",
@@ -1072,8 +1069,8 @@ class DrainTests(DocumentProcessingTestMixin, unittest.TestCase):
                     nonlocal success_write_lock_failures
                     if (
                         "UPDATE article_processing_runs" in sql
-                        and len(parameters) == 2
-                        and parameters[1] == article.article_key
+                        and len(parameters) == 3
+                        and parameters[2] == article.article_key
                         and "status = 'succeeded'" in sql
                         and success_write_lock_failures == 0
                     ):
@@ -1105,8 +1102,7 @@ class DrainTests(DocumentProcessingTestMixin, unittest.TestCase):
                             database_url=database_url,
                             article_key=article.article_key,
                             locked_by="article-worker-1",
-                            translator=_FakeTranslator(),
-                            summarizer_tagger=_FakeSummarizerTagger(),
+                            enricher=_FakeEnricher(),
                             provider_name="gemini",
                             model_name="gemini-2.5-flash",
                             prompt_version="article-enrichment-v2",
@@ -1166,7 +1162,7 @@ class DrainTests(DocumentProcessingTestMixin, unittest.TestCase):
                 def __getattr__(self, name: str):
                     return getattr(self._connection, name)
 
-            failing_translator = mock.Mock(side_effect=RuntimeError("translation timeout"))
+            failing_enricher = mock.Mock(side_effect=RuntimeError("translation timeout"))
 
             with mock.patch.object(
                 document_processing_module,
@@ -1184,8 +1180,7 @@ class DrainTests(DocumentProcessingTestMixin, unittest.TestCase):
                         database_url=database_url,
                         article_key=article.article_key,
                         locked_by="article-worker-1",
-                        translator=failing_translator,
-                        summarizer_tagger=_FakeSummarizerTagger(),
+                        enricher=failing_enricher,
                         provider_name="gemini",
                         model_name="gemini-2.5-flash",
                         prompt_version="article-enrichment-v2",
@@ -1321,8 +1316,7 @@ class DrainTests(DocumentProcessingTestMixin, unittest.TestCase):
         self.assertIsNotNone(get_article_processing_run)
         self.assertIsNotNone(process_article_processing_run)
         self.assertIsNotNone(list_latest_document_articles)
-        self.assertIsNotNone(ArticleTranslationResult)
-        self.assertIsNotNone(ArticleSummaryTagResult)
+        self.assertIsNotNone(EnrichmentResult)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = pathlib.Path(temp_dir) / "app.db"
@@ -1363,15 +1357,18 @@ class DrainTests(DocumentProcessingTestMixin, unittest.TestCase):
                         database_url=database_url,
                         article_key=article_key,
                         locked_by=locked_by,
-                        translator=lambda _article: ArticleTranslationResult(
+                        enricher=lambda _article, on_step_advance=None: EnrichmentResult(
                             content_type="article",
-                            classification_reason="Regular newspaper article.",
+                            classification_reason="ok",
+                            translation_status="succeeded",
+                            summary_status="succeeded",
+                            tagging_status="succeeded",
                             translated_title_zh="标题",
                             translated_body_zh="正文",
-                        ),
-                        summarizer_tagger=lambda **kwargs: ArticleSummaryTagResult(
-                            summary_zh="摘要",
-                            tags=["能源", "市场", "国际"],
+                            summary_zh="摘要。",
+                            tags=["a", "b", "c"],
+                            failed_step=None,
+                            error_message=None,
                         ),
                         provider_name="gemini",
                         model_name="gemini-2.5-flash",
@@ -1417,8 +1414,7 @@ class DrainTests(DocumentProcessingTestMixin, unittest.TestCase):
         self.assertIsNotNone(get_article_processing_run)
         self.assertIsNotNone(process_article_processing_run)
         self.assertIsNotNone(list_latest_document_articles)
-        self.assertIsNotNone(ArticleTranslationResult)
-        self.assertIsNotNone(ArticleSummaryTagResult)
+        self.assertIsNotNone(EnrichmentResult)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = pathlib.Path(temp_dir) / "app.db"
@@ -1440,28 +1436,32 @@ class DrainTests(DocumentProcessingTestMixin, unittest.TestCase):
                 database_url=database_url,
                 article_id=article.article_id,
             )
-            translator_calls: list[str] = []
+            enricher_calls: list[str] = []
 
-            def translator(_article):
-                translator_calls.append("called")
-                return ArticleTranslationResult(
+            def enricher(_article, *, on_step_advance=None):
+                enricher_calls.append("called")
+                if on_step_advance is not None:
+                    for step in ("ad_judgment", "translation", "summary", "tagging"):
+                        on_step_advance(step)
+                return EnrichmentResult(
                     content_type="article",
-                    classification_reason="Regular newspaper article.",
+                    classification_reason="ok",
+                    translation_status="succeeded",
+                    summary_status="succeeded",
+                    tagging_status="succeeded",
                     translated_title_zh="标题",
                     translated_body_zh="正文",
+                    summary_zh="摘要。",
+                    tags=["a", "b", "c"],
+                    failed_step=None,
+                    error_message=None,
                 )
-
-            summarizer = lambda **kwargs: ArticleSummaryTagResult(
-                summary_zh="摘要",
-                tags=["能源", "市场", "国际"],
-            )
 
             first_run = process_article_processing_run(
                 database_url=database_url,
                 article_key=article.article_key,
                 locked_by="article-worker-1",
-                translator=translator,
-                summarizer_tagger=summarizer,
+                enricher=enricher,
                 provider_name="gemini",
                 model_name="gemini-2.5-flash",
                 prompt_version="article-enrichment-v2",
@@ -1477,8 +1477,7 @@ class DrainTests(DocumentProcessingTestMixin, unittest.TestCase):
                     database_url=database_url,
                     article_key=article_key,
                     locked_by=locked_by,
-                    translator=translator,
-                    summarizer_tagger=summarizer,
+                    enricher=enricher,
                     provider_name="gemini",
                     model_name="gemini-2.5-flash",
                     prompt_version="article-enrichment-v2",
@@ -1497,7 +1496,7 @@ class DrainTests(DocumentProcessingTestMixin, unittest.TestCase):
         self.assertEqual(drain_result.completed_count, 1)
         self.assertEqual(drain_result.failed_count, 0)
         self.assertEqual(stored_run.status, "succeeded")
-        self.assertEqual(len(translator_calls), 2)
+        self.assertEqual(len(enricher_calls), 2)
 
     def test_article_processing_drain_skips_contended_claim_before_submit(self) -> None:
         self.assertIsNotNone(run_pending_migrations)
@@ -1507,8 +1506,7 @@ class DrainTests(DocumentProcessingTestMixin, unittest.TestCase):
         self.assertIsNotNone(process_article_processing_run)
         self.assertIsNotNone(claim_article_processing_run)
         self.assertIsNotNone(list_latest_document_articles)
-        self.assertIsNotNone(ArticleTranslationResult)
-        self.assertIsNotNone(ArticleSummaryTagResult)
+        self.assertIsNotNone(EnrichmentResult)
         self.assertIsNotNone(document_processing_module)
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1554,15 +1552,18 @@ class DrainTests(DocumentProcessingTestMixin, unittest.TestCase):
                     database_url=database_url,
                     article_key=article_key,
                     locked_by=locked_by,
-                    translator=lambda _article: ArticleTranslationResult(
+                    enricher=lambda _article, on_step_advance=None: EnrichmentResult(
                         content_type="article",
-                        classification_reason="Regular newspaper article.",
+                        classification_reason="ok",
+                        translation_status="succeeded",
+                        summary_status="succeeded",
+                        tagging_status="succeeded",
                         translated_title_zh="标题",
                         translated_body_zh="正文",
-                    ),
-                    summarizer_tagger=lambda **kwargs: ArticleSummaryTagResult(
-                        summary_zh="摘要",
-                        tags=["能源", "市场", "国际"],
+                        summary_zh="摘要。",
+                        tags=["a", "b", "c"],
+                        failed_step=None,
+                        error_message=None,
                     ),
                     provider_name="gemini",
                     model_name="gemini-2.5-flash",

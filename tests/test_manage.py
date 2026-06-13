@@ -389,44 +389,40 @@ class ManagementCommandTests(unittest.TestCase):
             },
             clear=False,
         ):
-            with patch("newspaper_translator.manage.DeepSeekArticleTranslator") as translator_class:
-                translator_class.return_value = SimpleNamespace(name="translator")
-                with patch("newspaper_translator.manage.DeepSeekArticleSummarizerTagger") as summarizer_class:
-                    summarizer_class.return_value = SimpleNamespace(name="summarizer")
-                    with patch("newspaper_translator.manage.enrich_article") as enrich_article:
-                        enrich_article.return_value = SimpleNamespace(
-                            enrichment_run_id="enrichment-run-1",
-                            article_id="article-1",
-                            parse_run_id="parse-run-1",
-                            status="succeeded",
-                            provider_name="deepseek",
-                            model_name="deepseek-chat",
-                            prompt_version="article-enrichment-v2",
-                            input_hash="hash-1",
-                            started_at="2026-04-28 10:00:00",
-                            finished_at="2026-04-28 10:00:02",
-                            error_message=None,
-                        )
+            with patch("newspaper_translator.manage.DeepSeekArticleEnricher") as enricher_class:
+                enricher_class.return_value = SimpleNamespace(name="enricher")
+                with patch("newspaper_translator.manage.enrich_article") as enrich_article:
+                    enrich_article.return_value = SimpleNamespace(
+                        enrichment_run_id="enrichment-run-1",
+                        article_id="article-1",
+                        parse_run_id="parse-run-1",
+                        status="succeeded",
+                        provider_name="deepseek",
+                        model_name="deepseek-chat",
+                        prompt_version="article-enrichment-v2",
+                        input_hash="hash-1",
+                        started_at="2026-04-28 10:00:00",
+                        finished_at="2026-04-28 10:00:02",
+                        error_message=None,
+                    )
 
-                        exit_code, output = run_cli(
-                            [
-                                "phase3-enrich-article",
-                                "--article-id",
-                                "article-1",
-                                "--database-url",
-                                "sqlite:////tmp/newspaper-translator.db",
-                            ]
-                        )
+                    exit_code, output = run_cli(
+                        [
+                            "phase3-enrich-article",
+                            "--article-id",
+                            "article-1",
+                            "--database-url",
+                            "sqlite:////tmp/newspaper-translator.db",
+                        ]
+                    )
 
         self.assertEqual(exit_code, 0)
         self.assertIn('"enrichment_run_id": "enrichment-run-1"', output)
         self.assertIn('"status": "succeeded"', output)
-        self.assertEqual(translator_class.call_count, 1)
-        self.assertEqual(summarizer_class.call_count, 1)
+        self.assertEqual(enricher_class.call_count, 1)
         self.assertEqual(enrich_article.call_args.kwargs["article_id"], "article-1")
         self.assertEqual(enrich_article.call_args.kwargs["provider_name"], "deepseek")
-        self.assertEqual(enrich_article.call_args.kwargs["translator"].name, "translator")
-        self.assertEqual(enrich_article.call_args.kwargs["summarizer_tagger"].name, "summarizer")
+        self.assertEqual(enrich_article.call_args.kwargs["enricher"].name, "enricher")
 
     def test_phase_3_latest_enrichment_command_reports_current_visible_result(self) -> None:
         self.assertIsNotNone(

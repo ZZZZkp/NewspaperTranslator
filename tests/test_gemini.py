@@ -285,6 +285,15 @@ class GeminiContinuationMatcherTests(unittest.TestCase):
             )
 
 
+class GeminiExtractResponseTextTests(unittest.TestCase):
+    def test_raises_llm_provider_error_when_body_not_json(self) -> None:
+        from newspaper_translator.gemini import _extract_response_text
+        from newspaper_translator.llm import LlmProviderError
+
+        with self.assertRaises(LlmProviderError):
+            _extract_response_text(b"<html>gateway error</html>")
+
+
 class GeminiArticleEnricherTests(unittest.TestCase):
     def test_runs_full_multi_round_conversation(self) -> None:
         from newspaper_translator.config import GeminiSettings

@@ -147,6 +147,24 @@ class ChatJsonClientTests(unittest.TestCase):
         with self.assertRaises(LlmProviderError):
             client.complete_json_text("Return JSON only.")
 
+    def test_complete_json_text_messages_raises_when_envelope_not_json(self) -> None:
+        from newspaper_translator.llm import ChatCompletionSettings, ChatJsonClient, LlmProviderError
+
+        client = ChatJsonClient(
+            settings=ChatCompletionSettings(
+                api_key="deepseek-key",
+                base_url="https://api.deepseek.com",
+                model="deepseek-chat",
+                timeout_seconds=45,
+            ),
+            transport=_FakeTransport(
+                responses=[_FakeResponse(status_code=200, body=b"<html>gateway error</html>")]
+            ),
+        )
+
+        with self.assertRaises(LlmProviderError):
+            client.complete_json_text_messages([{"role": "user", "content": "judge"}])
+
     def test_complete_json_text_messages_posts_full_history(self) -> None:
         from newspaper_translator.llm import ChatCompletionSettings, ChatJsonClient
 

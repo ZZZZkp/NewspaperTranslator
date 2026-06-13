@@ -109,12 +109,12 @@ class GeminiContinuationMatcher:
 
 
 def _extract_response_text(body: bytes) -> str:
-    response_payload = json.loads(body.decode("utf-8"))
     try:
+        response_payload = json.loads(body.decode("utf-8"))
         if "candidates" in response_payload:
             return response_payload["candidates"][0]["content"]["parts"][0]["text"]
         return response_payload["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
         raise LlmProviderError("Gemini response did not contain a valid text candidate") from exc
 
 

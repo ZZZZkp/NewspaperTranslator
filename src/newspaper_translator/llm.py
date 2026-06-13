@@ -74,10 +74,10 @@ class ChatJsonClient:
         )
         if response.status_code < 200 or response.status_code >= 300:
             raise LlmProviderError(f"LLM request failed with status {response.status_code}")
-        response_payload = json.loads(response.body.decode("utf-8"))
         try:
+            response_payload = json.loads(response.body.decode("utf-8"))
             text = response_payload["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
+        except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
             raise LlmProviderError("LLM response did not contain a valid text choice") from exc
         if not isinstance(text, str) or not text.strip():
             raise LlmProviderError("LLM response text choice was empty")

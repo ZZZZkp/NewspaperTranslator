@@ -6,7 +6,16 @@ import time
 import uuid
 
 from newspaper_translator.article_enrichment import build_article_input_hash, enrich_article
-from newspaper_translator.article_pipeline import persist_document_articles
+from newspaper_translator.article_pipeline import (
+    StoredDocument,
+    _get_document,
+    persist_document_articles,
+    persist_economist_edition_articles,
+)
+from newspaper_translator.economist_edition import (
+    ECONOMIST_EDITION_PARSER_VERSION,
+    detect_calibre_economist_edition,
+)
 from newspaper_translator.article_store import get_final_article, list_latest_document_articles
 from newspaper_translator.logging_utils import format_log_event
 from newspaper_translator.database import sqlite_path_from_database_url
@@ -1875,6 +1884,16 @@ def _build_parse_persist_callback(
         raise ValueError("mineru_client is required when parse_persist_document is not provided")
 
     def _callback(*, document_key: str) -> None:
+        document = _get_document(database_url=database_url, document_key=document_key)
+        if detect_calibre_economist_edition(Path(document.raw_path)):
+            persist_economist_edition_articles(
+                database_url=database_url,
+                document_key=document_key,
+                output_root=Path(output_root),
+                parser_name="economist-edition",
+                parser_version=ECONOMIST_EDITION_PARSER_VERSION,
+            )
+            return
         persist_document_articles(
             database_url=database_url,
             document_key=document_key,

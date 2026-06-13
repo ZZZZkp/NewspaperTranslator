@@ -1015,5 +1015,42 @@ class ManagementCommandTests(unittest.TestCase):
         self.assertNotIn("First failure.", output)
 
 
+    def test_phase3_parse_economist_pdf_outputs_articles_json(self) -> None:
+        self.assertIsNotNone(
+            run_cli,
+            "run_cli should be importable from newspaper_translator.manage",
+        )
+
+        from newspaper_translator.economist_edition import (
+            EditionArticle,
+            ParsedEdition,
+            build_economist_parse_result,
+        )
+
+        edition = ParsedEdition(
+            parse_result=build_economist_parse_result(
+                [
+                    EditionArticle(
+                        title="The World Cup paradox", section="Leaders",
+                        start_page=17, end_page=23, body_text="Body.",
+                        url="https://www.economist.com/leaders/2026/06/10/paradox",
+                    )
+                ]
+            ),
+            debug_text="debug",
+        )
+
+        with patch(
+            "newspaper_translator.manage.parse_economist_edition",
+            return_value=edition,
+        ):
+            exit_code, output = run_cli(
+                ["phase3-parse-economist-pdf", "--pdf-path", "/tmp/te.pdf"]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("The World Cup paradox", output)
+
+
 if __name__ == "__main__":
     unittest.main()

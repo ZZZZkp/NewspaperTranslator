@@ -35,6 +35,7 @@ from newspaper_translator.import_audit import (
 )
 from newspaper_translator.database import run_pending_migrations
 from newspaper_translator.gmail import import_from_gmail, retry_failed_gmail_messages
+from newspaper_translator.economist_edition import parse_economist_edition
 from newspaper_translator.mineru import MineruClient
 from newspaper_translator.pdf import extract_articles_from_mineru_markdown, parse_pdf_articles
 from newspaper_translator.runtime import build_runtime_report
@@ -90,6 +91,9 @@ def run_cli(argv: list[str]) -> tuple[int, str]:
 
     phase3_parse_md_parser = subparsers.add_parser("phase3-parse-md")
     phase3_parse_md_parser.add_argument("--markdown-path", required=True)
+
+    phase3_parse_economist_parser = subparsers.add_parser("phase3-parse-economist-pdf")
+    phase3_parse_economist_parser.add_argument("--pdf-path", required=True)
 
     phase3_persist_document_parser = subparsers.add_parser("phase3-persist-document")
     phase3_persist_document_parser.add_argument("--document-key", required=True)
@@ -228,6 +232,10 @@ def run_cli(argv: list[str]) -> tuple[int, str]:
             continuation_matcher=continuation_matcher,
         )
         return 0, json.dumps(_to_jsonable(articles), sort_keys=True)
+
+    if args.command == "phase3-parse-economist-pdf":
+        edition = parse_economist_edition(Path(args.pdf_path))
+        return 0, json.dumps(_to_jsonable(edition.parse_result.articles), sort_keys=True)
 
     if args.command == "phase3-persist-document":
         mineru_settings = MineruSettings.from_env(os.environ)

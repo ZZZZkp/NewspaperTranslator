@@ -1,4 +1,5 @@
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -92,6 +93,7 @@ def clean_edition_text(raw: str) -> tuple[str, str]:
 
 
 def _is_nav_line(text: str) -> bool:
+    text = unicodedata.normalize("NFKC", text)
     if not text or not any(token in text for token in _NAV_TOKENS):
         return False
     residue = text

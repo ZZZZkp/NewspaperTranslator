@@ -102,6 +102,16 @@ class CleanEditionTextTests(unittest.TestCase):
         self.assertEqual(url, "")
         self.assertEqual(body, "Plain body with no calibre footer.")
 
+    def test_strips_nav_bar_with_kangxi_radical_one_variant(self) -> None:
+        # Real Economist PDFs render 下⼀项/上⼀项 with the Kangxi radical one
+        # (U+2F00), not the normal 一 (U+4E00). The cleaner must still drop them.
+        nav = "| 下⼀项 | 章节菜单 | 主菜单 | 上⼀项 |"
+        raw = "\n".join([nav, "Real body sentence here.", nav])
+        body, _url = clean_edition_text(raw)
+        self.assertNotIn("⼀", body)
+        self.assertNotIn("章节菜单", body)  # 章节菜单
+        self.assertEqual(body, "Real body sentence here.")
+
 
 class BuildParseResultTests(unittest.TestCase):
     def test_each_article_becomes_one_standalone_parsed_article(self) -> None:

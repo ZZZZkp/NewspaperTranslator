@@ -61,8 +61,8 @@ _SUBSCRIBER_PROMO = re.compile(
     r"Subscribers to The Economist can sign up",
     re.IGNORECASE,
 )
-_TIMESTAMP_LINE = re.compile(
-    r"^\d{1,2}\s*[月⽉]\s*\d{1,2},?\s*\d{4}\s+\d{1,2}:\d{2}\s*(上午|下午)$"
+_TIMESTAMP_BLOCK = re.compile(
+    r"\d{1,2}\s*[月⽉]\s*\d{1,2},?\s*\d{4}\s+\d{1,2}:\d{2}\s*[上下]午[ \t]*(?:\|[^\n]*)?"
 )
 
 
@@ -77,13 +77,13 @@ def clean_edition_text(raw: str) -> tuple[str, str]:
     if promo_match:
         text = text[: promo_match.start()]
 
+    text = _TIMESTAMP_BLOCK.sub("", text)
+
     cleaned_lines: list[str] = []
     for raw_line in text.splitlines():
         line = raw_line.replace("■", "").rstrip()
         stripped = line.strip()
         if _is_nav_line(stripped):
-            continue
-        if _TIMESTAMP_LINE.match(stripped):
             continue
         cleaned_lines.append(line)
 

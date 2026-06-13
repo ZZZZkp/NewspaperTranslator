@@ -112,6 +112,28 @@ class CleanEditionTextTests(unittest.TestCase):
         self.assertNotIn("章节菜单", body)  # 章节菜单
         self.assertEqual(body, "Real body sentence here.")
 
+    def test_strips_timestamp_with_dateline_suffix(self) -> None:
+        raw = "\n".join(
+            [
+                "Subsidies, China sees European weakness",
+                "6 ⽉  11, 2026 04:20 上午  | LA HULPE",
+                "THUCYDIDES THOUGHT war was inevitable.",
+            ]
+        )
+        body, _url = clean_edition_text(raw)
+        self.assertNotIn("上午", body)
+        self.assertNotIn("LA HULPE", body)
+        self.assertIn("Subsidies, China sees European weakness", body)
+        self.assertIn("THUCYDIDES THOUGHT war was inevitable.", body)
+
+    def test_strips_timestamp_glued_to_first_body_word(self) -> None:
+        raw = "How the rules are being rewritten\n6 ⽉  11, 2026 04:20 上午WITH LYRICS in English, the theme played."
+        body, _url = clean_edition_text(raw)
+        self.assertNotIn("上午", body)
+        self.assertNotIn("04:20", body)
+        self.assertIn("WITH LYRICS in English", body)
+        self.assertIn("How the rules are being rewritten", body)
+
 
 class BuildParseResultTests(unittest.TestCase):
     def test_each_article_becomes_one_standalone_parsed_article(self) -> None:

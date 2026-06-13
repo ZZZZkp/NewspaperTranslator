@@ -1,6 +1,13 @@
 import re
 from dataclasses import dataclass
 
+from newspaper_translator.pdf import (
+    ArticleFragment,
+    ArticleSource,
+    ParsedArticle,
+    ParseResult,
+)
+
 
 @dataclass(frozen=True)
 class OutlineEntry:
@@ -112,3 +119,50 @@ def _extract_calibre_url(raw: str) -> str:
     joined = "".join(chunk_lines)  # rejoins URLs split across wrapped lines
     url_match = re.search(r"https?://\S+", joined)
     return url_match.group(0) if url_match else ""
+
+
+@dataclass(frozen=True)
+class EditionArticle:
+    title: str
+    section: str
+    start_page: int
+    end_page: int
+    body_text: str
+    url: str
+
+
+def build_economist_parse_result(articles: list[EditionArticle]) -> ParseResult:
+    fragments: list[ArticleFragment] = []
+    parsed_articles: list[ParsedArticle] = []
+    for index, article in enumerate(articles, start=1):
+        fragments.append(
+            ArticleFragment(
+                title=article.title,
+                body_text=article.body_text,
+                source_order=index,
+                continued_to_page="",
+                continued_from_page="",
+                page_number=article.start_page,
+            )
+        )
+        parsed_articles.append(
+            ParsedArticle(
+                article_order=index,
+                primary_source_order=index,
+                source_fragment_count=1,
+                title=article.title,
+                body_text=article.body_text,
+                source_fragments=[
+                    ArticleSource(
+                        source_order=index,
+                        fragment_role="standalone",
+                        sequence_index=1,
+                    )
+                ],
+            )
+        )
+    return ParseResult(
+        fragments=fragments,
+        match_decisions=[],
+        articles=parsed_articles,
+    )

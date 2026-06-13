@@ -24,6 +24,15 @@ try:
 except ImportError:
     clean_edition_text = None
 
+try:
+    from newspaper_translator.economist_edition import (
+        EditionArticle,
+        build_economist_parse_result,
+    )
+except ImportError:
+    EditionArticle = None
+    build_economist_parse_result = None
+
 
 class ComputeArticleRangesTests(unittest.TestCase):
     def test_leaf_end_is_next_boundary_including_section_landing_pages(self) -> None:
@@ -91,6 +100,52 @@ class CleanEditionTextTests(unittest.TestCase):
         body, url = clean_edition_text("Plain body with no calibre footer.")
         self.assertEqual(url, "")
         self.assertEqual(body, "Plain body with no calibre footer.")
+
+
+class BuildParseResultTests(unittest.TestCase):
+    def test_each_article_becomes_one_standalone_parsed_article(self) -> None:
+        self.assertIsNotNone(build_economist_parse_result)
+        articles = [
+            EditionArticle(
+                title="The World Cup paradox",
+                section="Leaders",
+                start_page=17,
+                end_page=23,
+                body_text="Body one.",
+                url="https://www.economist.com/leaders/2026/06/10/the-world-cup-paradox",
+            ),
+            EditionArticle(
+                title="Least bad option in Iran",
+                section="Leaders",
+                start_page=23,
+                end_page=27,
+                body_text="Body two.",
+                url="https://www.economist.com/leaders/2026/06/10/iran",
+            ),
+        ]
+
+        parse_result = build_economist_parse_result(articles)
+
+        self.assertEqual(parse_result.match_decisions, [])
+        self.assertEqual(len(parse_result.fragments), 2)
+        self.assertEqual(len(parse_result.articles), 2)
+
+        first_fragment = parse_result.fragments[0]
+        self.assertEqual(first_fragment.source_order, 1)
+        self.assertEqual(first_fragment.page_number, 17)
+        self.assertEqual(first_fragment.title, "The World Cup paradox")
+        self.assertEqual(first_fragment.continued_to_page, "")
+        self.assertEqual(first_fragment.continued_from_page, "")
+
+        second_article = parse_result.articles[1]
+        self.assertEqual(second_article.article_order, 2)
+        self.assertEqual(second_article.primary_source_order, 2)
+        self.assertEqual(second_article.source_fragment_count, 1)
+        self.assertEqual(second_article.title, "Least bad option in Iran")
+        self.assertEqual(second_article.body_text, "Body two.")
+        self.assertEqual(len(second_article.source_fragments), 1)
+        self.assertEqual(second_article.source_fragments[0].fragment_role, "standalone")
+        self.assertEqual(second_article.source_fragments[0].sequence_index, 1)
 
 
 if __name__ == "__main__":

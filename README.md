@@ -66,6 +66,23 @@ Latest recorded live Gmail import result from the completed 2026-05-06 import/en
 
 Phase 3 now uses the MinerU precision parsing API as its primary extraction path rather than a purely local PDF text-extraction path.
 
+### Economist e-edition path
+
+Calibre-converted *The Economist* e-edition PDFs (`Producer: calibre`, embedded text, a two-level bookmark TOC) are detected automatically and parsed locally without MinerU:
+
+- `detect_calibre_economist_edition` gates the path (Calibre producer + at least 3 outline leaves + an Economist signal in the Title or page text); any read error falls back to the MinerU path.
+- Article boundaries come from the outline: each leaf bookmark is one article, spanning from its start page to the next outline boundary (section landing pages included), cross-checked by the per-article `This article was downloaded by calibre from <URL>` marker.
+- Body text is extracted with `pypdf` and stripped of Calibre nav bars, the publish-timestamp and dateline metadata, the `■` end marker, the subscriber promo, and the download footer.
+- Each article persists as one standalone `final_article`, then flows through the existing DeepSeek enrichment unchanged.
+
+Inspect parsing locally (prints the parsed articles as JSON, no database required):
+
+```bash
+PYTHONPATH=src \
+./.venv/bin/python -m newspaper_translator.manage phase3-parse-economist-pdf \
+  --pdf-path ./TE-2026-06-13-PDF_WEB.pdf
+```
+
 The current parsing flow is:
 
 1. import raw newspaper PDFs from Gmail into local storage

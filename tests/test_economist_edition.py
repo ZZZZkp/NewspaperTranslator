@@ -1,6 +1,7 @@
 import pathlib
 import sys
 import unittest
+from unittest.mock import patch
 
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -146,6 +147,117 @@ class BuildParseResultTests(unittest.TestCase):
         self.assertEqual(len(second_article.source_fragments), 1)
         self.assertEqual(second_article.source_fragments[0].fragment_role, "standalone")
         self.assertEqual(second_article.source_fragments[0].sequence_index, 1)
+
+
+try:
+    from newspaper_translator.economist_edition import (
+        ParsedEdition,
+        detect_calibre_economist_edition,
+        extract_article_text,
+        extract_outline_entries,
+        parse_economist_edition,
+    )
+except ImportError:
+    ParsedEdition = None
+    detect_calibre_economist_edition = None
+    extract_article_text = None
+    extract_outline_entries = None
+    parse_economist_edition = None
+
+
+class _FakeDest:
+    def __init__(self, title: str, page0: int) -> None:
+        self.title = title
+        self.page0 = page0
+
+
+class _FakePage:
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def extract_text(self) -> str:
+        return self._text
+
+
+class _FakeReader:
+    def __init__(self, *, outline, pages, metadata) -> None:
+        self.outline = outline
+        self.pages = pages
+        self.metadata = metadata
+
+    def get_destination_page_number(self, dest) -> int:
+        return dest.page0  # 0-based
+
+
+def _economist_reader() -> "_FakeReader":
+    # outline: "Leaders" (section) -> [paradox leaf, iran leaf]; "Letters" (section) -> [premier leaf]
+    leaders = _FakeDest("Leaders", 1)
+    paradox = _FakeDest("The World Cup paradox", 2)
+    iran = _FakeDest("Least bad option in Iran", 3)
+    letters = _FakeDest("Letters", 4)
+    premier = _FakeDest("Premier League", 5)
+    outline = [leaders, [paradox, iran], letters, [premier]]
+    pages = [
+        _FakePage("cover"),                                   # page 1
+        _FakePage("Leaders landing"),                          # page 2
+        _FakePage("Body paradox. downloaded by calibre from\nhttps://www.economist.com/leaders/2026/06/10/paradox"),  # page 3
+        _FakePage("Body iran."),                               # page 4
+        _FakePage("Letters landing"),                          # page 5
+        _FakePage("Body premier."),                            # page 6
+    ]
+    metadata = {"/Producer": "calibre 9.1.0", "/Title": "The Economist [June 13th 2026]"}
+    return _FakeReader(outline=outline, pages=pages, metadata=metadata)
+
+
+class OutlineAndDetectionTests(unittest.TestCase):
+    def test_extract_outline_entries_marks_leaves_and_sections(self) -> None:
+        self.assertIsNotNone(extract_outline_entries)
+        entries = extract_outline_entries(_economist_reader())
+
+        leaves = [(entry.title, entry.section, entry.start_page) for entry in entries if entry.is_leaf]
+        self.assertEqual(
+            leaves,
+            [
+                ("The World Cup paradox", "Leaders", 3),
+                ("Least bad option in Iran", "Leaders", 4),
+                ("Premier League", "Letters", 6),
+            ],
+        )
+        sections = [entry.title for entry in entries if not entry.is_leaf]
+        self.assertEqual(sections, ["Leaders", "Letters"])
+
+    def test_detect_true_for_calibre_economist_edition(self) -> None:
+        reader = _economist_reader()
+        with patch("newspaper_translator.economist_edition.PdfReader", return_value=reader):
+            self.assertTrue(detect_calibre_economist_edition("any.pdf"))
+
+    def test_detect_false_for_non_calibre_pdf(self) -> None:
+        reader = _economist_reader()
+        reader.metadata = {"/Producer": "Adobe", "/Title": "The Economist"}
+        with patch("newspaper_translator.economist_edition.PdfReader", return_value=reader):
+            self.assertFalse(detect_calibre_economist_edition("any.pdf"))
+
+    def test_detect_false_on_read_error(self) -> None:
+        with patch(
+            "newspaper_translator.economist_edition.PdfReader",
+            side_effect=ValueError("broken pdf"),
+        ):
+            self.assertFalse(detect_calibre_economist_edition("any.pdf"))
+
+    def test_parse_economist_edition_produces_articles_with_clean_body(self) -> None:
+        reader = _economist_reader()
+        with patch("newspaper_translator.economist_edition.PdfReader", return_value=reader):
+            edition = parse_economist_edition("any.pdf")
+
+        titles = [article.title for article in edition.parse_result.articles]
+        self.assertEqual(
+            titles,
+            ["The World Cup paradox", "Least bad option in Iran", "Premier League"],
+        )
+        first_body = edition.parse_result.articles[0].body_text
+        self.assertIn("Body paradox.", first_body)
+        self.assertNotIn("downloaded by calibre", first_body)
+        self.assertIn("economist.com/leaders/2026/06/10/paradox", edition.debug_text)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,8 @@
 import re
 from dataclasses import dataclass
+from pathlib import Path
+
+from pypdf import PdfReader
 
 from newspaper_translator.pdf import (
     ArticleFragment,
@@ -165,4 +168,134 @@ def build_economist_parse_result(articles: list[EditionArticle]) -> ParseResult:
         fragments=fragments,
         match_decisions=[],
         articles=parsed_articles,
+    )
+
+
+ECONOMIST_EDITION_PARSER_VERSION = "economist-edition-v1"
+
+
+@dataclass(frozen=True)
+class ParsedEdition:
+    parse_result: ParseResult
+    debug_text: str
+
+
+def extract_outline_entries(reader) -> list[OutlineEntry]:
+    entries: list[OutlineEntry] = []
+
+    def page_of(dest) -> int | None:
+        try:
+            return reader.get_destination_page_number(dest) + 1
+        except Exception:  # noqa: BLE001
+            return None
+
+    def walk(items, section: str) -> None:
+        index = 0
+        while index < len(items):
+            item = items[index]
+            if isinstance(item, list):
+                walk(item, section)
+                index += 1
+                continue
+            children = (
+                items[index + 1]
+                if index + 1 < len(items) and isinstance(items[index + 1], list)
+                else None
+            )
+            title = (getattr(item, "title", "") or "").strip()
+            start_page = page_of(item)
+            if children is not None:
+                if start_page is not None:
+                    entries.append(
+                        OutlineEntry(
+                            title=title,
+                            section=section,
+                            start_page=start_page,
+                            is_leaf=False,
+                        )
+                    )
+                walk(children, title or section)
+                index += 2
+            else:
+                if start_page is not None:
+                    entries.append(
+                        OutlineEntry(
+                            title=title,
+                            section=section,
+                            start_page=start_page,
+                            is_leaf=True,
+                        )
+                    )
+                index += 1
+
+    walk(reader.outline or [], "")
+    return entries
+
+
+def extract_article_text(reader, start_page: int, end_page: int) -> tuple[str, str]:
+    parts: list[str] = []
+    for page_number in range(start_page, end_page):
+        page = reader.pages[page_number - 1]
+        parts.append(page.extract_text() or "")
+    return clean_edition_text("\n".join(parts))
+
+
+def detect_calibre_economist_edition(pdf_path) -> bool:
+    try:
+        reader = PdfReader(str(pdf_path))
+        metadata = reader.metadata or {}
+        producer = str(metadata.get("/Producer") or "")
+        if "calibre" not in producer.lower():
+            return False
+        entries = extract_outline_entries(reader)
+        leaf_count = sum(1 for entry in entries if entry.is_leaf)
+        if leaf_count < 3:
+            return False
+        title = str(metadata.get("/Title") or "")
+        if "economist" in title.lower():
+            return True
+        sample = "".join(
+            (reader.pages[index].extract_text() or "")
+            for index in range(min(8, len(reader.pages)))
+        )
+        return "economist.com" in sample.lower()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def parse_economist_edition(pdf_path) -> ParsedEdition:
+    reader = PdfReader(str(pdf_path))
+    total_pages = len(reader.pages)
+    entries = extract_outline_entries(reader)
+    ranges = compute_article_ranges(entries, total_pages=total_pages)
+
+    articles: list[EditionArticle] = []
+    debug_parts: list[str] = []
+    for article_range in ranges:
+        body_text, url = extract_article_text(
+            reader,
+            article_range.start_page,
+            article_range.end_page,
+        )
+        if not body_text.strip():
+            continue
+        articles.append(
+            EditionArticle(
+                title=article_range.title,
+                section=article_range.section,
+                start_page=article_range.start_page,
+                end_page=article_range.end_page,
+                body_text=body_text,
+                url=url,
+            )
+        )
+        debug_parts.append(
+            f"<!-- ARTICLE: {article_range.title} | section={article_range.section} "
+            f"| pages={article_range.start_page}-{article_range.end_page - 1} | url={url} -->\n"
+            f"{body_text}\n"
+        )
+
+    return ParsedEdition(
+        parse_result=build_economist_parse_result(articles),
+        debug_text="\n".join(debug_parts),
     )

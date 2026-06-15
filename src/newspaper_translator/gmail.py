@@ -920,6 +920,8 @@ def _build_attachment_from_url(
     if resolved_download is not None:
         filename = resolved_download.filename or _filename_from_url(resolved_download.url)
         if resolved_download.filename and _is_translated_pdf_filename(filename):
+            # Return a named-but-empty attachment so the caller can emit
+            # body_link_filename_filtered; avoids downloading the large translation.
             return _build_body_link_attachment(
                 source_url=url,
                 filename=filename,

@@ -1804,7 +1804,6 @@ class _FakeNamedQqMailLandingPageDownloader:
 class _FakeTranslatedQqMailLandingPageDownloader:
     def __init__(self, *, filename: str) -> None:
         self._filename = filename
-        self.downloaded_urls: list[str] = []
 
     def resolve_download_url(self, url: str) -> ResolvedDownload | None:
         if url == "https://wx.mail.qq.com/ftn/download?func=3&key=landing":

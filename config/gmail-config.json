@@ -3,7 +3,8 @@
   "oauth_token_path": "../secrets/gmail-token.json",
   "allowed_senders": [
     "13802809612@163.com",
-    "dengtawaikan@dengtazk.xin"
+    "dengtawaikan@dengtazk.xin",
+    "903817461@qq.com"
   ],
   "query": "newer_than:7d",
   "label_ids": [

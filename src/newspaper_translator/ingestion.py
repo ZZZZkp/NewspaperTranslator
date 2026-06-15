@@ -242,6 +242,10 @@ _ECONOMIST_EDITION_FILENAME_RE = re.compile(
 
 
 def _is_economist_edition_filename(filename: str) -> bool:
+    # NFKC folds any fullwidth digits/latin the QQ mail API might return into ASCII
+    # so the regex matches. The 【译】 strip is defensive: translated copies are
+    # normally filtered before import, but this keeps the helper correct as a
+    # standalone filename classifier regardless of call path.
     stem = unicodedata.normalize("NFKC", Path(filename).name)
     stem = Path(stem).stem
     stem = stem.removeprefix("【译】")

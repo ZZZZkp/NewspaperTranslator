@@ -29,6 +29,14 @@ class ExtractSourceNameTests(unittest.TestCase):
             "金融时报",
         )
 
+    def test_te_prefixed_non_economist_filename_does_not_map_to_economist(self) -> None:
+        # A TE-prefixed name that is not the PDF_WEB e-edition must fall through
+        # to the normal prefix logic, not become 经济学人.
+        self.assertEqual(
+            _extract_source_name_from_filename("TE-summary-2026-06-13.pdf"),
+            "TE-summary",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -676,6 +676,10 @@ class GmailIntegrationTests(unittest.TestCase):
 
         self.assertEqual(summary.created_document_count, 1)
         self.assertEqual(
+            downloader.resolved_urls,
+            ["https://wx.mail.qq.com/ftn/download?func=3&key=landing"],
+        )
+        self.assertEqual(
             downloader.downloaded_urls,
             ["https://wx.mail.qq.com/ftn/download?func=4&key=resolved&code=123"],
         )
@@ -1705,10 +1709,12 @@ class _FakeQqMailLandingPageDownloader:
         self.resolved_urls: list[str] = []
         self.downloaded_urls: list[str] = []
 
-    def resolve_download_url(self, url: str) -> str | None:
+    def resolve_download_url(self, url: str) -> ResolvedDownload | None:
         self.resolved_urls.append(url)
         if url == "https://wx.mail.qq.com/ftn/download?func=3&key=landing":
-            return "https://wx.mail.qq.com/ftn/download?func=4&key=resolved&code=123"
+            return ResolvedDownload(
+                url="https://wx.mail.qq.com/ftn/download?func=4&key=resolved&code=123",
+            )
         return None
 
     def download_binary(self, url: str) -> bytes:
@@ -1727,7 +1733,7 @@ class _FakeNamedQqMailLandingPageDownloader:
         self.resolved_urls: list[str] = []
         self.downloaded_urls: list[str] = []
 
-    def resolve_download_url(self, url: str):
+    def resolve_download_url(self, url: str) -> ResolvedDownload | None:
         self.resolved_urls.append(url)
         if url == "https://wx.mail.qq.com/ftn/download?func=3&key=landing":
             return ResolvedDownload(

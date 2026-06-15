@@ -984,9 +984,7 @@ def _resolve_download_url(
     result = resolver(url)
     if result is None:
         return None
-    if isinstance(result, ResolvedDownload):
-        return result
-    return ResolvedDownload(url=str(result))
+    return result
 
 
 def _try_download_direct_pdf(
@@ -1107,7 +1105,7 @@ class HttpLinkDownloader:
         response.raise_for_status()
         return response.text
 
-    def resolve_download_url(self, url: str) -> "ResolvedDownload | None":
+    def resolve_download_url(self, url: str) -> ResolvedDownload | None:
         if not _is_qq_mail_landing_page(url):
             return None
 

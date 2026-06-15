@@ -105,6 +105,27 @@ behavior is identical to today via the `_filename_from_url` fallback. The Englis
 original keeps its correct `TE-*-PDF_WEB.pdf` name, so dedupe / source-name /
 Economist routing are reused unchanged.
 
+### Source label = "经济学人"
+
+`documents.source_name` is the newspaper label shown and filtered in the UI
+(`api/queries.py` reads `d.source_name`; articles inherit it by join). It is
+derived at import time from the filename prefix and is authoritative on the first
+accepted copy. For `TE-2026-06-13-PDF_WEB.pdf` the date sits mid-name and the
+suffix is `PDF_WEB`, so `_extract_source_name_from_filename` finds no trailing
+date and returns the raw stem `TE-2026-06-13-PDF_WEB`. We want the label to be
+`经济学人`.
+
+Add a small, named, NFKC-normalized special case at the front of
+`_extract_source_name_from_filename`: when the filename matches the Economist
+e-edition naming (`TE-<YYYY>-<M>-<D>-PDF_WEB`), return `"经济学人"`. This stays
+consistent with the existing "source_name = filename-derived label" design, needs
+no PDF read at import, and is reliable because this email source always names the
+English original exactly that way. Publication-date resolution is unaffected (it
+independently regex-matches `2026-06-13` anywhere in the filename).
+
+The translated `【译】…-PDF_WEB.pdf` never reaches import (filtered during
+download), so only the English original is labeled.
+
 ### Config
 
 Add `903817461@qq.com` to `allowed_senders` in `config/gmail-config.json`. No
@@ -119,10 +140,15 @@ domain-allowlist change — `wx.mail.qq.com` is already present. Update
     capturing `body["name"]`.
   - `_resolve_download_url` helper → returns `ResolvedDownload | None`.
   - `_build_attachment_from_url` → translated-name pre-filter + real-filename use.
+- `src/newspaper_translator/ingestion.py`
+  - `_extract_source_name_from_filename` → return `"经济学人"` for the Economist
+    e-edition filename pattern (small named NFKC helper).
 - `config/gmail-config.json` — add sender.
 - `tests/test_gmail.py` — update the QQ landing-page test double and assertions;
   add cases for (a) English original imported with correct name, (b) translated
   super-large attachment skipped before download.
+- `tests/` for ingestion — assert `TE-*-PDF_WEB.pdf` → `source_name == "经济学人"`,
+  and that ordinary filenames keep their existing prefix behavior.
 
 ## Data flow (new email)
 
@@ -153,6 +179,8 @@ HTML body → anchor hrefs (2 × wx.mail.qq.com func=3)
   `body_link_filename_filtered` audit item, downloader's `download_binary` never
   called for it.
 - Existing QQ/dengtazk/body-link tests stay green after the return-type change.
+- Source label: `TE-2026-06-13-PDF_WEB.pdf` → `source_name == "经济学人"`; a
+  normal `金融时报-5-6.pdf` still yields its filename prefix.
 
 ## Out of scope
 

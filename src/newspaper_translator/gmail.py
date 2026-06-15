@@ -920,8 +920,8 @@ def _build_attachment_from_url(
     if resolved_download is not None:
         filename = resolved_download.filename or _filename_from_url(resolved_download.url)
         if resolved_download.filename and _is_translated_pdf_filename(filename):
-            # Return a named-but-empty attachment so the caller can emit
-            # body_link_filename_filtered; avoids downloading the large translation.
+            # Carry the real name with empty bytes to avoid downloading the large
+            # translation; the caller filters it out by filename (body_link_filename_filtered).
             return _build_body_link_attachment(
                 source_url=url,
                 filename=filename,
@@ -989,10 +989,7 @@ def _resolve_download_url(
     resolver = getattr(downloader, "resolve_download_url", None)
     if not callable(resolver):
         return None
-    result = resolver(url)
-    if result is None:
-        return None
-    return result
+    return resolver(url)
 
 
 def _try_download_direct_pdf(

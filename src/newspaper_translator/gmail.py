@@ -919,6 +919,12 @@ def _build_attachment_from_url(
     )
     if resolved_download is not None:
         filename = resolved_download.filename or _filename_from_url(resolved_download.url)
+        if resolved_download.filename and _is_translated_pdf_filename(filename):
+            return _build_body_link_attachment(
+                source_url=url,
+                filename=filename,
+                content_bytes=b"",
+            )
         return _build_body_link_attachment(
             source_url=url,
             filename=filename,

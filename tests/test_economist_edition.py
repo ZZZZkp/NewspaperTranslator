@@ -97,6 +97,36 @@ class CleanEditionTextTests(unittest.TestCase):
             "https://www.economist.com/leaders/2026/06/10/the-world-cup-paradox",
         )
 
+    def test_strips_this_article_was_footer_prefix_without_matching_promo(self) -> None:
+        # Real articles end with "This article was downloaded by calibre from
+        # <url>". When the preceding promo is NOT the "Subscribers to The
+        # Economist can sign up" variant (e.g. a Café Europa newsletter promo),
+        # only the calibre footer truncation fires — and it must remove the whole
+        # footer sentence, not leave the orphan prefix "This article was".
+        raw = "\n".join(
+            [
+                "In the gang",
+                "Why Turkey likes NATO again",
+                "Mr Erdogan has not paid Mr Putin a visit in almost three years.",
+                "This article was downloaded by calibre from",
+                "https://www.economist.com/europe/2026/06/09/why-turkey-likes-nato-again",
+                "| 章节菜单 | 主菜单 |",
+            ]
+        )
+
+        body, url = clean_edition_text(raw)
+
+        self.assertNotIn("downloaded by calibre", body)
+        self.assertNotIn("This article was", body)
+        self.assertTrue(
+            body.rstrip().endswith("almost three years."),
+            f"body should end at the real last sentence, got: {body[-60:]!r}",
+        )
+        self.assertEqual(
+            url,
+            "https://www.economist.com/europe/2026/06/09/why-turkey-likes-nato-again",
+        )
+
     def test_returns_empty_url_when_marker_absent(self) -> None:
         body, url = clean_edition_text("Plain body with no calibre footer.")
         self.assertEqual(url, "")

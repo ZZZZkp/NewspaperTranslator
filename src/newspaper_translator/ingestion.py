@@ -4,6 +4,7 @@ import hashlib
 from pathlib import Path
 import re
 import sqlite3
+import unicodedata
 
 from newspaper_translator.database import sqlite_path_from_database_url
 from newspaper_translator.document_processing import create_document_processing_run
@@ -234,7 +235,26 @@ def _is_translated_pdf_filename(filename: str) -> bool:
     return any(pattern in lowered_base for pattern in TRANSLATED_FILENAME_PATTERNS)
 
 
+_ECONOMIST_EDITION_FILENAME_RE = re.compile(
+    r"^TE[-_]\d{4}[-_]\d{1,2}[-_]\d{1,2}[-_]PDF[-_]WEB$",
+    re.IGNORECASE,
+)
+
+
+def _is_economist_edition_filename(filename: str) -> bool:
+    # NFKC folds any fullwidth digits/latin the QQ mail API might return into ASCII
+    # so the regex matches. The 【译】 strip is defensive: translated copies are
+    # normally filtered before import, but this keeps the helper correct as a
+    # standalone filename classifier regardless of call path.
+    stem = unicodedata.normalize("NFKC", Path(filename).name)
+    stem = Path(stem).stem
+    stem = stem.removeprefix("【译】")
+    return bool(_ECONOMIST_EDITION_FILENAME_RE.match(stem))
+
+
 def _extract_source_name_from_filename(filename: str) -> str:
+    if _is_economist_edition_filename(filename):
+        return "经济学人"
     stem = Path(filename).name
     stem = Path(stem).stem
     full_date_match = re.search(

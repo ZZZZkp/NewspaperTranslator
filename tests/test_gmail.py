@@ -28,6 +28,7 @@ try:
         build_gmail_service,
         import_from_gmail,
         load_gmail_integration_config,
+        ResolvedDownload,
     )
 except ImportError:
     build_gmail_service = None
@@ -40,6 +41,7 @@ except ImportError:
     set_import_checkpoint = None
     import_from_gmail = None
     load_gmail_integration_config = None
+    ResolvedDownload = None
 
 
 class GmailIntegrationTests(unittest.TestCase):
@@ -624,6 +626,65 @@ class GmailIntegrationTests(unittest.TestCase):
         self.assertEqual(stored_row[0], "download.pdf")
         self.assertTrue(stored_row[1].endswith(".pdf"))
 
+    def test_qq_super_large_attachment_uses_resolved_filename_as_original_filename(self) -> None:
+        self.assertIsNotNone(import_from_gmail)
+        self.assertIsNotNone(ResolvedDownload)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = pathlib.Path(temp_dir)
+            config_path = temp_path / "gmail-config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "oauth_client_secrets_path": "./secrets/google-client.json",
+                        "oauth_token_path": "./secrets/gmail-token.json",
+                        "allowed_senders": ["briefing@example.com"],
+                        "query": "newer_than:7d",
+                        "label_ids": ["INBOX"],
+                        "max_results": 10,
+                        "include_spam_trash": False,
+                        "enable_body_links": True,
+                        "allowed_link_domains": ["wx.mail.qq.com"],
+                        "download_link_keywords": ["download", "pdf"],
+                    }
+                )
+            )
+
+            storage_root = temp_path / "storage"
+            database_path = temp_path / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            downloader = _FakeNamedQqMailLandingPageDownloader(
+                filename="TE-2026-06-13-PDF_WEB.pdf"
+            )
+            summary = import_from_gmail(
+                config_path=config_path,
+                storage_root=storage_root,
+                database_url=database_url,
+                service=_FakeQqMailLandingPageService(),
+                downloader=downloader,
+            )
+
+            connection = sqlite3.connect(database_path)
+            try:
+                stored_row = connection.execute(
+                    "SELECT original_filename FROM documents"
+                ).fetchone()
+            finally:
+                connection.close()
+
+        self.assertEqual(summary.created_document_count, 1)
+        self.assertEqual(
+            downloader.resolved_urls,
+            ["https://wx.mail.qq.com/ftn/download?func=3&key=landing"],
+        )
+        self.assertEqual(
+            downloader.downloaded_urls,
+            ["https://wx.mail.qq.com/ftn/download?func=4&key=resolved&code=123"],
+        )
+        self.assertEqual(stored_row[0], "TE-2026-06-13-PDF_WEB.pdf")
+
     def test_imports_long_signed_body_links_without_storing_the_full_url_as_attachment_identity(self) -> None:
         self.assertIsNotNone(
             run_pending_migrations,
@@ -1099,6 +1160,55 @@ class GmailIntegrationTests(unittest.TestCase):
         self.assertEqual(stored_parent_run.retried_message_count, 1)
         self.assertEqual(stored_parent_run.resolved_message_count, 1)
         self.assertEqual(stored_parent_run.failed_final_message_count, 0)
+
+    def test_qq_super_large_translated_attachment_is_skipped_before_download(self) -> None:
+        self.assertIsNotNone(import_from_gmail)
+        self.assertIsNotNone(list_import_run_items)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = pathlib.Path(temp_dir)
+            config_path = temp_path / "gmail-config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "oauth_client_secrets_path": "./secrets/google-client.json",
+                        "oauth_token_path": "./secrets/gmail-token.json",
+                        "allowed_senders": ["briefing@example.com"],
+                        "query": "newer_than:7d",
+                        "label_ids": ["INBOX"],
+                        "max_results": 10,
+                        "include_spam_trash": False,
+                        "enable_body_links": True,
+                        "allowed_link_domains": ["wx.mail.qq.com"],
+                        "download_link_keywords": ["download", "pdf"],
+                    }
+                )
+            )
+
+            storage_root = temp_path / "storage"
+            database_path = temp_path / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            summary = import_from_gmail(
+                config_path=config_path,
+                storage_root=storage_root,
+                database_url=database_url,
+                service=_FakeQqMailLandingPageService(),
+                downloader=_FakeTranslatedQqMailLandingPageDownloader(
+                    filename="【译】TE-2026-06-13-PDF_WEB.pdf"
+                ),
+            )
+
+            skipped_items = list_import_run_items(
+                database_url=database_url,
+                run_id=summary.run_id,
+                status="skipped",
+            )
+
+        self.assertEqual(summary.created_document_count, 0)
+        filtered = [i for i in skipped_items if i.detail_code == "body_link_filename_filtered"]
+        self.assertEqual(len(filtered), 1)
 
 
 class _FakeGmailService:
@@ -1648,10 +1758,12 @@ class _FakeQqMailLandingPageDownloader:
         self.resolved_urls: list[str] = []
         self.downloaded_urls: list[str] = []
 
-    def resolve_download_url(self, url: str) -> str | None:
+    def resolve_download_url(self, url: str) -> ResolvedDownload | None:
         self.resolved_urls.append(url)
         if url == "https://wx.mail.qq.com/ftn/download?func=3&key=landing":
-            return "https://wx.mail.qq.com/ftn/download?func=4&key=resolved&code=123"
+            return ResolvedDownload(
+                url="https://wx.mail.qq.com/ftn/download?func=4&key=resolved&code=123",
+            )
         return None
 
     def download_binary(self, url: str) -> bytes:
@@ -1659,6 +1771,50 @@ class _FakeQqMailLandingPageDownloader:
         if url == "https://wx.mail.qq.com/ftn/download?func=4&key=resolved&code=123":
             return b"%PDF-1.7 qqmail-json"
         raise AssertionError(f"Unexpected binary download URL: {url}")
+
+    def fetch_html(self, url: str) -> str:
+        raise AssertionError(f"Should not fetch HTML for QQ landing page URL: {url}")
+
+
+class _FakeNamedQqMailLandingPageDownloader:
+    def __init__(self, *, filename: str) -> None:
+        self._filename = filename
+        self.resolved_urls: list[str] = []
+        self.downloaded_urls: list[str] = []
+
+    def resolve_download_url(self, url: str) -> ResolvedDownload | None:
+        self.resolved_urls.append(url)
+        if url == "https://wx.mail.qq.com/ftn/download?func=3&key=landing":
+            return ResolvedDownload(
+                url="https://wx.mail.qq.com/ftn/download?func=4&key=resolved&code=123",
+                filename=self._filename,
+            )
+        return None
+
+    def download_binary(self, url: str) -> bytes:
+        self.downloaded_urls.append(url)
+        if url == "https://wx.mail.qq.com/ftn/download?func=4&key=resolved&code=123":
+            return b"%PDF-1.7 te-edition"
+        raise AssertionError(f"Unexpected binary download URL: {url}")
+
+    def fetch_html(self, url: str) -> str:
+        raise AssertionError(f"Should not fetch HTML for QQ landing page URL: {url}")
+
+
+class _FakeTranslatedQqMailLandingPageDownloader:
+    def __init__(self, *, filename: str) -> None:
+        self._filename = filename
+
+    def resolve_download_url(self, url: str) -> ResolvedDownload | None:
+        if url == "https://wx.mail.qq.com/ftn/download?func=3&key=landing":
+            return ResolvedDownload(
+                url="https://wx.mail.qq.com/ftn/download?func=4&key=resolved&code=123",
+                filename=self._filename,
+            )
+        return None
+
+    def download_binary(self, url: str) -> bytes:
+        raise AssertionError(f"Translated copy must not be downloaded: {url}")
 
     def fetch_html(self, url: str) -> str:
         raise AssertionError(f"Should not fetch HTML for QQ landing page URL: {url}")

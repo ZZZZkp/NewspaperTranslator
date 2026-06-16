@@ -76,6 +76,12 @@ class GmailRetrySummary:
     failed_final_message_count: int
 
 
+@dataclass(frozen=True)
+class ResolvedDownload:
+    url: str
+    filename: str | None = None
+
+
 def load_gmail_integration_config(path: Path) -> GmailIntegrationConfig:
     config_path = Path(path)
     payload = json.loads(config_path.read_text())
@@ -907,15 +913,24 @@ def _build_attachment_from_url(
             content_bytes=downloader.download_binary(url),
         )
 
-    resolved_download_url = _resolve_download_url(
+    resolved_download = _resolve_download_url(
         url=url,
         downloader=downloader,
     )
-    if resolved_download_url:
+    if resolved_download is not None:
+        filename = resolved_download.filename or _filename_from_url(resolved_download.url)
+        if resolved_download.filename and _is_translated_pdf_filename(filename):
+            # Carry the real name with empty bytes to avoid downloading the large
+            # translation; the caller filters it out by filename (body_link_filename_filtered).
+            return _build_body_link_attachment(
+                source_url=url,
+                filename=filename,
+                content_bytes=b"",
+            )
         return _build_body_link_attachment(
             source_url=url,
-            filename=_filename_from_url(resolved_download_url),
-            content_bytes=downloader.download_binary(resolved_download_url),
+            filename=filename,
+            content_bytes=downloader.download_binary(resolved_download.url),
         )
 
     direct_pdf_bytes = _try_download_direct_pdf(
@@ -970,7 +985,7 @@ def _resolve_download_url(
     *,
     url: str,
     downloader,
-) -> str | None:
+) -> ResolvedDownload | None:
     resolver = getattr(downloader, "resolve_download_url", None)
     if not callable(resolver):
         return None
@@ -1095,7 +1110,7 @@ class HttpLinkDownloader:
         response.raise_for_status()
         return response.text
 
-    def resolve_download_url(self, url: str) -> str | None:
+    def resolve_download_url(self, url: str) -> ResolvedDownload | None:
         if not _is_qq_mail_landing_page(url):
             return None
 
@@ -1111,7 +1126,7 @@ class HttpLinkDownloader:
         candidate_url = body.get("url") or body.get("download_url") or payload.get("download_url")
         if not candidate_url:
             return None
-        return str(candidate_url)
+        return ResolvedDownload(url=str(candidate_url), filename=body.get("name") or None)
 
 
 def _is_qq_mail_landing_page(url: str) -> bool:

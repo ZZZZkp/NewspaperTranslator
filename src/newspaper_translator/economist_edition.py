@@ -57,6 +57,13 @@ def compute_article_ranges(
 
 _NAV_TOKENS = ("下一项", "上一项", "章节菜单", "主菜单")
 _CALIBRE_URL_MARKER = "downloaded by calibre from"
+# The footer sentence is "This article was downloaded by calibre from <url>".
+# Truncating at the bare marker leaves the orphan prefix "This article was", so
+# match (and drop) the optional leading "This article was" as well.
+_CALIBRE_FOOTER = re.compile(
+    r"(?:This\s+article\s+was\s+)?" + _CALIBRE_URL_MARKER,
+    re.IGNORECASE,
+)
 _SUBSCRIBER_PROMO = re.compile(
     r"Subscribers to The Economist can sign up",
     re.IGNORECASE,
@@ -70,9 +77,9 @@ def clean_edition_text(raw: str) -> tuple[str, str]:
     url = _extract_calibre_url(raw)
 
     text = raw
-    marker_index = text.lower().find(_CALIBRE_URL_MARKER)
-    if marker_index != -1:
-        text = text[:marker_index]
+    footer_match = _CALIBRE_FOOTER.search(text)
+    if footer_match:
+        text = text[: footer_match.start()]
     promo_match = _SUBSCRIBER_PROMO.search(text)
     if promo_match:
         text = text[: promo_match.start()]

@@ -55,6 +55,20 @@ class ReadImageSizeTests(unittest.TestCase):
             path = _write(tmp, "a.txt", b"not an image at all")
             self.assertIsNone(read_image_size(path))
 
+    def test_reads_jpeg_with_sof_at_buffer_tail(self) -> None:
+        # SOI + SOF0 with no trailing bytes: the SOF dimensions sit at the very
+        # end of the data, guarding against an off-by-one in the scan loop.
+        data = (
+            b"\xff\xd8"
+            + b"\xff\xc0\x00\x11\x08"
+            + (240).to_bytes(2, "big")
+            + (320).to_bytes(2, "big")
+        )
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = pathlib.Path(tmp_dir)
+            path = _write(tmp, "tail.jpg", data)
+            self.assertEqual(read_image_size(path), (320, 240))
+
     def test_returns_none_for_missing_file(self) -> None:
         self.assertIsNone(read_image_size("/nonexistent/path/missing.png"))
 

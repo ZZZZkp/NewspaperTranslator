@@ -38,7 +38,7 @@ def _read_png_size(data: bytes) -> tuple[int, int] | None:
 def _read_jpeg_size(data: bytes) -> tuple[int, int] | None:
     index = 2
     length = len(data)
-    while index + 9 < length:
+    while index + 8 < length:
         if data[index] != 0xFF:
             index += 1
             continue

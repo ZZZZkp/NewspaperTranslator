@@ -5,7 +5,7 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
-from newspaper_translator.image_dimensions import read_image_size
+from newspaper_translator.image_dimensions import pick_largest_image, read_image_size
 
 
 def _png_bytes(width: int, height: int) -> bytes:
@@ -57,6 +57,32 @@ class ReadImageSizeTests(unittest.TestCase):
 
     def test_returns_none_for_missing_file(self) -> None:
         self.assertIsNone(read_image_size("/nonexistent/path/missing.png"))
+
+
+class PickLargestImageTests(unittest.TestCase):
+    def test_picks_largest_by_pixel_area(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = pathlib.Path(tmp_dir)
+            small = _write(tmp, "small.png", _png_bytes(100, 100))
+            large = _write(tmp, "large.jpg", _jpeg_bytes(400, 300))
+            self.assertEqual(pick_largest_image([small, large]), large)
+
+    def test_ignores_unparseable_and_picks_largest_parseable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = pathlib.Path(tmp_dir)
+            broken = _write(tmp, "broken.png", b"not an image")
+            good = _write(tmp, "good.png", _png_bytes(50, 50))
+            self.assertEqual(pick_largest_image([broken, good]), good)
+
+    def test_falls_back_to_first_when_all_unparseable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = pathlib.Path(tmp_dir)
+            first = _write(tmp, "first.png", b"nope")
+            second = _write(tmp, "second.png", b"nope either")
+            self.assertEqual(pick_largest_image([first, second]), first)
+
+    def test_returns_none_for_empty_list(self) -> None:
+        self.assertIsNone(pick_largest_image([]))
 
 
 if __name__ == "__main__":

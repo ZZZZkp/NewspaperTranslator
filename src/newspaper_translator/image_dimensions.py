@@ -57,3 +57,24 @@ def _read_jpeg_size(data: bytes) -> tuple[int, int] | None:
             return None
         index += 2 + segment_length
     return None
+
+
+def pick_largest_image(paths: list[str]) -> str | None:
+    """Return the path whose pixel area (width*height) is largest.
+
+    Paths that cannot be parsed count as area 0. When every path is
+    unparseable but the list is non-empty, fall back to the first path so a
+    card with images still shows one. Returns None for an empty list.
+    """
+    if not paths:
+        return None
+
+    best_path = paths[0]
+    best_area = -1
+    for path in paths:
+        size = read_image_size(path)
+        area = size[0] * size[1] if size is not None else 0
+        if area > best_area:
+            best_area = area
+            best_path = path
+    return best_path

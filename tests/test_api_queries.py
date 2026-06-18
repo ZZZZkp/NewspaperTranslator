@@ -1911,6 +1911,111 @@ class ArticleQueryTests(unittest.TestCase):
         self.assertNotIn("Hidden Ad", titles)
         self.assertEqual(view.visible_article_count, 1)
 
+    def test_article_cards_set_hero_image_to_largest_image(self) -> None:
+        self.assertIsNotNone(list_article_card_views)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = pathlib.Path(temp_dir)
+            database_path = temp_path / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            small_image = temp_path / "small.png"
+            small_image.write_bytes(
+                b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR"
+                + (100).to_bytes(4, "big")
+                + (100).to_bytes(4, "big")
+                + b"\x08\x02\x00\x00\x00"
+            )
+            large_image = temp_path / "large.png"
+            large_image.write_bytes(
+                b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR"
+                + (800).to_bytes(4, "big")
+                + (600).to_bytes(4, "big")
+                + b"\x08\x02\x00\x00\x00"
+            )
+
+            document_key = self._insert_document(
+                database_path,
+                original_filename="ft-2026-04-22.pdf",
+                source_name="Financial Times",
+            )
+            parse_run = create_parse_run(
+                database_url=database_url,
+                document_key=document_key,
+                parser_name="mineru",
+                parser_version="vlm",
+                publication_date="2026-04-22",
+                continuation_matcher_name="gemini",
+                continuation_matcher_version="2.5-flash",
+            )
+            record_parse_run_result(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                parse_result=self._build_parse_result(
+                    title="Two images, pick the larger one",
+                    body_suffix=(
+                        f"![]({small_image})\n"
+                        f"![]({large_image})"
+                    ),
+                ),
+                document_key=document_key,
+                publication_date="2026-04-22",
+            )
+            finalize_parse_run(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                status="succeeded",
+            )
+
+            cards = list_article_card_views(database_url=database_url)
+
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0].hero_image_url, str(large_image))
+
+    def test_article_cards_have_no_hero_image_without_images(self) -> None:
+        self.assertIsNotNone(list_article_card_views)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            document_key = self._insert_document(
+                database_path,
+                original_filename="ft-2026-04-23.pdf",
+                source_name="Financial Times",
+            )
+            parse_run = create_parse_run(
+                database_url=database_url,
+                document_key=document_key,
+                parser_name="mineru",
+                parser_version="vlm",
+                publication_date="2026-04-23",
+                continuation_matcher_name="gemini",
+                continuation_matcher_version="2.5-flash",
+            )
+            record_parse_run_result(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                parse_result=self._build_parse_result(
+                    title="No images here",
+                    body_suffix="Just plain text, no figures.",
+                ),
+                document_key=document_key,
+                publication_date="2026-04-23",
+            )
+            finalize_parse_run(
+                database_url=database_url,
+                parse_run_id=parse_run.parse_run_id,
+                status="succeeded",
+            )
+
+            cards = list_article_card_views(database_url=database_url)
+
+        self.assertEqual(len(cards), 1)
+        self.assertIsNone(cards[0].hero_image_url)
+
     def _insert_document(
         self,
         database_path: pathlib.Path,

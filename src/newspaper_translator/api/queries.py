@@ -14,6 +14,7 @@ from newspaper_translator.document_processing import (
     get_article_processing_run,
     get_document_processing_run,
 )
+from newspaper_translator.image_dimensions import pick_largest_image
 
 _LATEST_USABLE_ENRICHMENT_SUBQUERY = """
 SELECT r.article_id, r.status
@@ -1016,6 +1017,15 @@ def list_article_card_views(
             if enrichment.status == "partial":
                 processing_badges.append("partial_enrichment")
 
+        image_paths = [
+            image.image_path
+            for image in list_article_images(
+                database_url=database_url,
+                article_id=row[0],
+            )
+        ]
+        hero_image_url = pick_largest_image(image_paths)
+
         cards.append(
             ArticleCardView(
                 article_id=row[0],
@@ -1027,7 +1037,7 @@ def list_article_card_views(
                 title_zh=title_zh,
                 summary_zh=summary_zh,
                 tags=tags,
-                hero_image_url=None,
+                hero_image_url=hero_image_url,
                 reading_status=reading_status,
                 quality_flags=[],
                 processing_badges=processing_badges,

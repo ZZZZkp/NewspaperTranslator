@@ -187,6 +187,17 @@ class FrontendStaticTests(unittest.TestCase):
         self.assertIn('id="ap-reader-compare-pane"', index_text)
         self.assertIn("createArticleReader", app_text)
 
+    def test_article_card_template_includes_hero_image(self) -> None:
+        index_path = PROJECT_ROOT / "frontend" / "index.html"
+        index_text = index_path.read_text()
+        self.assertIn('class="card-hero"', index_text)
+
+        styles_path = PROJECT_ROOT / "frontend" / "styles.css"
+        self.assertIn(".card-hero", styles_path.read_text())
+
+        app_path = PROJECT_ROOT / "frontend" / "app.js"
+        self.assertIn("hero_image_url", app_path.read_text())
+
 
 if __name__ == "__main__":
     unittest.main()

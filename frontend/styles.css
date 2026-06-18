@@ -295,6 +295,15 @@ body {
   background: var(--surface-strong);
   border: 1px solid rgba(221, 209, 189, 0.8);
   cursor: pointer;
+  overflow: hidden;
+}
+
+.card-hero {
+  width: calc(100% + 40px);
+  height: 160px;
+  margin: -20px -20px 0;
+  object-fit: cover;
+  border-radius: 20px 20px 0 0;
 }
 
 .card-topline {

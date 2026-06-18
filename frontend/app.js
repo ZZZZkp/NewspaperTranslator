@@ -387,6 +387,21 @@ function renderCards(container, cards, emptyText) {
     node.querySelector(".card-summary").textContent =
       card.summary_zh || "当前没有中文摘要，已降级为英文阅读模式。";
 
+    const hero = node.querySelector(".card-hero");
+    if (hero) {
+      if (card.hero_image_url) {
+        hero.src = `/api/local-image?path=${encodeURIComponent(card.hero_image_url)}`;
+        hero.alt = card.title_zh || card.title_en || "article image";
+        hero.loading = "lazy";
+        hero.hidden = false;
+        hero.addEventListener("error", () => {
+          hero.remove();
+        });
+      } else {
+        hero.remove();
+      }
+    }
+
     const badgeRow = node.querySelector(".badge-row");
     (card.processing_badges || []).forEach((badgeText) => {
       const badge = document.createElement("span");

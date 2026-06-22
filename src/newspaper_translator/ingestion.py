@@ -99,6 +99,34 @@ def import_gmail_pdf_attachment(
     connection = sqlite3.connect(database_path)
     try:
         connection.execute("BEGIN IMMEDIATE")
+
+        def _reuse_existing(row) -> ImportedDocument:
+            connection.commit()
+            print(
+                format_log_event(
+                    level="INFO",
+                    event="duplicate_document_reused",
+                    service="worker",
+                    details={
+                        "content_hash": content_hash,
+                        "canonical_document_key": row[0],
+                        "message_id": message.message_id,
+                        "attachment_id": attachment.attachment_id,
+                    },
+                ),
+                flush=True,
+            )
+            create_document_processing_run(
+                database_url=database_url,
+                document_key=row[0],
+            )
+            return ImportedDocument(
+                document_key=row[0],
+                content_hash=content_hash,
+                raw_path=Path(row[1]),
+                was_created=False,
+            )
+
         existing_row = connection.execute(
             """
             SELECT document_key, raw_path
@@ -110,31 +138,21 @@ def import_gmail_pdf_attachment(
             (content_hash,),
         ).fetchone()
         if existing_row is not None:
-            connection.commit()
-            print(
-                format_log_event(
-                    level="INFO",
-                    event="duplicate_document_reused",
-                    service="worker",
-                    details={
-                        "content_hash": content_hash,
-                        "canonical_document_key": existing_row[0],
-                        "message_id": message.message_id,
-                        "attachment_id": attachment.attachment_id,
-                    },
-                ),
-                flush=True,
-            )
-            create_document_processing_run(
-                database_url=database_url,
-                document_key=existing_row[0],
-            )
-            return ImportedDocument(
-                document_key=existing_row[0],
-                content_hash=content_hash,
-                raw_path=Path(existing_row[1]),
-                was_created=False,
-            )
+            return _reuse_existing(existing_row)
+
+        if filename_source_name and filename_issue_date:
+            issue_row = connection.execute(
+                """
+                SELECT document_key, raw_path
+                FROM documents
+                WHERE source_name = ? AND issue_date = ?
+                ORDER BY created_at ASC, rowid ASC
+                LIMIT 1
+                """,
+                (filename_source_name, filename_issue_date),
+            ).fetchone()
+            if issue_row is not None:
+                return _reuse_existing(issue_row)
 
         cursor = connection.execute(
             """

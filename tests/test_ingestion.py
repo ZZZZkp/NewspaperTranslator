@@ -695,6 +695,69 @@ class IngestionSelectionTests(unittest.TestCase):
                 connection.close()
         self.assertEqual(row, ("经济学人", "2026-06-20"))
 
+    def test_same_issue_different_file_dedupes_to_one_document(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage_root = pathlib.Path(temp_dir) / "storage"
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            def make(att_id, body):
+                return GmailAttachment(
+                    attachment_id=att_id,
+                    filename="wsj-2026-05-06.pdf",
+                    mime_type="application/pdf",
+                    content_bytes=body,
+                )
+
+            msg = GmailMessage(message_id="m1", sender="s@example.com", attachments=[])
+            first = import_gmail_pdf_attachment(
+                message=msg, attachment=make("a1", b"%PDF first bytes"),
+                storage_root=storage_root, database_url=database_url,
+            )
+            second = import_gmail_pdf_attachment(
+                message=msg, attachment=make("a2", b"%PDF different bytes"),
+                storage_root=storage_root, database_url=database_url,
+            )
+
+            connection = sqlite3.connect(database_path)
+            try:
+                doc_count = connection.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+                run_count = connection.execute(
+                    "SELECT COUNT(*) FROM document_processing_runs WHERE document_key = ?",
+                    (first.document_key,),
+                ).fetchone()[0]
+            finally:
+                connection.close()
+
+        self.assertFalse(second.was_created)
+        self.assertEqual(second.document_key, first.document_key)
+        self.assertEqual(doc_count, 1)
+        self.assertEqual(run_count, 1)
+
+    def test_dateless_files_are_not_issue_deduped(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage_root = pathlib.Path(temp_dir) / "storage"
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            msg = GmailMessage(message_id="m1", sender="s@example.com", attachments=[])
+            for att_id, body in (("a1", b"%PDF one"), ("a2", b"%PDF two")):
+                import_gmail_pdf_attachment(
+                    message=msg,
+                    attachment=GmailAttachment(
+                        attachment_id=att_id, filename="daily-paper.pdf",
+                        mime_type="application/pdf", content_bytes=body,
+                    ),
+                    storage_root=storage_root, database_url=database_url,
+                )
+            connection = sqlite3.connect(database_path)
+            try:
+                doc_count = connection.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+            finally:
+                connection.close()
+        self.assertEqual(doc_count, 2)
+
 
 class TranslationPrefixFilterTests(unittest.TestCase):
     def _attachment(self, filename: str) -> "GmailAttachment":

@@ -8,6 +8,7 @@ import unicodedata
 
 from newspaper_translator.database import sqlite_path_from_database_url
 from newspaper_translator.document_processing import create_document_processing_run
+from newspaper_translator.filename_metadata import extract_filename_date, match_publisher_alias
 from newspaper_translator.documents import DocumentIdentity
 from newspaper_translator.logging_utils import format_log_event
 
@@ -257,6 +258,9 @@ def _extract_source_name_from_filename(filename: str) -> str:
         return "经济学人"
     stem = Path(filename).name
     stem = Path(stem).stem
+    alias = match_publisher_alias(stem)
+    if alias:
+        return alias
     full_date_match = re.search(
         r"^(?P<prefix>.*?)[-_](\d{4})[-_](\d{1,2})[-_](\d{1,2})$",
         stem,

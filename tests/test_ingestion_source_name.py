@@ -37,6 +37,18 @@ class ExtractSourceNameTests(unittest.TestCase):
             "TE-summary",
         )
 
+    def test_economist_usa_written_date_filename_maps_to_economist(self) -> None:
+        self.assertEqual(
+            _extract_source_name_from_filename("The Economist USA - June 20 2026.pdf"),
+            "经济学人",
+        )
+
+    def test_bloomberg_filename_maps_to_label(self) -> None:
+        self.assertEqual(
+            _extract_source_name_from_filename("Bloomberg Businessweek USA - June 2026.pdf"),
+            "彭博商业周刊",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -100,19 +100,29 @@ def import_gmail_pdf_attachment(
     try:
         connection.execute("BEGIN IMMEDIATE")
 
-        def _reuse_existing(row) -> ImportedDocument:
+        def _reuse_existing(row, reason: str) -> ImportedDocument:
             connection.commit()
+            details = {
+                "reuse_reason": reason,
+                "canonical_document_key": row[0],
+                "message_id": message.message_id,
+                "attachment_id": attachment.attachment_id,
+            }
+            if reason == "content_hash":
+                # Only the content-hash path guarantees the incoming hash
+                # matches the canonical document.
+                details["content_hash"] = content_hash
+            else:
+                # Issue-identity reuse: the incoming hash does NOT match the
+                # canonical doc, so record the matched issue identity instead.
+                details["source_name"] = filename_source_name
+                details["issue_date"] = filename_issue_date
             print(
                 format_log_event(
                     level="INFO",
                     event="duplicate_document_reused",
                     service="worker",
-                    details={
-                        "content_hash": content_hash,
-                        "canonical_document_key": row[0],
-                        "message_id": message.message_id,
-                        "attachment_id": attachment.attachment_id,
-                    },
+                    details=details,
                 ),
                 flush=True,
             )
@@ -138,8 +148,12 @@ def import_gmail_pdf_attachment(
             (content_hash,),
         ).fetchone()
         if existing_row is not None:
-            return _reuse_existing(existing_row)
+            return _reuse_existing(existing_row, reason="content_hash")
 
+        # issue_date granularity follows the filename: month-only filenames
+        # (e.g. a monthly like "Bloomberg Businessweek USA - June 2026")
+        # resolve to the first of the month, so a single issue per month is
+        # intentional for monthly publications.
         if filename_source_name and filename_issue_date:
             issue_row = connection.execute(
                 """
@@ -152,7 +166,7 @@ def import_gmail_pdf_attachment(
                 (filename_source_name, filename_issue_date),
             ).fetchone()
             if issue_row is not None:
-                return _reuse_existing(issue_row)
+                return _reuse_existing(issue_row, reason="issue_identity")
 
         cursor = connection.execute(
             """

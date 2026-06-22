@@ -80,6 +80,10 @@ def import_gmail_pdf_attachment(
         content_hash=content_hash,
     )
     filename_source_name = _extract_source_name_from_filename(attachment.filename)
+    filename_issue_date = extract_filename_date(
+        attachment.filename,
+        source_message_internal_date=message.internal_date,
+    )
 
     raw_path = _build_raw_pdf_path(
         storage_root=Path(storage_root),
@@ -144,8 +148,9 @@ def import_gmail_pdf_attachment(
                 content_hash,
                 raw_path,
                 import_status,
-                source_message_internal_date
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                source_message_internal_date,
+                issue_date
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 identity.document_key,
@@ -158,6 +163,7 @@ def import_gmail_pdf_attachment(
                 str(raw_path),
                 "imported",
                 message.internal_date,
+                filename_issue_date or None,
             ),
         )
         was_created = cursor.rowcount == 1

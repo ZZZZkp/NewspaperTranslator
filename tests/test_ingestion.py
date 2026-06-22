@@ -665,6 +665,36 @@ class IngestionSelectionTests(unittest.TestCase):
         self.assertEqual(results[0].document_key, "message-1:attachment-1:" + results[0].content_hash)
         self.assertEqual(stored_filenames, [("wsj-2026-05-03.pdf",)])
 
+    def test_import_stores_filename_issue_date(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage_root = pathlib.Path(temp_dir) / "storage"
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+
+            message = GmailMessage(message_id="m1", sender="s@example.com", attachments=[])
+            attachment = GmailAttachment(
+                attachment_id="a1",
+                filename="The Economist USA - June 20 2026.pdf",
+                mime_type="application/pdf",
+                content_bytes=b"%PDF-1.7 economist",
+            )
+            result = import_gmail_pdf_attachment(
+                message=message,
+                attachment=attachment,
+                storage_root=storage_root,
+                database_url=database_url,
+            )
+            connection = sqlite3.connect(database_path)
+            try:
+                row = connection.execute(
+                    "SELECT source_name, issue_date FROM documents WHERE document_key = ?",
+                    (result.document_key,),
+                ).fetchone()
+            finally:
+                connection.close()
+        self.assertEqual(row, ("经济学人", "2026-06-20"))
+
 
 class TranslationPrefixFilterTests(unittest.TestCase):
     def _attachment(self, filename: str) -> "GmailAttachment":

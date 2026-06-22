@@ -29,6 +29,7 @@ class StoredDocument:
     original_filename: str
     raw_path: str
     source_message_internal_date: str | None
+    issue_date: str | None = None
 
 
 def persist_document_articles(
@@ -55,6 +56,7 @@ def persist_document_articles(
         markdown_text=parsed_document.markdown_text,
         source_message_internal_date=document.source_message_internal_date,
         fallback_year=datetime.now().year,
+        issue_date=document.issue_date,
     )
 
     parse_run = create_parse_run(
@@ -141,6 +143,7 @@ def persist_economist_edition_articles(
         markdown_text=parsed_edition.debug_text,
         source_message_internal_date=document.source_message_internal_date,
         fallback_year=datetime.now().year,
+        issue_date=document.issue_date,
     )
 
     parse_run = create_parse_run(
@@ -201,7 +204,10 @@ def resolve_publication_date(
     markdown_text: str,
     source_message_internal_date: str | None = None,
     fallback_year: int | None = None,
+    issue_date: str | None = None,
 ) -> str:
+    if issue_date:
+        return issue_date
     filename_iso_date = _extract_iso_date_from_text(original_filename)
     if filename_iso_date:
         return filename_iso_date
@@ -331,7 +337,7 @@ def _get_document(*, database_url: str, document_key: str) -> StoredDocument:
     try:
         row = connection.execute(
             """
-            SELECT document_key, original_filename, raw_path, source_message_internal_date
+            SELECT document_key, original_filename, raw_path, source_message_internal_date, issue_date
             FROM documents
             WHERE document_key = ?
             """,
@@ -348,6 +354,7 @@ def _get_document(*, database_url: str, document_key: str) -> StoredDocument:
         original_filename=row[1],
         raw_path=row[2],
         source_message_internal_date=row[3],
+        issue_date=row[4],
     )
 
 

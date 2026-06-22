@@ -75,7 +75,7 @@ def extract_filename_date(
     month_day = _MONTH_DAY_RE.search(stem)
     if month_day:
         gmail_dt = _gmail_datetime(source_message_internal_date)
-        year = gmail_dt.year if gmail_dt else (fallback_year or datetime.now().year)
+        year = gmail_dt.year if gmail_dt else (fallback_year or datetime.now(_GMAIL_MESSAGE_TZ).year)
         return _normalize(year, int(month_day.group(1)), int(month_day.group(2)))
 
     return ""

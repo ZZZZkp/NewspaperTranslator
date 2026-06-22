@@ -32,6 +32,17 @@ class MatchPublisherAliasTests(unittest.TestCase):
     def test_unknown_prefix_returns_none(self) -> None:
         self.assertIsNone(match_publisher_alias("金融时报-5-6"))
 
+    def test_longest_matching_alias_wins(self) -> None:
+        from unittest import mock
+        import newspaper_translator.filename_metadata as fm
+        with mock.patch.dict(
+            fm.PUBLISHER_ALIASES,
+            {"acme": "SHORT", "acme weekly": "LONG"},
+            clear=True,
+        ):
+            self.assertEqual(fm.match_publisher_alias("ACME Weekly - June 2026"), "LONG")
+            self.assertEqual(fm.match_publisher_alias("ACME Daily"), "SHORT")
+
 
 class ExtractFilenameDateTests(unittest.TestCase):
     def test_iso_date(self) -> None:
@@ -65,6 +76,22 @@ class ExtractFilenameDateTests(unittest.TestCase):
     def test_month_day_uses_fallback_year_without_gmail(self) -> None:
         self.assertEqual(
             extract_filename_date("金融时报-5-6.pdf", fallback_year=2024),
+            "2024-05-06",
+        )
+
+    def test_sept_abbreviation_normalizes(self) -> None:
+        self.assertEqual(
+            extract_filename_date("Paper - Sept 5 2026.pdf"),
+            "2026-09-05",
+        )
+
+    def test_non_numeric_internal_date_falls_back_to_year(self) -> None:
+        self.assertEqual(
+            extract_filename_date(
+                "金融时报-5-6.pdf",
+                source_message_internal_date="not-a-number",
+                fallback_year=2024,
+            ),
             "2024-05-06",
         )
 

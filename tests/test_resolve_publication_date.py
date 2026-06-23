@@ -31,6 +31,27 @@ class ResolvePublicationDateTests(unittest.TestCase):
             "2026-05-06",
         )
 
+    def test_written_month_year_filename_without_issue_date(self) -> None:
+        # issue_date NULL (e.g. reprocessing an old row); must not fall back to markdown.
+        self.assertEqual(
+            resolve_publication_date(
+                original_filename="Bloomberg Businessweek USA - June 2026.pdf",
+                markdown_text="March 30, 1979 was a date",
+                issue_date=None,
+            ),
+            "2026-06-01",
+        )
+
+    def test_written_day_month_year_filename_without_issue_date(self) -> None:
+        self.assertEqual(
+            resolve_publication_date(
+                original_filename="The Economist USA - June 20 2026.pdf",
+                markdown_text="January 1, 2000",
+                issue_date=None,
+            ),
+            "2026-06-20",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

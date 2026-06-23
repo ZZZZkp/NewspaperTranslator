@@ -1,9 +1,8 @@
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 import re
 import sqlite3
-from zoneinfo import ZoneInfo
 
 from newspaper_translator.article_store import (
     create_parse_run,
@@ -12,6 +11,7 @@ from newspaper_translator.article_store import (
     update_parse_run_source_artifacts,
 )
 from newspaper_translator.database import sqlite_path_from_database_url
+from newspaper_translator.filename_metadata import extract_filename_date
 from newspaper_translator.logging_utils import format_log_event
 from newspaper_translator.mineru_page_state import MineruPageParseStateStore
 from newspaper_translator.bloomberg_edition import (
@@ -23,8 +23,6 @@ from newspaper_translator.economist_edition import (
     parse_economist_edition,
 )
 from newspaper_translator.pdf import ParsedMarkdownPage, build_parse_result_from_mineru_pages
-
-_GMAIL_MESSAGE_TZ = ZoneInfo("Asia/Shanghai")
 
 
 @dataclass(frozen=True)
@@ -289,17 +287,22 @@ def resolve_publication_date(
             },
         )
         return issue_date
-    filename_iso_date = _extract_iso_date_from_text(original_filename)
-    if filename_iso_date:
-        return filename_iso_date
 
-    month_day_candidate_found, filename_month_day_date = _extract_month_day_date_from_filename(
+    filename_date = extract_filename_date(
         original_filename,
         source_message_internal_date=source_message_internal_date,
         fallback_year=fallback_year or datetime.now().year,
     )
-    if month_day_candidate_found:
-        return filename_month_day_date
+    if filename_date:
+        _log_publication_date_resolution(
+            event="publication_date_resolved",
+            details={
+                "original_filename": original_filename,
+                "resolution_source": "filename",
+                "publication_date": filename_date,
+            },
+        )
+        return filename_date
 
     return _extract_written_date_from_text(markdown_text) or _extract_iso_date_from_text(
         markdown_text
@@ -339,66 +342,8 @@ def _extract_written_date_from_text(text: str) -> str:
     return parsed_date.strftime("%Y-%m-%d")
 
 
-def _extract_month_day_date_from_filename(
-    filename: str,
-    *,
-    source_message_internal_date: str | None,
-    fallback_year: int,
-) -> tuple[bool, str]:
-    stem = Path(filename).stem
-    match = re.search(r"[-_](\d{1,2})[-_](\d{1,2})$", stem)
-    if not match:
-        return False, ""
-
-    gmail_datetime = _gmail_message_datetime(source_message_internal_date)
-    year = gmail_datetime.year if gmail_datetime else fallback_year
-    try:
-        resolved = _normalize_date_parts(
-            year=year,
-            month=int(match.group(1)),
-            day=int(match.group(2)),
-        )
-    except ValueError:
-        return False, ""
-
-    _log_publication_date_resolution(
-        event="publication_date_resolved",
-        details={
-            "original_filename": filename,
-            "resolution_source": (
-                "filename_month_day_gmail_year"
-                if gmail_datetime
-                else "filename_month_day_fallback_year"
-            ),
-            "publication_date": resolved,
-        },
-    )
-    if gmail_datetime and gmail_datetime.strftime("%Y-%m-%d") != resolved:
-        _log_publication_date_resolution(
-            event="publication_date_filename_gmail_mismatch",
-            details={
-                "original_filename": filename,
-                "filename_publication_date": resolved,
-                "gmail_message_date": gmail_datetime.strftime("%Y-%m-%d"),
-            },
-        )
-    return True, resolved
-
-
 def _normalize_date_parts(*, year: int, month: int, day: int) -> str:
     return datetime(year=year, month=month, day=day).strftime("%Y-%m-%d")
-
-
-def _gmail_message_datetime(message_internal_date: str | None) -> datetime | None:
-    if not message_internal_date:
-        return None
-    try:
-        timestamp_ms = int(message_internal_date)
-    except ValueError:
-        return None
-    return datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC).astimezone(
-        _GMAIL_MESSAGE_TZ
-    )
 
 
 def _log_publication_date_resolution(*, event: str, details: dict[str, object]) -> None:

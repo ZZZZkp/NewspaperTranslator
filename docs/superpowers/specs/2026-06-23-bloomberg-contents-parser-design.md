@@ -175,6 +175,31 @@ Persistence reuses `persist_economist_edition_articles`'s structure with
 extracts `![](path)` references into `article_images`, the hero-image flow works without new
 storage code. Publication date resolution already prefers `documents.issue_date`.
 
+## Publication Date Robustness (Parity Fix)
+
+Observed in production: an old Bloomberg import showed `publication_date = 1979-03-30`,
+because the deployed code lacked `issue_date` and the date fell back to a stray date in the
+MinerU markdown. The current branch fixes new imports (filename → `issue_date = 2026-06-01`),
+but a latent gap remains: `article_pipeline.resolve_publication_date`'s **filename fallback**
+(used when `documents.issue_date` is NULL — e.g. re-parsing an existing row) only parses ISO
+and `M-D` filename dates, not the written `Month D YYYY` / `Month YYYY` forms. Such a row
+would again fall through to the markdown misparse.
+
+Fix: `resolve_publication_date` falls back to
+`filename_metadata.extract_filename_date(original_filename, source_message_internal_date=…,
+fallback_year=…)` before the markdown parsers, so `Month YYYY` and written-date filenames
+resolve correctly regardless of whether `issue_date` is populated. This makes the date robust
+for both Bloomberg (`June 2026`) and the Economist USA filename (`June 20 2026`) on any code
+path, including reprocessing. Filename-derived dates remain authoritative over markdown.
+
+### Economist filename formats (already supported — confirmed)
+
+Both Economist filename forms already resolve correctly in the branch and must remain
+supported: `TE-2026-06-13-PDF_WEB.pdf` → `经济学人` / `2026-06-13` (e-edition pattern), and
+`The Economist USA - June 20 2026.pdf` → `经济学人` / `2026-06-20` (alias + written date).
+The parity fix above does not change this; it only adds the written-date forms to the
+article-pipeline filename fallback. A regression test pins both forms.
+
 ## Detection And Fallback
 
 `detect_bloomberg_edition(pdf_path)` returns true only when all hold (else false → MinerU):
@@ -228,6 +253,8 @@ a future issue with an unexpected layout from producing empty or broken output.
 
 - Add `persist_bloomberg_edition_articles` (thin wrapper over the Economist persist with the
   Bloomberg parser/name/version), or call the Economist persist with those parameters.
+- In `resolve_publication_date`, add `extract_filename_date(original_filename, …)` as the
+  filename fallback before the markdown parsers (parity fix above).
 
 ## Data Flow
 
@@ -268,6 +295,17 @@ If detection fails at any step → MinerU path (unchanged).
   false (routes to MinerU). A `pypdf` read error → false.
 - A Calibre Economist PDF still routes to the Economist parser (Bloomberg detection false).
 
+### Publication date robustness (parity fix)
+
+- `resolve_publication_date(original_filename="Bloomberg Businessweek USA - June 2026.pdf",
+  markdown_text="<stray 1979 date>", issue_date=None)` → `2026-06-01` (filename fallback, not
+  the markdown date).
+- `resolve_publication_date(original_filename="The Economist USA - June 20 2026.pdf",
+  markdown_text="…", issue_date=None)` → `2026-06-20`.
+- `issue_date`, when present, still wins; existing ISO / `M-D` filename and markdown cases
+  unchanged.
+- Both Economist filename forms map to `经济学人` with correct dates (regression test).
+
 ### End-to-end smoke (real sample)
 
 - Parse the real Bloomberg sample: ~35 articles (not 141), first article folio 10 → physical
@@ -284,3 +322,8 @@ If detection fails at any step → MinerU path (unchanged).
   producing empty or broken output.
 - The Economist Calibre path and the existing MinerU path for other publications are
   unaffected.
+- Both Economist filename formats (`TE-…-PDF_WEB.pdf` and `The Economist USA - June D
+  YYYY.pdf`) map to `经济学人` with correct dates.
+- `publication_date` resolves from the filename's written-date form even when
+  `documents.issue_date` is NULL, so `1979-03-30`-style markdown misparses cannot recur for
+  these publications.

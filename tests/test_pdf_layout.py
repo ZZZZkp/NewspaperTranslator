@@ -241,6 +241,26 @@ class PdfLayoutTests(unittest.TestCase):
         self.assertNotIn("PleaseturntopageA7", articles[0].body_text)
         self.assertNotIn("Continued from PageOne", articles[0].body_text)
 
+    def test_solid_triangle_sets_continued_to_page(self) -> None:
+        from newspaper_translator.pdf import _extract_continued_to_page
+        self.assertEqual(_extract_continued_to_page("the story continues ►84"), "84")
+
+    def test_solid_triangle_sets_continued_from_page(self) -> None:
+        from newspaper_translator.pdf import _extract_continued_from_page
+        self.assertEqual(_extract_continued_from_page("◄52 the story resumes"), "52")
+
+    def test_white_triangle_cross_reference_is_ignored(self) -> None:
+        from newspaper_translator.pdf import _extract_continued_to_page
+        self.assertEqual(_extract_continued_to_page("see related coverage ▷54"), "")
+
+    def test_merge_strips_solid_triangle_markers(self) -> None:
+        from newspaper_translator.pdf import ArticleFragment, _merge_fragment_body_text
+        front = ArticleFragment(title="t", body_text="front body ►84", source_order=1,
+                                continued_to_page="84", continued_from_page="", page_number=1)
+        back = ArticleFragment(title="t", body_text="◄52 back body", source_order=2,
+                               continued_to_page="", continued_from_page="52", page_number=3)
+        self.assertEqual(_merge_fragment_body_text(front, back), "front body\nback body")
+
     def test_passes_only_continuation_fragments_to_matcher(self) -> None:
         self.assertIsNotNone(
             extract_articles_from_mineru_markdown,

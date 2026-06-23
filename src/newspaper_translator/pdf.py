@@ -454,11 +454,18 @@ def _build_parsed_articles(
     return articles
 
 
+_CONTINUED_TO_TRIANGLE = re.compile(r"[►▶]\s*(\d+)")
+_CONTINUED_FROM_TRIANGLE = re.compile(r"[◄◀]\s*(\d+)")
+
+
 def _extract_continued_to_page(body_text: str) -> str:
     match = re.search(r"please\s*turn\s*to\s*page\s*([A-Z]\d+)", body_text, re.IGNORECASE)
-    if not match:
-        return ""
-    return match.group(1).upper()
+    if match:
+        return match.group(1).upper()
+    triangle = _CONTINUED_TO_TRIANGLE.search(body_text)
+    if triangle:
+        return triangle.group(1)
+    return ""
 
 
 def _extract_continued_from_page(body_text: str) -> str:
@@ -467,12 +474,15 @@ def _extract_continued_from_page(body_text: str) -> str:
         body_text,
         re.IGNORECASE,
     )
-    if not match:
-        return ""
-    value = re.sub(r"\s+", "", match.group(1))
-    if value.lower() == "pageone":
-        return "PageOne"
-    return value.removeprefix("page").removeprefix("Page")
+    if match:
+        value = re.sub(r"\s+", "", match.group(1))
+        if value.lower() == "pageone":
+            return "PageOne"
+        return value.removeprefix("page").removeprefix("Page")
+    triangle = _CONTINUED_FROM_TRIANGLE.search(body_text)
+    if triangle:
+        return triangle.group(1)
+    return ""
 
 
 def _merge_fragment_body_text(front_fragment: ArticleFragment, back_fragment: ArticleFragment) -> str:
@@ -481,13 +491,15 @@ def _merge_fragment_body_text(front_fragment: ArticleFragment, back_fragment: Ar
         "",
         front_fragment.body_text,
         flags=re.IGNORECASE,
-    ).rstrip()
+    )
+    front_body = re.sub(r"\s*[►▶]\s*\d+\s*$", "", front_body).rstrip()
     back_body = re.sub(
         r"^continued\s*from\s*(?:PageOne|page\s*[A-Z]\d+)\s*",
         "",
         back_fragment.body_text,
         flags=re.IGNORECASE,
-    ).lstrip()
+    )
+    back_body = re.sub(r"^\s*[◄◀]\s*\d+\s*", "", back_body).lstrip()
     return f"{front_body}\n{back_body}"
 
 

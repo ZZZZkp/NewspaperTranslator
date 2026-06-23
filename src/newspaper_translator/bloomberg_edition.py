@@ -56,7 +56,7 @@ def parse_contents_entries(text: str, *, max_folio: int) -> list[ContentsEntry]:
 _FOLIO_HEADER_RE = re.compile(r"Bloomberg\s*Businessweek\s*(\d{1,3})")
 _CONTENTS_SCAN_PAGES = 15
 _MIN_CONTENTS_ENTRIES = 8
-_MIN_OFFSET_VOTES = 2
+_MIN_OFFSET_VOTES = 3
 _MAX_FOLIO_CAP = 999
 
 

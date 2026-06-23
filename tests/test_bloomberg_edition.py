@@ -99,10 +99,12 @@ class FindContentsPageTests(unittest.TestCase):
 class DetectPageOffsetTests(unittest.TestCase):
     def test_detects_constant_offset_by_vote(self) -> None:
         # physical index 7 (1-based 8) prints folio 6 -> offset +2, etc.
-        texts = [""] * 12
+        texts = [""] * 24
         texts[7] = "Bloomberg Businessweek6\nbody"
         texts[9] = "Bloomberg Businessweek8\nbody"
-        texts[17 % 12] = "noise"
+        texts[11] = "Bloomberg Businessweek10\nbody"
+        texts[21] = "Bloomberg Businessweek20\nbody"
+        texts[3] = "noise"
         reader = _StubReader(texts)
         self.assertEqual(detect_page_offset(reader), 2)
 

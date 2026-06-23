@@ -109,3 +109,30 @@ class DetectPageOffsetTests(unittest.TestCase):
     def test_returns_none_without_enough_markers(self) -> None:
         reader = _StubReader(["no folio here", "still none"])
         self.assertIsNone(detect_page_offset(reader))
+
+
+from newspaper_translator.bloomberg_edition import (
+    BloombergArticleRange,
+    compute_article_ranges,
+)
+
+
+class ComputeArticleRangesTests(unittest.TestCase):
+    def test_ranges_use_offset_and_span_to_next(self) -> None:
+        entries = [
+            ContentsEntry("A", "Remarks", 10),
+            ContentsEntry("B", "In Context", 15),
+            ContentsEntry("C", "Exit", 108),
+        ]
+        ranges = compute_article_ranges(entries, offset=2, total_pages=112)
+        self.assertEqual(
+            [(r.start_page, r.end_page) for r in ranges],
+            [(12, 17), (17, 110), (110, 113)],
+        )
+        self.assertEqual(ranges[0].title, "A")
+
+    def test_pages_before_first_entry_are_dropped(self) -> None:
+        ranges = compute_article_ranges(
+            [ContentsEntry("A", "", 10)], offset=2, total_pages=20
+        )
+        self.assertEqual(ranges[0].start_page, 12)  # pages 1..11 not covered

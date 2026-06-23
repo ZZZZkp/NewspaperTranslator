@@ -92,3 +92,31 @@ def detect_page_offset(reader) -> int | None:
     if count < _MIN_OFFSET_VOTES:
         return None
     return offset
+
+
+@dataclass(frozen=True)
+class BloombergArticleRange:
+    title: str
+    section: str
+    start_page: int  # 1-based, inclusive
+    end_page: int  # 1-based, exclusive
+
+
+def compute_article_ranges(
+    entries: list[ContentsEntry], *, offset: int, total_pages: int
+) -> list[BloombergArticleRange]:
+    ordered = sorted(entries, key=lambda e: e.folio)
+    starts = [e.folio + offset for e in ordered]
+    ranges: list[BloombergArticleRange] = []
+    for index, entry in enumerate(ordered):
+        start = starts[index]
+        end = starts[index + 1] if index + 1 < len(ordered) else total_pages + 1
+        ranges.append(
+            BloombergArticleRange(
+                title=entry.title,
+                section=entry.section,
+                start_page=start,
+                end_page=end,
+            )
+        )
+    return ranges

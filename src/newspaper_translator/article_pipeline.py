@@ -207,6 +207,14 @@ def resolve_publication_date(
     issue_date: str | None = None,
 ) -> str:
     if issue_date:
+        _log_publication_date_resolution(
+            event="publication_date_resolved",
+            details={
+                "original_filename": original_filename,
+                "resolution_source": "stored_issue_date",
+                "publication_date": issue_date,
+            },
+        )
         return issue_date
     filename_iso_date = _extract_iso_date_from_text(original_filename)
     if filename_iso_date:

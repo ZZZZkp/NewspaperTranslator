@@ -16,9 +16,9 @@ class ResolvePublicationDateTests(unittest.TestCase):
             resolve_publication_date(
                 original_filename="The Economist USA - June 20 2026.pdf",
                 markdown_text="May 1, 2020",
-                issue_date="2026-06-20",
+                issue_date="1999-01-01",
             ),
-            "2026-06-20",
+            "1999-01-01",
         )
 
     def test_falls_back_when_issue_date_missing(self) -> None:

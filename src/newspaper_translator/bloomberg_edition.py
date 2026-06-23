@@ -11,6 +11,14 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
+from pypdf import PdfReader
+
+from newspaper_translator.economist_edition import (
+    EditionArticle,
+    ParsedEdition,
+    build_economist_parse_result,
+)
+
 _KNOWN_SECTIONS = ("Remarks", "In Context", "In View", "Pursuits", "Exit Strategy")
 _TRAILING_FOLIO_RE = re.compile(r"^(?P<title>.*\S)\s+(?P<folio>\d{1,3})\s*$")
 
@@ -170,3 +178,73 @@ def extract_article_images(reader, start_page: int, end_page: int, images_dir: P
                 file_path.write_bytes(data)
             refs.append(f"images/{file_path.name}")
     return refs
+
+
+BLOOMBERG_EDITION_PARSER_VERSION = "bloomberg-edition-v1"
+
+
+def detect_bloomberg_edition(pdf_path) -> bool:
+    try:
+        reader = PdfReader(str(pdf_path))
+        producer = str((reader.metadata or {}).get("/Producer") or "").lower()
+        sample = "".join(
+            _page_text(reader, i) for i in range(min(_CONTENTS_SCAN_PAGES, len(reader.pages)))
+        )
+        if "bloomberg businessweek" not in sample.lower():
+            return False
+        if "calibre" in producer:
+            return False
+        if find_contents_page(reader) is None:
+            return False
+        if detect_page_offset(reader) is None:
+            return False
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def parse_bloomberg_edition(pdf_path, *, images_dir: Path) -> ParsedEdition:
+    reader = PdfReader(str(pdf_path))
+    total_pages = len(reader.pages)
+    contents_index = find_contents_page(reader)
+    offset = detect_page_offset(reader)
+    if contents_index is None or offset is None:
+        raise ValueError("Bloomberg Contents page or page offset not found")
+
+    entries = parse_contents_entries(
+        _page_text(reader, contents_index), max_folio=total_pages
+    )
+    ranges = compute_article_ranges(entries, offset=offset, total_pages=total_pages)
+
+    articles: list[EditionArticle] = []
+    debug_parts: list[str] = []
+    for article_range in ranges:
+        body_text = extract_article_text(reader, article_range.start_page, article_range.end_page)
+        image_refs = extract_article_images(
+            reader, article_range.start_page, article_range.end_page, images_dir
+        )
+        if not body_text.strip() and not image_refs:
+            continue
+        body_with_images = body_text
+        if image_refs:
+            body_with_images = body_text + "\n\n" + "\n".join(f"![]({ref})" for ref in image_refs)
+        articles.append(
+            EditionArticle(
+                title=article_range.title,
+                section=article_range.section,
+                start_page=article_range.start_page,
+                end_page=article_range.end_page,
+                body_text=body_with_images,
+                url="",
+            )
+        )
+        debug_parts.append(
+            f"<!-- ARTICLE: {article_range.title} | section={article_range.section} "
+            f"| pages={article_range.start_page}-{article_range.end_page - 1} "
+            f"| images={len(image_refs)} -->\n{body_text}\n"
+        )
+
+    return ParsedEdition(
+        parse_result=build_economist_parse_result(articles),
+        debug_text="\n".join(debug_parts),
+    )

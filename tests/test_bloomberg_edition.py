@@ -199,3 +199,23 @@ class ExtractArticleImagesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             images_dir = pathlib.Path(tmp) / "stem" / "images"
             self.assertEqual(extract_article_images(reader, 1, 3, images_dir), [])
+
+
+from newspaper_translator.bloomberg_edition import (
+    BLOOMBERG_EDITION_PARSER_VERSION,
+    detect_bloomberg_edition,
+)
+
+
+class DetectBloombergEditionTests(unittest.TestCase):
+    def test_real_sample_detected(self) -> None:
+        sample = "/Users/pzk/workspace/NewspaperTranslator/Bloomberg Businessweek USA - June 2026.pdf"
+        if not pathlib.Path(sample).exists():
+            self.skipTest("sample PDF not present")
+        self.assertTrue(detect_bloomberg_edition(sample))
+
+    def test_missing_file_returns_false(self) -> None:
+        self.assertFalse(detect_bloomberg_edition("/nonexistent/file.pdf"))
+
+    def test_parser_version_constant(self) -> None:
+        self.assertEqual(BLOOMBERG_EDITION_PARSER_VERSION, "bloomberg-edition-v1")

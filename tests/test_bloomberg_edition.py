@@ -194,6 +194,41 @@ class ExtractArticleImagesTests(unittest.TestCase):
             for r in refs:
                 self.assertTrue((images_dir.parent / r).exists())
 
+    def test_image_extraction_failure_degrades_to_no_images(self) -> None:
+        # pypdf raises "pillow is required ..." when iterating page.images without
+        # Pillow installed; this must degrade to no images, not crash the parse.
+        class _RaisingData:
+            name = "x.jpg"
+
+            @property
+            def data(self):
+                raise RuntimeError("pillow is required to do image extraction")
+
+        class _DataRaisesPage:
+            images = [_RaisingData()]
+
+            def extract_text(self):
+                return ""
+
+        class _IterRaises:
+            def __iter__(self):
+                raise RuntimeError("pillow is required to do image extraction")
+
+        class _IterRaisesPage:
+            images = _IterRaises()
+
+            def extract_text(self):
+                return ""
+
+        class _Reader:
+            def __init__(self, pages):
+                self.pages = pages
+
+        with tempfile.TemporaryDirectory() as tmp:
+            d = pathlib.Path(tmp) / "stem" / "images"
+            self.assertEqual(extract_article_images(_Reader([_DataRaisesPage()]), 1, 2, d), [])
+            self.assertEqual(extract_article_images(_Reader([_IterRaisesPage()]), 1, 2, d), [])
+
     def test_returns_empty_when_no_images(self) -> None:
         reader = _StubImageReader([[], []])
         with tempfile.TemporaryDirectory() as tmp:

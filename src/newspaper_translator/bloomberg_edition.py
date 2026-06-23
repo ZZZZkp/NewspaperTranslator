@@ -155,10 +155,13 @@ def extract_article_images(reader, start_page: int, end_page: int, images_dir: P
     seen: set[str] = set()
     for page_number in range(start_page, end_page):
         try:
-            images = reader.pages[page_number - 1].images
+            # Force iteration inside the guard: pypdf raises "pillow is required ..."
+            # while building image objects, not only on .data access. Image extraction
+            # is best-effort — any failure degrades to no images for the page.
+            page_images = list(reader.pages[page_number - 1].images)
         except Exception:  # noqa: BLE001
             continue
-        for image in images:
+        for image in page_images:
             try:
                 data = image.data
             except Exception:  # noqa: BLE001

@@ -454,8 +454,8 @@ def _build_parsed_articles(
     return articles
 
 
-_CONTINUED_TO_TRIANGLE = re.compile(r"[►▶]\s*(\d+)")
-_CONTINUED_FROM_TRIANGLE = re.compile(r"[◄◀]\s*(\d+)")
+_CONTINUED_TO_TRIANGLE = re.compile(r"[►▶]\s*(\d+)\s*$")
+_CONTINUED_FROM_TRIANGLE = re.compile(r"^\s*[◄◀]\s*(\d+)")
 
 
 def _extract_continued_to_page(body_text: str) -> str:

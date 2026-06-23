@@ -261,6 +261,14 @@ class PdfLayoutTests(unittest.TestCase):
                                continued_to_page="", continued_from_page="52", page_number=3)
         self.assertEqual(_merge_fragment_body_text(front, back), "front body\nback body")
 
+    def test_inline_triangle_bullet_is_not_a_continuation(self) -> None:
+        from newspaper_translator.pdf import _extract_continued_to_page, _extract_continued_from_page
+        # An inline solid-triangle bullet mid-text must not be read as a jump page.
+        self.assertEqual(_extract_continued_to_page("►3 key points about the economy"), "")
+        # The real continuation note sits at the fragment boundary.
+        self.assertEqual(_extract_continued_to_page("the story continues ►84"), "84")
+        self.assertEqual(_extract_continued_from_page("◄52 the story resumes here"), "52")
+
     def test_passes_only_continuation_fragments_to_matcher(self) -> None:
         self.assertIsNotNone(
             extract_articles_from_mineru_markdown,

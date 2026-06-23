@@ -120,3 +120,21 @@ def compute_article_ranges(
             )
         )
     return ranges
+
+
+_AD_LINE_RE = re.compile(r"^\s*ADVERTISEMENT\s*$", re.IGNORECASE)
+
+
+def extract_article_text(reader, start_page: int, end_page: int) -> str:
+    parts: list[str] = []
+    for page_number in range(start_page, end_page):
+        parts.append(_page_text(reader, page_number - 1))
+    raw = "\n".join(parts)
+    cleaned_lines: list[str] = []
+    for raw_line in raw.splitlines():
+        line = _FOLIO_HEADER_RE.sub("", raw_line).rstrip()
+        if _AD_LINE_RE.match(line):
+            continue
+        cleaned_lines.append(line)
+    body = "\n".join(cleaned_lines).strip()
+    return re.sub(r"\n{3,}", "\n\n", body)

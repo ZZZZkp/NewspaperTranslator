@@ -138,3 +138,20 @@ class ComputeArticleRangesTests(unittest.TestCase):
             [ContentsEntry("A", "", 10)], offset=2, total_pages=20
         )
         self.assertEqual(ranges[0].start_page, 12)  # pages 1..11 not covered
+
+
+from newspaper_translator.bloomberg_edition import extract_article_text
+
+
+class ExtractArticleTextTests(unittest.TestCase):
+    def test_strips_header_and_ad_lines_and_joins_pages(self) -> None:
+        reader = _StubReader([
+            "x",
+            "Bloomberg Businessweek44\nReal body line one.\nADVERTISEMENT\nMore body.",
+            "Bloomberg Businessweek45\nSecond page body.",
+        ])
+        text = extract_article_text(reader, start_page=2, end_page=4)  # 1-based pages 2,3
+        self.assertIn("Real body line one.", text)
+        self.assertIn("Second page body.", text)
+        self.assertNotIn("Bloomberg Businessweek", text)
+        self.assertNotIn("ADVERTISEMENT", text)

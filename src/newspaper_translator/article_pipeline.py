@@ -14,6 +14,10 @@ from newspaper_translator.article_store import (
 from newspaper_translator.database import sqlite_path_from_database_url
 from newspaper_translator.logging_utils import format_log_event
 from newspaper_translator.mineru_page_state import MineruPageParseStateStore
+from newspaper_translator.bloomberg_edition import (
+    BLOOMBERG_EDITION_PARSER_VERSION,
+    parse_bloomberg_edition,
+)
 from newspaper_translator.economist_edition import (
     ECONOMIST_EDITION_PARSER_VERSION,
     parse_economist_edition,
@@ -195,6 +199,75 @@ def persist_economist_edition_articles(
             document_key=document_key,
         )
         if run.parse_run_id == parse_run.parse_run_id
+    )
+
+
+def persist_bloomberg_edition_articles(
+    *,
+    database_url: str,
+    document_key: str,
+    output_root: Path,
+    parser_name: str = "bloomberg-edition",
+    parser_version: str = BLOOMBERG_EDITION_PARSER_VERSION,
+):
+    document = _get_document(database_url=database_url, document_key=document_key)
+
+    debug_dir = Path(output_root) / Path(document.raw_path).stem
+    images_dir = debug_dir / "images"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    parsed_edition = parse_bloomberg_edition(Path(document.raw_path), images_dir=images_dir)
+
+    debug_path = debug_dir / "full-edition.txt"
+    debug_path.write_text(parsed_edition.debug_text, encoding="utf-8")
+
+    publication_date = resolve_publication_date(
+        original_filename=document.original_filename,
+        markdown_text=parsed_edition.debug_text,
+        source_message_internal_date=document.source_message_internal_date,
+        fallback_year=datetime.now().year,
+        issue_date=document.issue_date,
+    )
+
+    parse_run = create_parse_run(
+        database_url=database_url,
+        document_key=document_key,
+        parser_name=parser_name,
+        parser_version=parser_version,
+        publication_date=publication_date or "",
+        continuation_matcher_name="",
+        continuation_matcher_version="",
+    )
+    update_parse_run_source_artifacts(
+        database_url=database_url,
+        parse_run_id=parse_run.parse_run_id,
+        mineru_batch_id="",
+        mineru_file_id="bloomberg-edition",
+        markdown_path=str(debug_path),
+    )
+
+    if not publication_date:
+        error_message = (
+            "Unable to resolve publication date for Bloomberg edition from filename or content"
+        )
+        finalize_parse_run(
+            database_url=database_url,
+            parse_run_id=parse_run.parse_run_id,
+            status="failed",
+            error_message=error_message,
+        )
+        raise ValueError(error_message)
+
+    record_parse_run_result(
+        database_url=database_url,
+        parse_run_id=parse_run.parse_run_id,
+        parse_result=parsed_edition.parse_result,
+        document_key=document_key,
+        publication_date=publication_date,
+    )
+    finalize_parse_run(
+        database_url=database_url,
+        parse_run_id=parse_run.parse_run_id,
+        status="succeeded",
     )
 
 

@@ -9,9 +9,11 @@ from newspaper_translator.article_enrichment import build_article_input_hash, en
 from newspaper_translator.article_pipeline import (
     StoredDocument,
     _get_document,
+    persist_bloomberg_edition_articles,
     persist_document_articles,
     persist_economist_edition_articles,
 )
+from newspaper_translator.bloomberg_edition import detect_bloomberg_edition
 from newspaper_translator.economist_edition import (
     ECONOMIST_EDITION_PARSER_VERSION,
     detect_calibre_economist_edition,
@@ -1892,6 +1894,13 @@ def _build_parse_persist_callback(
                 output_root=Path(output_root),
                 parser_name="economist-edition",
                 parser_version=ECONOMIST_EDITION_PARSER_VERSION,
+            )
+            return
+        if detect_bloomberg_edition(Path(document.raw_path)):
+            persist_bloomberg_edition_articles(
+                database_url=database_url,
+                document_key=document_key,
+                output_root=Path(output_root),
             )
             return
         persist_document_articles(

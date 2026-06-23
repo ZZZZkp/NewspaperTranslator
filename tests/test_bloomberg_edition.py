@@ -62,3 +62,50 @@ class ParseContentsEntriesTests(unittest.TestCase):
         # Carried forward to sub-entries until the next known label.
         farm = [e for e in self.entries if e.folio == 20][0]
         self.assertEqual(farm.section, "In Context")
+
+
+from newspaper_translator.bloomberg_edition import find_contents_page, detect_page_offset
+
+
+class _StubPage:
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def extract_text(self) -> str:
+        return self._text
+
+
+class _StubReader:
+    def __init__(self, texts: list[str]) -> None:
+        self.pages = [_StubPage(t) for t in texts]
+
+
+class FindContentsPageTests(unittest.TestCase):
+    def test_finds_contents_page_index(self) -> None:
+        # The Contents page must yield >= 8 entries to be accepted.
+        listing = "\n".join(f"Item {i} title here {10 + i}" for i in range(8))
+        reader = _StubReader([
+            "cover art only",
+            "masthead",
+            "Contents Contributors\n" + listing,
+        ])
+        self.assertEqual(find_contents_page(reader), 2)
+
+    def test_returns_none_when_no_contents(self) -> None:
+        reader = _StubReader(["just a cover", "an article with prose and no listing"])
+        self.assertIsNone(find_contents_page(reader))
+
+
+class DetectPageOffsetTests(unittest.TestCase):
+    def test_detects_constant_offset_by_vote(self) -> None:
+        # physical index 7 (1-based 8) prints folio 6 -> offset +2, etc.
+        texts = [""] * 12
+        texts[7] = "Bloomberg Businessweek6\nbody"
+        texts[9] = "Bloomberg Businessweek8\nbody"
+        texts[17 % 12] = "noise"
+        reader = _StubReader(texts)
+        self.assertEqual(detect_page_offset(reader), 2)
+
+    def test_returns_none_without_enough_markers(self) -> None:
+        reader = _StubReader(["no folio here", "still none"])
+        self.assertIsNone(detect_page_offset(reader))

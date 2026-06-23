@@ -337,6 +337,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 "0012_article_enrichment_classification",
                 "0013_documents_source_metadata",
                 "0014_mineru_page_parse_state",
+                "0015_documents_issue_date",
             ],
         )
 
@@ -532,6 +533,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 "0012_article_enrichment_classification",
                 "0013_documents_source_metadata",
                 "0014_mineru_page_parse_state",
+                "0015_documents_issue_date",
             ],
         )
 
@@ -553,6 +555,23 @@ class DatabaseMigrationTests(unittest.TestCase):
 
         self.assertIn("content_type", columns)
         self.assertIn("classification_reason", columns)
+
+    def test_documents_has_issue_date_column(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = pathlib.Path(temp_dir) / "app.db"
+            database_url = f"sqlite:///{database_path}"
+            run_pending_migrations(database_url)
+            connection = sqlite3.connect(database_path)
+            try:
+                columns = {
+                    row[1]
+                    for row in connection.execute(
+                        "PRAGMA table_info(documents)"
+                    ).fetchall()
+                }
+            finally:
+                connection.close()
+        self.assertIn("issue_date", columns)
 
 
 class ConcurrentMigrationTests(unittest.TestCase):

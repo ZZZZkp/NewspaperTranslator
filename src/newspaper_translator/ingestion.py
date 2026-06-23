@@ -8,6 +8,7 @@ import unicodedata
 
 from newspaper_translator.database import sqlite_path_from_database_url
 from newspaper_translator.document_processing import create_document_processing_run
+from newspaper_translator.filename_metadata import extract_filename_date, match_publisher_alias
 from newspaper_translator.documents import DocumentIdentity
 from newspaper_translator.logging_utils import format_log_event
 
@@ -79,6 +80,10 @@ def import_gmail_pdf_attachment(
         content_hash=content_hash,
     )
     filename_source_name = _extract_source_name_from_filename(attachment.filename)
+    filename_issue_date = extract_filename_date(
+        attachment.filename,
+        source_message_internal_date=message.internal_date,
+    )
 
     raw_path = _build_raw_pdf_path(
         storage_root=Path(storage_root),
@@ -94,6 +99,44 @@ def import_gmail_pdf_attachment(
     connection = sqlite3.connect(database_path)
     try:
         connection.execute("BEGIN IMMEDIATE")
+
+        def _reuse_existing(row, reason: str) -> ImportedDocument:
+            connection.commit()
+            details = {
+                "reuse_reason": reason,
+                "canonical_document_key": row[0],
+                "message_id": message.message_id,
+                "attachment_id": attachment.attachment_id,
+            }
+            if reason == "content_hash":
+                # Only the content-hash path guarantees the incoming hash
+                # matches the canonical document.
+                details["content_hash"] = content_hash
+            else:
+                # Issue-identity reuse: the incoming hash does NOT match the
+                # canonical doc, so record the matched issue identity instead.
+                details["source_name"] = filename_source_name
+                details["issue_date"] = filename_issue_date
+            print(
+                format_log_event(
+                    level="INFO",
+                    event="duplicate_document_reused",
+                    service="worker",
+                    details=details,
+                ),
+                flush=True,
+            )
+            create_document_processing_run(
+                database_url=database_url,
+                document_key=row[0],
+            )
+            return ImportedDocument(
+                document_key=row[0],
+                content_hash=content_hash,
+                raw_path=Path(row[1]),
+                was_created=False,
+            )
+
         existing_row = connection.execute(
             """
             SELECT document_key, raw_path
@@ -105,31 +148,25 @@ def import_gmail_pdf_attachment(
             (content_hash,),
         ).fetchone()
         if existing_row is not None:
-            connection.commit()
-            print(
-                format_log_event(
-                    level="INFO",
-                    event="duplicate_document_reused",
-                    service="worker",
-                    details={
-                        "content_hash": content_hash,
-                        "canonical_document_key": existing_row[0],
-                        "message_id": message.message_id,
-                        "attachment_id": attachment.attachment_id,
-                    },
-                ),
-                flush=True,
-            )
-            create_document_processing_run(
-                database_url=database_url,
-                document_key=existing_row[0],
-            )
-            return ImportedDocument(
-                document_key=existing_row[0],
-                content_hash=content_hash,
-                raw_path=Path(existing_row[1]),
-                was_created=False,
-            )
+            return _reuse_existing(existing_row, reason="content_hash")
+
+        # issue_date granularity follows the filename: month-only filenames
+        # (e.g. a monthly like "Bloomberg Businessweek USA - June 2026")
+        # resolve to the first of the month, so a single issue per month is
+        # intentional for monthly publications.
+        if filename_source_name and filename_issue_date:
+            issue_row = connection.execute(
+                """
+                SELECT document_key, raw_path
+                FROM documents
+                WHERE source_name = ? AND issue_date = ?
+                ORDER BY created_at ASC, rowid ASC
+                LIMIT 1
+                """,
+                (filename_source_name, filename_issue_date),
+            ).fetchone()
+            if issue_row is not None:
+                return _reuse_existing(issue_row, reason="issue_identity")
 
         cursor = connection.execute(
             """
@@ -143,8 +180,9 @@ def import_gmail_pdf_attachment(
                 content_hash,
                 raw_path,
                 import_status,
-                source_message_internal_date
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                source_message_internal_date,
+                issue_date
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 identity.document_key,
@@ -157,6 +195,7 @@ def import_gmail_pdf_attachment(
                 str(raw_path),
                 "imported",
                 message.internal_date,
+                filename_issue_date or None,
             ),
         )
         was_created = cursor.rowcount == 1
@@ -257,6 +296,9 @@ def _extract_source_name_from_filename(filename: str) -> str:
         return "经济学人"
     stem = Path(filename).name
     stem = Path(stem).stem
+    alias = match_publisher_alias(stem)
+    if alias:
+        return alias
     full_date_match = re.search(
         r"^(?P<prefix>.*?)[-_](\d{4})[-_](\d{1,2})[-_](\d{1,2})$",
         stem,

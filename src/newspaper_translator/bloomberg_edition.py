@@ -4,10 +4,12 @@ Sibling to economist_edition.py. Routes Bloomberg PDFs away from MinerU by
 deriving article boundaries from the printed Contents page plus a detected
 printed-to-physical page-number offset. Reuses the generic edition structures.
 """
+import hashlib
 import re
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass
+from pathlib import Path
 
 _KNOWN_SECTIONS = ("Remarks", "In Context", "In View", "Pursuits", "Exit Strategy")
 _TRAILING_FOLIO_RE = re.compile(r"^(?P<title>.*\S)\s+(?P<folio>\d{1,3})\s*$")
@@ -138,3 +140,33 @@ def extract_article_text(reader, start_page: int, end_page: int) -> str:
         cleaned_lines.append(line)
     body = "\n".join(cleaned_lines).strip()
     return re.sub(r"\n{3,}", "\n\n", body)
+
+
+def extract_article_images(reader, start_page: int, end_page: int, images_dir: Path) -> list[str]:
+    refs: list[str] = []
+    seen: set[str] = set()
+    for page_number in range(start_page, end_page):
+        try:
+            images = reader.pages[page_number - 1].images
+        except Exception:  # noqa: BLE001
+            continue
+        for image in images:
+            try:
+                data = image.data
+            except Exception:  # noqa: BLE001
+                continue
+            if not data:
+                continue
+            digest = hashlib.sha256(data).hexdigest()
+            if digest in seen:
+                continue
+            seen.add(digest)
+            suffix = Path(getattr(image, "name", "") or "").suffix.lower() or ".jpg"
+            if suffix not in {".jpg", ".jpeg", ".png"}:
+                suffix = ".jpg"
+            images_dir.mkdir(parents=True, exist_ok=True)
+            file_path = images_dir / f"{digest}{suffix}"
+            if not file_path.exists():
+                file_path.write_bytes(data)
+            refs.append(f"images/{file_path.name}")
+    return refs

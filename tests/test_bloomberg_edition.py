@@ -155,3 +155,47 @@ class ExtractArticleTextTests(unittest.TestCase):
         self.assertIn("Second page body.", text)
         self.assertNotIn("Bloomberg Businessweek", text)
         self.assertNotIn("ADVERTISEMENT", text)
+
+
+import hashlib
+import tempfile
+from newspaper_translator.bloomberg_edition import extract_article_images
+
+
+class _StubImage:
+    def __init__(self, name: str, data: bytes) -> None:
+        self.name = name
+        self.data = data
+
+
+class _StubImagePage:
+    def __init__(self, images: list) -> None:
+        self.images = images
+
+    def extract_text(self) -> str:
+        return ""
+
+
+class _StubImageReader:
+    def __init__(self, pages_images: list[list]) -> None:
+        self.pages = [_StubImagePage(imgs) for imgs in pages_images]
+
+
+class ExtractArticleImagesTests(unittest.TestCase):
+    def test_writes_images_and_returns_relative_refs(self) -> None:
+        png = b"\x89PNG\r\n\x1a\n" + b"abc"
+        jpg = b"\xff\xd8\xff" + b"def"
+        reader = _StubImageReader([[], [_StubImage("a.png", png)], [_StubImage("b.jpg", jpg)]])
+        with tempfile.TemporaryDirectory() as tmp:
+            images_dir = pathlib.Path(tmp) / "stem" / "images"
+            refs = extract_article_images(reader, 2, 4, images_dir)  # pages 2,3
+            self.assertEqual(len(refs), 2)
+            self.assertTrue(all(r.startswith("images/") for r in refs))
+            for r in refs:
+                self.assertTrue((images_dir.parent / r).exists())
+
+    def test_returns_empty_when_no_images(self) -> None:
+        reader = _StubImageReader([[], []])
+        with tempfile.TemporaryDirectory() as tmp:
+            images_dir = pathlib.Path(tmp) / "stem" / "images"
+            self.assertEqual(extract_article_images(reader, 1, 3, images_dir), [])

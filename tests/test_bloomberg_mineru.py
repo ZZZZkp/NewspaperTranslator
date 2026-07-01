@@ -180,3 +180,39 @@ def test_assemble_articles_builds_body_and_images(tmp_path):
     assert "<BW>" not in art.body_text
     assert "![](images/h.jpg)" in art.body_text
     assert (images_dir / "h.jpg").exists()
+
+
+def test_parse_bloomberg_edition_end_to_end(tmp_path):
+    from pathlib import Path
+    from newspaper_translator.bloomberg_mineru import parse_bloomberg_edition
+    from newspaper_translator.mineru import MineruParsedDocument
+
+    extract = tmp_path / "out" / "doc"
+    (extract / "images").mkdir(parents=True)
+    (extract / "images" / "h.jpg").write_bytes(b"jpg")
+    (extract / "full.md").write_text("md", encoding="utf-8")
+
+    content_list = [
+        {"type": "text", "page_idx": 1, "bbox": [0, 0, 0, 0],
+         "text": "Contents\nSalmon Farming, Now on Land 21\n"},
+        {"type": "page_number", "page_idx": 21, "bbox": [0, 0, 0, 0], "text": "20"},
+        {"type": "title", "text_level": 1, "page_idx": 21,
+         "bbox": [29, 60, 786, 183], "text": "Salmon Farming, Now on Land"},
+        {"type": "text", "page_idx": 21, "bbox": [0, 0, 0, 0], "text": "Body."},
+        {"type": "image", "page_idx": 21, "bbox": [0, 0, 0, 0], "img_path": "images/h.jpg"},
+    ]
+
+    class FakeClient:
+        def parse_pdf(self, *, pdf_path, output_root):
+            return MineruParsedDocument(
+                batch_id="b", file_id="f", file_name="doc.pdf",
+                markdown_path=extract / "full.md", markdown_text="md",
+                content_list=tuple(content_list),
+            )
+
+    parsed = parse_bloomberg_edition(
+        Path("doc.pdf"), images_dir=tmp_path / "images",
+        mineru_client=FakeClient(), output_root=tmp_path / "out",
+    )
+    titles = [a.title for a in parsed.parse_result.articles]
+    assert "Salmon Farming, Now on Land" in titles

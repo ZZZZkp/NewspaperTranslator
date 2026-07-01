@@ -11,7 +11,12 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from newspaper_translator.economist_edition import EditionArticle
+from newspaper_translator.economist_edition import (
+    EditionArticle,
+    ParsedEdition,
+    build_economist_parse_result,
+)
+from pypdf import PdfReader
 
 
 @dataclass(frozen=True)
@@ -325,3 +330,70 @@ def assemble_articles(
             )
         )
     return articles
+
+
+BLOOMBERG_EDITION_PARSER_VERSION = "bloomberg-mineru-v1"
+_DETECT_SCAN_PAGES = 15
+
+
+def parse_bloomberg_edition(
+    pdf_path,
+    *,
+    images_dir: Path,
+    mineru_client,
+    output_root: Path,
+) -> ParsedEdition:
+    parsed = mineru_client.parse_pdf(pdf_path=Path(pdf_path), output_root=Path(output_root))
+    blocks = load_blocks(list(parsed.content_list))
+    contents = parse_contents(blocks)
+    if not contents:
+        raise ValueError("Bloomberg Contents page not found in MinerU output")
+    page_kinds = classify_pages(blocks, contents)
+    boundaries = find_boundaries(blocks, contents, page_kinds)
+    mineru_extract_dir = Path(parsed.markdown_path).parent
+    articles = assemble_articles(
+        blocks, boundaries, page_kinds,
+        images_dir=images_dir, mineru_extract_dir=mineru_extract_dir,
+    )
+    if not articles:
+        raise ValueError("Bloomberg parse produced no articles")
+
+    debug_lines = [
+        f"<!-- ARTICLE: {a.title} | section={a.section} "
+        f"| pages={a.start_page}-{a.end_page - 1} -->\n{a.body_text}\n"
+        for a in articles
+    ]
+    if len(articles) < 0.6 * len(contents):
+        debug_lines.insert(
+            0,
+            f"<!-- WARNING: {len(articles)} articles from "
+            f"{len(contents)} Contents entries; MinerU may have missed titles -->",
+        )
+    return ParsedEdition(
+        parse_result=build_economist_parse_result(articles),
+        debug_text="\n".join(debug_lines),
+    )
+
+
+def _page_text(reader, index: int) -> str:
+    try:
+        return reader.pages[index].extract_text() or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def detect_bloomberg_edition(pdf_path) -> bool:
+    try:
+        reader = PdfReader(str(pdf_path))
+        producer = str((reader.metadata or {}).get("/Producer") or "").lower()
+        sample = "".join(
+            _page_text(reader, i)
+            for i in range(min(_DETECT_SCAN_PAGES, len(reader.pages)))
+        )
+        if "bloomberg businessweek" not in sample.lower():
+            return False
+        if "calibre" in producer:
+            return False
+        return "Contents" in sample
+    except Exception:  # noqa: BLE001
+        return False

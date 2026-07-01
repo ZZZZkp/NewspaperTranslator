@@ -190,6 +190,36 @@ def test_assemble_articles_builds_body_and_images(tmp_path):
     assert (images_dir / "h.jpg").exists()
 
 
+def test_find_boundaries_folio_fallback_distinct_indices_same_page():
+    """Two unmatched Contents entries with the same folio (same target_page) must
+    get distinct block_index values — not both anchor to the same first text block."""
+    from newspaper_translator.bloomberg_mineru import (
+        Block, ContentsEntry, PageKind, find_boundaries,
+    )
+    # offset = 2: (page_idx+1) - folio = (11+1)-10 = 2, repeated 3 times for _MIN_OFFSET_VOTES
+    # target_page for folio 20 = 20 + 2 - 1 = 21
+    blocks = [
+        Block("page_number", None, 11, (0, 0, 0, 0), "10", ""),           # idx 0 — offset vote
+        Block("page_number", None, 12, (0, 0, 0, 0), "11", ""),           # idx 1 — offset vote
+        Block("page_number", None, 13, (0, 0, 0, 0), "12", ""),           # idx 2 — offset vote
+        Block("text", None, 21, (29, 60, 400, 100), "First article body.", ""),   # idx 3
+        Block("text", None, 21, (29, 110, 400, 200), "Second article body.", ""), # idx 4
+    ]
+    contents = [
+        ContentsEntry("Article One", 20),
+        ContentsEntry("Article Two", 20),
+    ]
+    page_kinds = {21: PageKind("editorial", "")}
+    bounds = find_boundaries(blocks, contents, page_kinds)
+
+    assert len(bounds) == 2, f"Expected 2 boundaries, got {len(bounds)}"
+    indices = [b.block_index for b in bounds]
+    assert len(set(indices)) == 2, f"block_index values must be distinct, got {indices}"
+    # Sorted by block_index, the ranges must be non-empty
+    bounds_sorted = sorted(bounds, key=lambda b: b.block_index)
+    assert bounds_sorted[0].block_index < bounds_sorted[1].block_index
+
+
 def test_parse_bloomberg_edition_end_to_end(tmp_path):
     from pathlib import Path
     from newspaper_translator.bloomberg_mineru import parse_bloomberg_edition

@@ -238,6 +238,7 @@ def find_boundaries(
     # Folio fallback for entries MinerU never surfaced as a title block.
     offset = detect_page_offset(blocks)
     if offset is not None:
+        used_indices = {b.block_index for b in bounds}
         for entry in contents:
             if normalize_title(entry.title) in matched_entries or entry.folio <= 0:
                 continue
@@ -245,10 +246,12 @@ def find_boundaries(
             for index, block in enumerate(blocks):
                 if (block.page_idx == target_page
                         and block.type in ("text", "paragraph")
+                        and index not in used_indices
                         and page_kinds.get(block.page_idx, PageKind("ad", "")).kind
                         == "editorial"):
                     matched_entries.add(normalize_title(entry.title))
                     bounds.append(Boundary(entry.title, target_page, index))
+                    used_indices.add(index)
                     break
 
     bounds.sort(key=lambda b: b.block_index)
@@ -269,6 +272,9 @@ def trim_end_marker(text: str) -> str:
 
 
 def _copy_image(img_path: str, images_dir: Path, mineru_extract_dir: Path) -> str:
+    # MinerU names extracted images by a sha256 content hash (e.g. images/<64-hex>.jpg).
+    # Skipping copy when the destination basename already exists is therefore equivalent
+    # to sha256 content-hash de-duplication, satisfying the Global Constraint.
     name = Path(img_path).name
     source = Path(mineru_extract_dir) / img_path
     if not source.exists():

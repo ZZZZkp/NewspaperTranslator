@@ -42,6 +42,15 @@ class MineruParsedDocument:
     markdown_path: Path
     markdown_text: str
     pages: tuple["MineruParsedPage", ...] = ()
+    content_list: tuple[dict, ...] = ()
+
+
+def load_content_list_from_dir(extraction_dir: Path) -> tuple[dict, ...]:
+    matches = sorted(Path(extraction_dir).rglob("*_content_list.json"))
+    if not matches:
+        return ()
+    data = json.loads(matches[0].read_text(encoding="utf-8"))
+    return tuple(item for item in data if isinstance(item, dict))
 
 
 @dataclass(frozen=True)
@@ -168,6 +177,7 @@ class MineruClient:
             output_root=output_root,
             file_stem=pdf_path.stem,
         )
+        content_list = load_content_list_from_dir(Path(markdown_path).parent)
 
         return MineruParsedDocument(
             batch_id=batch_upload["batch_id"],
@@ -175,6 +185,7 @@ class MineruClient:
             file_name=pdf_path.name,
             markdown_path=markdown_path,
             markdown_text=markdown_text,
+            content_list=content_list,
         )
 
     def _create_batch_upload(self, pdf_path: Path) -> dict[str, str]:

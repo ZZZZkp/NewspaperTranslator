@@ -114,3 +114,66 @@ def parse_contents(blocks: list[Block]) -> list[ContentsEntry]:
             else:
                 prev_title = line
     return entries
+
+
+_AD_TOKEN_RE = re.compile(
+    r"(\b[\w-]+\.(?:com|net|org)\b|\(\d{3}\)\s?\d{3}|\bFINRA\b|\bSIPC\b|"
+    r"Member\s*[-–]\s*NYSE|Past performance|marketing purposes|"
+    r"informational purposes|BOOK NOW|Learn more at)",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class PageKind:
+    kind: str
+    section: str
+
+
+def running_section_names(blocks: list[Block]) -> set[str]:
+    pages_by_header: dict[str, set[int]] = {}
+    for block in blocks:
+        if block.type in ("header", "page_header") and block.text.strip():
+            key = normalize_title(block.text)
+            if key:
+                pages_by_header.setdefault(key, set()).add(block.page_idx)
+    return {key for key, pages in pages_by_header.items() if len(pages) >= 2}
+
+
+def classify_pages(
+    blocks: list[Block], contents: list[ContentsEntry]
+) -> dict[int, PageKind]:
+    section_names = running_section_names(blocks)
+    by_page: dict[int, list[Block]] = {}
+    for block in blocks:
+        by_page.setdefault(block.page_idx, []).append(block)
+
+    result: dict[int, PageKind] = {}
+    for page_idx, items in by_page.items():
+        headers = [b for b in items if b.type in ("header", "page_header")]
+        running = next(
+            (b.text.strip() for b in headers
+             if normalize_title(b.text) in section_names),
+            "",
+        )
+        has_folio = any(b.type == "page_number" for b in items)
+        page_text = " ".join(b.text for b in items)
+        has_advertisement = any(
+            normalize_title(b.text) == "advertisement" for b in headers
+        )
+        editorial = has_folio or bool(running)
+
+        if editorial and not has_advertisement:
+            result[page_idx] = PageKind("editorial", running)
+            continue
+        if has_advertisement or _AD_TOKEN_RE.search(page_text):
+            result[page_idx] = PageKind("ad", "")
+            continue
+        # Fallback: non-editorial, no ad token. Keep only if it carries a
+        # Contents-matching title; otherwise treat as a brand full-page ad.
+        titles = [b.text for b in items if b.text_level]
+        if any(title_matches(t, e.title) for t in titles for e in contents):
+            result[page_idx] = PageKind("editorial", running)
+        else:
+            result[page_idx] = PageKind("ad", "")
+    return result

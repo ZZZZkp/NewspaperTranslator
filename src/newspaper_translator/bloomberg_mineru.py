@@ -5,9 +5,13 @@ article boundaries; the printed Contents page is an authoritative title
 whitelist; ads are filtered at page granularity via the editorial fingerprint.
 """
 import re
+import shutil
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass
+from pathlib import Path
+
+from newspaper_translator.economist_edition import EditionArticle
 
 
 @dataclass(frozen=True)
@@ -244,3 +248,80 @@ def find_boundaries(
 
     bounds.sort(key=lambda b: b.block_index)
     return bounds
+
+
+# Exclude A and I so standalone English words ("A dog", "I think") are not merged.
+_DROPCAP_RE = re.compile(r"^([B-HJ-Z])\s+([a-z])")
+_END_MARKER_RE = re.compile(r"\s*<BW>.*$", re.DOTALL)
+
+
+def repair_dropcap(text: str) -> str:
+    return _DROPCAP_RE.sub(r"\1\2", text)
+
+
+def trim_end_marker(text: str) -> str:
+    return _END_MARKER_RE.sub("", text).rstrip()
+
+
+def _copy_image(img_path: str, images_dir: Path, mineru_extract_dir: Path) -> str:
+    name = Path(img_path).name
+    source = Path(mineru_extract_dir) / img_path
+    if not source.exists():
+        return ""
+    images_dir.mkdir(parents=True, exist_ok=True)
+    destination = images_dir / name
+    if not destination.exists():
+        shutil.copyfile(source, destination)
+    return f"images/{name}"
+
+
+def assemble_articles(
+    blocks: list[Block],
+    boundaries: list[Boundary],
+    page_kinds: dict[int, PageKind],
+    *,
+    images_dir: Path,
+    mineru_extract_dir: Path,
+) -> list[EditionArticle]:
+    articles: list[EditionArticle] = []
+    for position, boundary in enumerate(boundaries):
+        start = boundary.block_index + 1
+        end = (
+            boundaries[position + 1].block_index
+            if position + 1 < len(boundaries)
+            else len(blocks)
+        )
+        text_parts: list[str] = []
+        image_refs: list[str] = []
+        last_page = boundary.page_idx
+        for block in blocks[start:end]:
+            if page_kinds.get(block.page_idx, PageKind("ad", "")).kind != "editorial":
+                continue
+            last_page = max(last_page, block.page_idx)
+            if block.type in ("text", "paragraph"):
+                text_parts.append(repair_dropcap(block.text.strip()))
+            elif block.type in ("image", "chart") and block.img_path:
+                ref = _copy_image(block.img_path, images_dir, mineru_extract_dir)
+                if ref:
+                    image_refs.append(ref)
+        body = trim_end_marker("\n\n".join(p for p in text_parts if p))
+        if image_refs:
+            body = body + "\n\n" + "\n".join(f"![]({ref})" for ref in image_refs)
+        if not body.strip():
+            continue
+        end_page = (
+            boundaries[position + 1].page_idx + 1
+            if position + 1 < len(boundaries)
+            else last_page + 2
+        )
+        articles.append(
+            EditionArticle(
+                title=boundary.title,
+                section=page_kinds.get(boundary.page_idx, PageKind("editorial", "")).section,
+                start_page=boundary.page_idx + 1,
+                end_page=end_page,
+                body_text=body,
+                url="",
+            )
+        )
+    return articles

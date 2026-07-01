@@ -138,3 +138,45 @@ def test_find_boundaries_folio_fallback_for_missed_title():
     assert len(bounds) == 1
     assert bounds[0].page_idx == 21
     assert bounds[0].title == "Missed Article"
+
+
+def test_repair_dropcap_and_trim_end_marker():
+    from newspaper_translator.bloomberg_mineru import repair_dropcap, trim_end_marker
+    assert repair_dropcap("B ut Jassy's biggest bet") == "But Jassy's biggest bet"
+    assert repair_dropcap("T hirteen miles north") == "Thirteen miles north"
+    assert trim_end_marker("...before the crowd arrived. <BW> —With Annie Lee") \
+        == "...before the crowd arrived."
+
+
+def test_assemble_articles_builds_body_and_images(tmp_path):
+    from pathlib import Path
+    from newspaper_translator.bloomberg_mineru import (
+        Block, Boundary, PageKind, assemble_articles,
+    )
+    extract = tmp_path / "extract"
+    (extract / "images").mkdir(parents=True)
+    (extract / "images" / "h.jpg").write_bytes(b"jpg")
+    images_dir = tmp_path / "images"
+    blocks = [
+        Block("title", 1, 2, (29, 60, 786, 183), "Salmon Farming, Now on Land", ""),  # 0
+        Block("text", None, 2, (0, 0, 0, 0), "Body one.", ""),                         # 1
+        Block("image", None, 3, (0, 0, 0, 0), "", "images/h.jpg"),                     # 2
+        Block("text", None, 3, (0, 0, 0, 0), "Body two. <BW> —With X", ""),            # 3
+        Block("footer", None, 3, (0, 0, 0, 0), "Bloomberg Businessweek", ""),          # dropped
+    ]
+    boundaries = [Boundary("Salmon Farming, Now on Land", 2, 0)]
+    page_kinds = {2: PageKind("editorial", "In Context"),
+                  3: PageKind("editorial", "In Context")}
+    articles = assemble_articles(
+        blocks, boundaries, page_kinds,
+        images_dir=images_dir, mineru_extract_dir=extract,
+    )
+    assert len(articles) == 1
+    art = articles[0]
+    assert art.title == "Salmon Farming, Now on Land"
+    assert art.section == "In Context"
+    assert art.start_page == 3  # page_idx 2 + 1
+    assert "Body one." in art.body_text and "Body two." in art.body_text
+    assert "<BW>" not in art.body_text
+    assert "![](images/h.jpg)" in art.body_text
+    assert (images_dir / "h.jpg").exists()

@@ -4,6 +4,8 @@ Replaces the local pypdf contents-folio parser. MinerU type:title blocks drive
 article boundaries; the printed Contents page is an authoritative title
 whitelist; ads are filtered at page granularity via the editorial fingerprint.
 """
+import re
+import unicodedata
 from dataclasses import dataclass
 
 
@@ -32,3 +34,27 @@ def load_blocks(content_list: list[dict]) -> list[Block]:
             )
         )
     return blocks
+
+
+_PUNCT_RE = re.compile(r"[^0-9a-z]+")
+
+
+def normalize_title(text: str) -> str:
+    folded = unicodedata.normalize("NFKC", text).lower()
+    return _PUNCT_RE.sub(" ", folded).strip()
+
+
+def title_matches(candidate: str, entry_title: str) -> bool:
+    cand = normalize_title(candidate)
+    entry = normalize_title(entry_title)
+    if not cand or not entry:
+        return False
+    if entry in cand or cand in entry:
+        return True
+    cand_tokens = set(cand.split())
+    entry_tokens = set(entry.split())
+    if not cand_tokens or not entry_tokens:
+        return False
+    overlap = cand_tokens & entry_tokens
+    union = cand_tokens | entry_tokens
+    return len(overlap) / len(union) >= 0.6

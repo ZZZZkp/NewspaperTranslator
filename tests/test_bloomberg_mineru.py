@@ -39,3 +39,24 @@ def test_title_matches_containment_and_jaccard():
 def test_normalize_title_strips_punct_and_case():
     from newspaper_translator.bloomberg_mineru import normalize_title
     assert normalize_title("  The Great AI Build-Out! ") == "the great ai build out"
+
+
+def test_parse_contents_extracts_title_folio_pairs():
+    from newspaper_translator.bloomberg_mineru import Block, parse_contents, ContentsEntry
+    blocks = [
+        Block("text", None, 8, (0, 0, 0, 0), "Contents", ""),
+        Block("text", None, 8, (0, 0, 0, 0),
+              "Remarks\nHow will AI alter the economy? Ask a scarecrow\n10\n", ""),
+        Block("text", None, 8, (0, 0, 0, 0), "Salmon Farming, Now on Land 21", ""),
+        Block("text", None, 8, (0, 0, 0, 0), "just prose with no folio", ""),
+    ]
+    entries = parse_contents(blocks)
+    assert ContentsEntry("How will AI alter the economy? Ask a scarecrow", 10) in entries
+    assert ContentsEntry("Salmon Farming, Now on Land", 21) in entries
+    assert all(e.title != "just prose with no folio" for e in entries)
+
+
+def test_parse_contents_ignores_pages_after_12():
+    from newspaper_translator.bloomberg_mineru import Block, parse_contents
+    blocks = [Block("text", None, 20, (0, 0, 0, 0), "Late Title 55", "")]
+    assert parse_contents(blocks) == []

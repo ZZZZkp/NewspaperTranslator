@@ -58,3 +58,59 @@ def title_matches(candidate: str, entry_title: str) -> bool:
     overlap = cand_tokens & entry_tokens
     union = cand_tokens | entry_tokens
     return len(overlap) / len(union) >= 0.6
+
+
+_CONTENTS_SCAN_PAGES = 12
+_TRAILING_FOLIO_RE = re.compile(r"^(?P<title>.*\S)\s+(?P<folio>\d{1,3})$")
+_BARE_FOLIO_RE = re.compile(r"^(?P<folio>\d{1,3})$")
+_SECTION_WORDS = {"remarks", "in context", "in view", "pursuits",
+                  "exit strategy", "contents", "contributors", "cover"}
+
+
+@dataclass(frozen=True)
+class ContentsEntry:
+    title: str
+    folio: int
+
+
+def _clean_contents_title(title: str) -> str:
+    # Drop a leading section label token if present ("Remarks", "In View", ...).
+    stripped = title.strip()
+    if normalize_title(stripped) in _SECTION_WORDS:
+        return ""
+    return stripped
+
+
+def parse_contents(blocks: list[Block]) -> list[ContentsEntry]:
+    entries: list[ContentsEntry] = []
+    seen: set[str] = set()
+
+    def add(title: str, folio: int) -> None:
+        clean = _clean_contents_title(title)
+        key = normalize_title(clean)
+        if not clean or not key or key in seen:
+            return
+        seen.add(key)
+        entries.append(ContentsEntry(title=clean, folio=folio))
+
+    for block in blocks:
+        if block.page_idx >= _CONTENTS_SCAN_PAGES:
+            continue
+        if block.type not in ("text", "paragraph", "title"):
+            continue
+        lines = [ln.strip() for ln in block.text.splitlines() if ln.strip()]
+        prev_title = ""
+        for line in lines:
+            trailing = _TRAILING_FOLIO_RE.match(line)
+            bare = _BARE_FOLIO_RE.match(line)
+            if bare and prev_title:
+                add(prev_title, int(bare.group("folio")))
+                prev_title = ""
+            elif trailing:
+                add(trailing.group("title"), int(trailing.group("folio")))
+                prev_title = ""
+            elif normalize_title(line) in _SECTION_WORDS:
+                prev_title = ""
+            else:
+                prev_title = line
+    return entries

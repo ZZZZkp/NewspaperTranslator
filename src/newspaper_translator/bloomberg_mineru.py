@@ -6,6 +6,7 @@ whitelist; ads are filtered at page granularity via the editorial fingerprint.
 """
 import re
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass
 
 
@@ -177,3 +178,69 @@ def classify_pages(
         else:
             result[page_idx] = PageKind("ad", "")
     return result
+
+
+_MIN_TITLE_HEIGHT = 22
+_MIN_OFFSET_VOTES = 3
+
+
+def detect_page_offset(blocks: list[Block]) -> int | None:
+    votes: Counter[int] = Counter()
+    for block in blocks:
+        if block.type == "page_number" and block.text.strip().isdigit():
+            votes[(block.page_idx + 1) - int(block.text.strip())] += 1
+    if not votes:
+        return None
+    offset, count = votes.most_common(1)[0]
+    return offset if count >= _MIN_OFFSET_VOTES else None
+
+
+@dataclass(frozen=True)
+class Boundary:
+    title: str
+    page_idx: int
+    block_index: int
+
+
+def find_boundaries(
+    blocks: list[Block],
+    contents: list[ContentsEntry],
+    page_kinds: dict[int, PageKind],
+) -> list[Boundary]:
+    bounds: list[Boundary] = []
+    matched_entries: set[str] = set()
+
+    for index, block in enumerate(blocks):
+        if block.type != "title":
+            continue
+        if (block.bbox[3] - block.bbox[1]) < _MIN_TITLE_HEIGHT:
+            continue
+        if page_kinds.get(block.page_idx, PageKind("ad", "")).kind != "editorial":
+            continue
+        entry = next((e for e in contents if title_matches(block.text, e.title)), None)
+        if entry is None:
+            continue
+        key = normalize_title(entry.title)
+        if key in matched_entries:
+            continue
+        matched_entries.add(key)
+        bounds.append(Boundary(entry.title, block.page_idx, index))
+
+    # Folio fallback for entries MinerU never surfaced as a title block.
+    offset = detect_page_offset(blocks)
+    if offset is not None:
+        for entry in contents:
+            if normalize_title(entry.title) in matched_entries or entry.folio <= 0:
+                continue
+            target_page = entry.folio + offset - 1
+            for index, block in enumerate(blocks):
+                if (block.page_idx == target_page
+                        and block.type in ("text", "paragraph")
+                        and page_kinds.get(block.page_idx, PageKind("ad", "")).kind
+                        == "editorial"):
+                    matched_entries.add(normalize_title(entry.title))
+                    bounds.append(Boundary(entry.title, target_page, index))
+                    break
+
+    bounds.sort(key=lambda b: b.block_index)
+    return bounds

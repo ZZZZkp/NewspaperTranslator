@@ -85,3 +85,56 @@ def test_classify_pages_editorial_ad_and_park_elm_trap():
     assert kinds[1].kind == "editorial"
     assert kinds[2].kind == "ad"
     assert kinds[3].kind == "ad"
+
+
+def test_detect_page_offset_votes():
+    from newspaper_translator.bloomberg_mineru import Block, detect_page_offset
+    blocks = [
+        Block("page_number", None, 11, (0, 0, 0, 0), "10", ""),
+        Block("page_number", None, 12, (0, 0, 0, 0), "11", ""),
+        Block("page_number", None, 13, (0, 0, 0, 0), "12", ""),
+    ]  # (page_idx+1) - folio == 2 for all three
+    assert detect_page_offset(blocks) == 2
+
+
+def test_find_boundaries_matches_titles_and_drops_noise():
+    from newspaper_translator.bloomberg_mineru import (
+        Block, ContentsEntry, PageKind, find_boundaries, Boundary,
+    )
+    blocks = [
+        Block("title", 1, 2, (29, 60, 786, 183), "Salmon Farming, Now on Land", ""),   # 0 real
+        Block("title", 2, 2, (75, 52, 156, 67), "Bad Vibes", ""),                       # 1 chart (h=15)
+        Block("title", 1, 3, (26, 737, 913, 927), "Pull quote line here", ""),          # 2 pull-quote (no match)
+        Block("title", 1, 4, (73, 490, 658, 883), "A $12 Billion Stash Of Critical Minerals", ""),  # 3 real
+    ]
+    contents = [
+        ContentsEntry("Salmon Farming, Now on Land", 21),
+        ContentsEntry("A $12 Billion Stash Of Critical Minerals", 24),
+    ]
+    page_kinds = {2: PageKind("editorial", ""), 3: PageKind("editorial", ""),
+                  4: PageKind("editorial", "")}
+    bounds = find_boundaries(blocks, contents, page_kinds)
+    assert bounds == [
+        Boundary("Salmon Farming, Now on Land", 2, 0),
+        Boundary("A $12 Billion Stash Of Critical Minerals", 4, 3),
+    ]
+
+
+def test_find_boundaries_folio_fallback_for_missed_title():
+    from newspaper_translator.bloomberg_mineru import (
+        Block, ContentsEntry, PageKind, find_boundaries,
+    )
+    # offset = 2 (folio 20 on page_idx 21). Missed title -> anchor first editorial
+    # text block on estimated page (20 + 2 - 1 = 21).
+    blocks = [
+        Block("page_number", None, 11, (0, 0, 0, 0), "10", ""),
+        Block("page_number", None, 12, (0, 0, 0, 0), "11", ""),
+        Block("page_number", None, 21, (0, 0, 0, 0), "20", ""),
+        Block("text", None, 21, (29, 60, 400, 200), "Missed article body starts here", ""),
+    ]
+    contents = [ContentsEntry("Missed Article", 20)]
+    page_kinds = {21: PageKind("editorial", "")}
+    bounds = find_boundaries(blocks, contents, page_kinds)
+    assert len(bounds) == 1
+    assert bounds[0].page_idx == 21
+    assert bounds[0].title == "Missed Article"

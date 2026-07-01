@@ -15,7 +15,7 @@ from newspaper_translator.database import sqlite_path_from_database_url
 from newspaper_translator.filename_metadata import extract_filename_date
 from newspaper_translator.logging_utils import format_log_event
 from newspaper_translator.mineru_page_state import MineruPageParseStateStore
-from newspaper_translator.bloomberg_edition import (
+from newspaper_translator.bloomberg_mineru import (
     BLOOMBERG_EDITION_PARSER_VERSION,
     parse_bloomberg_edition,
 )
@@ -208,6 +208,7 @@ def persist_bloomberg_edition_articles(
     database_url: str,
     document_key: str,
     output_root: Path,
+    mineru_client,
     parser_name: str = "bloomberg-edition",
     parser_version: str = BLOOMBERG_EDITION_PARSER_VERSION,
 ):
@@ -216,7 +217,12 @@ def persist_bloomberg_edition_articles(
     debug_dir = Path(output_root) / Path(document.raw_path).stem
     images_dir = debug_dir / "images"
     debug_dir.mkdir(parents=True, exist_ok=True)
-    parsed_edition = parse_bloomberg_edition(Path(document.raw_path), images_dir=images_dir)
+    parsed_edition = parse_bloomberg_edition(
+        Path(document.raw_path),
+        images_dir=images_dir,
+        mineru_client=mineru_client,
+        output_root=debug_dir,
+    )
 
     debug_path = debug_dir / "full-edition.txt"
     debug_path.write_text(parsed_edition.debug_text, encoding="utf-8")

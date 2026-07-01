@@ -148,6 +148,14 @@ def test_repair_dropcap_and_trim_end_marker():
         == "...before the crowd arrived."
 
 
+def test_persist_requires_mineru_client_kwarg():
+    import inspect
+    from newspaper_translator.article_pipeline import persist_bloomberg_edition_articles
+    params = inspect.signature(persist_bloomberg_edition_articles).parameters
+    assert "mineru_client" in params
+    assert params["mineru_client"].default is inspect.Parameter.empty
+
+
 def test_assemble_articles_builds_body_and_images(tmp_path):
     from pathlib import Path
     from newspaper_translator.bloomberg_mineru import (

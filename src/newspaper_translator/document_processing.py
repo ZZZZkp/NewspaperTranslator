@@ -13,7 +13,7 @@ from newspaper_translator.article_pipeline import (
     persist_document_articles,
     persist_economist_edition_articles,
 )
-from newspaper_translator.bloomberg_edition import detect_bloomberg_edition
+from newspaper_translator.bloomberg_mineru import detect_bloomberg_edition
 from newspaper_translator.economist_edition import (
     ECONOMIST_EDITION_PARSER_VERSION,
     detect_calibre_economist_edition,
@@ -1901,6 +1901,7 @@ def _build_parse_persist_callback(
                 database_url=database_url,
                 document_key=document_key,
                 output_root=Path(output_root),
+                mineru_client=mineru_client,
             )
             return
         persist_document_articles(

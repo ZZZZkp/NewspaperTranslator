@@ -21,20 +21,6 @@ def test_load_blocks_normalizes_fields():
     assert blocks[1] == Block("image", None, 2, (1, 2, 3, 4), "", "images/x.jpg")
 
 
-def test_title_matches_containment_and_jaccard():
-    from newspaper_translator.bloomberg_mineru import title_matches
-    # exact after normalization
-    assert title_matches("Salmon Farming, Now on Land", "Salmon Farming Now on Land")
-    # candidate contains entry
-    assert title_matches("The Great AI Build-Out\n(cover)", "The Great AI Build-Out")
-    # token overlap >= 0.6
-    assert title_matches("Andy Jassy's Plan to Launch Amazon Into the AI Age",
-                         "Andy Jassys Plan to Launch Amazon Into The AI Age")
-    # unrelated pull-quote does not match
-    assert not title_matches(
-        "You can choose to howl at the wind, but AI is not going away",
-        "Salmon Farming, Now on Land")
-
 
 def test_normalize_title_strips_punct_and_case():
     from newspaper_translator.bloomberg_mineru import normalize_title
@@ -84,16 +70,6 @@ def test_classify_pages_editorial_ad_and_park_elm_trap():
     assert kinds[1].kind == "editorial"
     assert kinds[2].kind == "ad"
     assert kinds[3].kind == "ad"
-
-
-def test_detect_page_offset_votes():
-    from newspaper_translator.bloomberg_mineru import Block, detect_page_offset
-    blocks = [
-        Block("page_number", None, 11, (0, 0, 0, 0), "10", ""),
-        Block("page_number", None, 12, (0, 0, 0, 0), "11", ""),
-        Block("page_number", None, 13, (0, 0, 0, 0), "12", ""),
-    ]  # (page_idx+1) - folio == 2 for all three
-    assert detect_page_offset(blocks) == 2
 
 
 

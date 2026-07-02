@@ -7,7 +7,6 @@ whitelist; ads are filtered at page granularity via the editorial fingerprint.
 import re
 import shutil
 import unicodedata
-from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -53,21 +52,6 @@ def normalize_title(text: str) -> str:
     folded = unicodedata.normalize("NFKC", text).lower()
     return _PUNCT_RE.sub(" ", folded).strip()
 
-
-def title_matches(candidate: str, entry_title: str) -> bool:
-    cand = normalize_title(candidate)
-    entry = normalize_title(entry_title)
-    if not cand or not entry:
-        return False
-    if entry in cand or cand in entry:
-        return True
-    cand_tokens = set(cand.split())
-    entry_tokens = set(entry.split())
-    if not cand_tokens or not entry_tokens:
-        return False
-    overlap = cand_tokens & entry_tokens
-    union = cand_tokens | entry_tokens
-    return len(overlap) / len(union) >= 0.6
 
 
 _CONTENTS_SCAN_PAGES = 12
@@ -189,19 +173,6 @@ def classify_pages(blocks: list[Block]) -> dict[int, PageKind]:
             result[page_idx] = PageKind("editorial", running)
     return result
 
-
-_MIN_OFFSET_VOTES = 3
-
-
-def detect_page_offset(blocks: list[Block]) -> int | None:
-    votes: Counter[int] = Counter()
-    for block in blocks:
-        if block.type == "page_number" and block.text.strip().isdigit():
-            votes[(block.page_idx + 1) - int(block.text.strip())] += 1
-    if not votes:
-        return None
-    offset, count = votes.most_common(1)[0]
-    return offset if count >= _MIN_OFFSET_VOTES else None
 
 
 @dataclass(frozen=True)
@@ -394,8 +365,6 @@ def parse_bloomberg_edition(
     parsed = mineru_client.parse_pdf(pdf_path=Path(pdf_path), output_root=Path(output_root))
     blocks = load_blocks(list(parsed.content_list))
     contents = parse_contents(blocks)
-    if not contents:
-        raise ValueError("Bloomberg Contents page not found in MinerU output")
     page_kinds = classify_pages(blocks)
     boundaries = find_boundaries(blocks, page_kinds)
     mineru_extract_dir = Path(parsed.markdown_path).parent
@@ -411,7 +380,7 @@ def parse_bloomberg_edition(
         f"| pages={a.start_page}-{a.end_page - 1} -->\n{a.body_text}\n"
         for a in articles
     ]
-    if len(articles) < 0.6 * len(contents):
+    if contents and len(articles) < 0.6 * len(contents):
         debug_lines.insert(
             0,
             f"<!-- WARNING: {len(articles)} articles from "

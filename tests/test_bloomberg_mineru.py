@@ -63,7 +63,7 @@ def test_parse_contents_ignores_pages_after_12():
 
 
 def test_classify_pages_editorial_ad_and_park_elm_trap():
-    from newspaper_translator.bloomberg_mineru import Block, classify_pages, ContentsEntry
+    from newspaper_translator.bloomberg_mineru import Block, classify_pages
     blocks = [
         # p0 editorial: has a folio + recurring running header "The AI Issue"
         Block("page_number", None, 0, (42, 960, 60, 974), "10", ""),
@@ -79,8 +79,7 @@ def test_classify_pages_editorial_ad_and_park_elm_trap():
         Block("header", None, 3, (0, 0, 0, 0), "ADVERTISEMENT", ""),
         Block("text", None, 3, (0, 0, 0, 0), "vivo phone brand copy", ""),
     ]
-    contents = [ContentsEntry("How to Build a Data Center in Space", 72)]
-    kinds = classify_pages(blocks, contents)
+    kinds = classify_pages(blocks)
     assert kinds[0].kind == "editorial" and kinds[0].section == "The AI Issue"
     assert kinds[1].kind == "editorial"
     assert kinds[2].kind == "ad"
@@ -275,3 +274,34 @@ def test_is_byline_detects_bullet_by():
     assert _is_byline(Block("text", 2, 53, (0,0,0,0), "○ By John Roe", ""))
     assert not _is_byline(Block("text", 1, 20, (0,0,0,0), "A Politically Fraught World Cup", ""))
     assert not _is_byline(Block("text", 2, 17, (0,0,0,0), "● KUALA LUMPUR", ""))
+
+
+def test_classify_pages_positive_signal():
+    from newspaper_translator.bloomberg_mineru import Block, classify_pages
+    blocks = [
+        # running section header on 2 pages -> section name "the ai issue"
+        Block("header", None, 44, (0,0,0,0), "The AI Issue", ""),
+        Block("header", None, 46, (0,0,0,0), "The AI Issue", ""),
+        # p16 editorial opener: NO folio, NO running header, but HAS a byline -> editorial
+        Block("text", 1, 16, (29,60,600,140), "The Summer of Our Discontent", ""),
+        Block("text", 2, 16, (29,150,300,175), "● By Miles Herszenhorn", ""),
+        # p10 brand ad: no folio, no running header, no byline -> ad
+        Block("text", 1, 10, (40,40,400,130), "PANERAI", ""),
+        # p22 brand ad with only a slogan -> ad
+        Block("text", 1, 22, (40,40,400,90), "Discreet elegance.", ""),
+        # p26 ad via tokens (no folio)
+        Block("text", None, 26, (0,0,0,0), "Learn more at ParkElm.com | (310) 340-6987", ""),
+        # p35 advertorial: ADVERTISEMENT header -> ad
+        Block("header", None, 35, (0,0,0,0), "ADVERTISEMENT", ""),
+        Block("text", 1, 35, (0,0,0,0), "vivo brand copy", ""),
+        # p46 editorial feature page: has folio -> editorial
+        Block("page_number", None, 46, (0,0,0,0), "44", ""),
+        Block("text", 1, 46, (0,0,0,0), "Andy Jassy's Plan", ""),
+    ]
+    kinds = classify_pages(blocks)
+    assert kinds[16].kind == "editorial"   # opener saved by byline
+    assert kinds[46].kind == "editorial"   # folio
+    assert kinds[10].kind == "ad"
+    assert kinds[22].kind == "ad"
+    assert kinds[26].kind == "ad"
+    assert kinds[35].kind == "ad"

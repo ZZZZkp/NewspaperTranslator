@@ -158,9 +158,7 @@ def _is_byline(block: Block) -> bool:
     return text[:1] in ("●", "○") and "by" in normalize_title(text)[:6]
 
 
-def classify_pages(
-    blocks: list[Block], contents: list[ContentsEntry]
-) -> dict[int, PageKind]:
+def classify_pages(blocks: list[Block]) -> dict[int, PageKind]:
     section_names = running_section_names(blocks)
     by_page: dict[int, list[Block]] = {}
     for block in blocks:
@@ -168,32 +166,27 @@ def classify_pages(
 
     result: dict[int, PageKind] = {}
     for page_idx, items in by_page.items():
-        headers = [b for b in items if b.type in ("header", "page_header")]
+        has_folio = any(b.type == "page_number" for b in items)
+        has_byline = any(_is_byline(b) for b in items)
         running = next(
-            (b.text.strip() for b in headers
-             if normalize_title(b.text) in section_names),
+            (b.text.strip() for b in items
+             if b.type in ("header", "page_header", "footer", "page_footer")
+             and normalize_title(b.text) in section_names),
             "",
         )
-        has_folio = any(b.type == "page_number" for b in items)
         page_text = " ".join(b.text for b in items)
-        has_advertisement = any(
-            normalize_title(b.text) == "advertisement" for b in headers
+        is_advertorial = any(
+            b.type in ("header", "page_header") and normalize_title(b.text) == "advertisement"
+            for b in items
         )
-        editorial = has_folio or bool(running)
-
-        if editorial and not has_advertisement:
-            result[page_idx] = PageKind("editorial", running)
-            continue
-        if has_advertisement or _AD_TOKEN_RE.search(page_text):
+        if is_advertorial:
             result[page_idx] = PageKind("ad", "")
-            continue
-        # Fallback: non-editorial, no ad token. Keep only if it carries a
-        # Contents-matching title; otherwise treat as a brand full-page ad.
-        titles = [b.text for b in items if b.text_level]
-        if any(title_matches(t, e.title) for t in titles for e in contents):
-            result[page_idx] = PageKind("editorial", running)
+        elif not has_folio and _AD_TOKEN_RE.search(page_text):
+            result[page_idx] = PageKind("ad", "")
+        elif not has_folio and not running and not has_byline:
+            result[page_idx] = PageKind("ad", "")
         else:
-            result[page_idx] = PageKind("ad", "")
+            result[page_idx] = PageKind("editorial", running)
     return result
 
 
@@ -362,7 +355,7 @@ def parse_bloomberg_edition(
     contents = parse_contents(blocks)
     if not contents:
         raise ValueError("Bloomberg Contents page not found in MinerU output")
-    page_kinds = classify_pages(blocks, contents)
+    page_kinds = classify_pages(blocks)
     boundaries = find_boundaries(blocks, contents, page_kinds)
     mineru_extract_dir = Path(parsed.markdown_path).parent
     articles = assemble_articles(

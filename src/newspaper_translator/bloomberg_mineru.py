@@ -140,14 +140,22 @@ class PageKind:
     section: str
 
 
+_MASTHEAD = "bloomberg businessweek"
+
+
 def running_section_names(blocks: list[Block]) -> set[str]:
     pages_by_header: dict[str, set[int]] = {}
     for block in blocks:
-        if block.type in ("header", "page_header") and block.text.strip():
+        if block.type in ("header", "page_header", "footer", "page_footer") and block.text.strip():
             key = normalize_title(block.text)
-            if key:
+            if key and key != _MASTHEAD:
                 pages_by_header.setdefault(key, set()).add(block.page_idx)
     return {key for key, pages in pages_by_header.items() if len(pages) >= 2}
+
+
+def _is_byline(block: Block) -> bool:
+    text = block.text.strip()
+    return text[:1] in ("●", "○") and "by" in normalize_title(text)[:6]
 
 
 def classify_pages(

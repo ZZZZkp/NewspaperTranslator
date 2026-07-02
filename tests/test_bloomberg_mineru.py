@@ -254,3 +254,24 @@ def test_parse_bloomberg_edition_end_to_end(tmp_path):
     )
     titles = [a.title for a in parsed.parse_result.articles]
     assert "Salmon Farming, Now on Land" in titles
+
+
+def test_running_section_names_includes_footer_excludes_masthead():
+    from newspaper_translator.bloomberg_mineru import Block, running_section_names
+    blocks = [
+        Block("footer", None, 24, (0,0,0,0), "In Context", ""),
+        Block("footer", None, 27, (0,0,0,0), "In Context", ""),
+        Block("footer", None, 24, (0,0,0,0), "Bloomberg Businessweek", ""),
+        Block("footer", None, 27, (0,0,0,0), "Bloomberg Businessweek", ""),
+    ]
+    names = running_section_names(blocks)
+    assert "in context" in names
+    assert "bloomberg businessweek" not in names
+
+
+def test_is_byline_detects_bullet_by():
+    from newspaper_translator.bloomberg_mineru import Block, _is_byline
+    assert _is_byline(Block("text", 2, 20, (0,0,0,0), "● By Jane Doe", ""))
+    assert _is_byline(Block("text", 2, 53, (0,0,0,0), "○ By John Roe", ""))
+    assert not _is_byline(Block("text", 1, 20, (0,0,0,0), "A Politically Fraught World Cup", ""))
+    assert not _is_byline(Block("text", 2, 17, (0,0,0,0), "● KUALA LUMPUR", ""))

@@ -305,3 +305,23 @@ def test_classify_pages_positive_signal():
     assert kinds[22].kind == "ad"
     assert kinds[26].kind == "ad"
     assert kinds[35].kind == "ad"
+
+
+def test_is_pull_quote_matches_body_substring():
+    from newspaper_translator.bloomberg_mineru import Block, _is_pull_quote, _body_paragraphs
+    body = Block("text", None, 41, (0,0,0,0),
+                 "Overall, more than one-third of all adult workers are in some way "
+                 "disconnected from the organization for whom they work, according to my survey.", "")
+    quote = Block("text", 1, 41, (0,0,0,0),
+                  "more than one-third of all adult workers are in some way disconnected", "")
+    headline = Block("text", 1, 41, (0,0,0,0), "America Is Addicted To Disposable Work", "")
+    paras = _body_paragraphs([body])
+    assert _is_pull_quote(quote, paras)
+    assert not _is_pull_quote(headline, paras)
+
+
+def test_demirror_collapses_doubled_prefix():
+    from newspaper_translator.bloomberg_mineru import _demirror
+    assert _demirror("The Most The Most ompellin Watches") == "The Most ompellin Watches"
+    assert _demirror("A Broken A Broken Market Ins A Radical") == "A Broken Market Ins A Radical"
+    assert _demirror("Salmon Farming, Now on Land") == "Salmon Farming, Now on Land"

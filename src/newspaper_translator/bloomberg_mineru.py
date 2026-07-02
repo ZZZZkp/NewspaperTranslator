@@ -272,6 +272,29 @@ def trim_end_marker(text: str) -> str:
     return _END_MARKER_RE.sub("", text).rstrip()
 
 
+def _body_paragraphs(blocks: list[Block]) -> list[Block]:
+    return [b for b in blocks if b.type in ("text", "paragraph") and not b.text_level and len(b.text) > 120]
+
+
+def _is_pull_quote(block: Block, paragraphs: list[Block]) -> bool:
+    needle = normalize_title(block.text)
+    if len(needle) < 15:
+        return False
+    return any(
+        needle in normalize_title(p.text)
+        for p in paragraphs
+        if abs(p.page_idx - block.page_idx) <= 2
+    )
+
+
+def _demirror(text: str) -> str:
+    words = text.split()
+    for k in (3, 2, 1):
+        if len(words) >= 2 * k and words[:k] == words[k:2 * k]:
+            return " ".join(words[k:])
+    return text
+
+
 def _copy_image(img_path: str, images_dir: Path, mineru_extract_dir: Path) -> str:
     # MinerU names extracted images by a sha256 content hash (e.g. images/<64-hex>.jpg).
     # Skipping copy when the destination basename already exists is therefore equivalent

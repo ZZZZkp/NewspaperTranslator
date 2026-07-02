@@ -208,3 +208,65 @@ titles leak in.
 - "Ads always lack a folio" and "no in-column inline ads" are verified on the
   June 2026 issue only. Re-validate across 1–2 more issues (especially
   back-of-book `Pursuits` small-space pages) before treating as an invariant.
+
+## Revision 2 (2026-07-02) — folio-anchored boundaries (real-data correction)
+
+Deploying v1 on the real June 2026 issue produced 14 teaser-titled articles out
+of 26. Three root causes (found via systematic debugging on the container):
+
+1. **Wrong heading field.** `find_boundaries` selected `block.type == "title"`,
+   but MinerU's `content_list.json` (the file `load_blocks` reads) marks headings
+   as `type == "text"` with a `text_level` field — `type == "title"` count is 0.
+   (`type:title` exists only in `content_list_v2.json`, which is not read.) So
+   zero candidates were found and every boundary came from the folio fallback.
+2. **Contents entries are teasers, not headlines.** The printed Contents lists
+   descriptions ("Seeking a better way to farm salmon"), not the printed
+   headlines ("Salmon Farming, Now on Land"). Headline↔teaser matched 0/26 by
+   substring/Jaccard, so Contents cannot serve as a lexical whitelist, and
+   emitting `entry.title` produced teaser titles.
+3. **Over-aggressive ad classification.** `classify_pages` marks a page `ad` on
+   the ABSENCE of folio + running-header. Full-bleed section/feature openers
+   (no folio) were mis-marked `ad`, dropping real articles ("The Summer of Our
+   Discontent" p16, "A Walk With" p32).
+
+### Corrected approach
+
+Contents gives the reliable **count + start folios**; MinerU `text_level`
+headings give the reliable **title text**. Marry them; never lexically match
+teaser↔headline. The June 2026 issue has ~26 articles (matches the Contents
+count); the AI-issue intro is its own article; listicles (watch roundup, "How
+the Boss Uses AI") are one article each with sub-items in the body.
+
+- `parse_contents` → article-start entries keyed by **folio** (dedup; drop
+  caption/teaser-only noise lines). Entry titles are no longer emitted as output.
+- Build an exact **folio → page_idx map from `page_number` blocks** (no global
+  offset — ads make a single offset drift).
+- `classify_pages` marks `ad` only on **positive evidence** (an `ADVERTISEMENT`
+  header, or an ad-token cluster: URL / phone / FINRA·SIPC / marketing
+  disclaimer / "BOOK NOW" / "Learn more at"); default **editorial**. This stops
+  folio-less editorial openers from being dropped.
+- `find_boundaries`: for each Contents folio `F` → target page via the map →
+  search window `[F, F+1, F-1, F+2]` → on the first editorial in-window page
+  with a qualifying heading, pick the article headline: the largest/topmost
+  `text_level` block with height ≥ ~30, excluding datelines (small height),
+  section banners, bylines (`●/○ By`), and pull-quotes (leading quote mark).
+  Prefer a heading that has a `●/○ By` byline just below it (booster to beat a
+  co-located pull-quote). Join a split second heading line of similar size
+  directly beneath. Emit the **heading's text** as `Boundary.title` plus its
+  `block_index`.
+- `assemble_articles`: **unchanged** — body = editorial text/image blocks between
+  consecutive boundaries in reading order; furniture and ad pages dropped.
+  Listicle sub-item headings are small and remain in the body, so a roundup
+  stays one article.
+
+Byline (`●/○ By`) is a disambiguation **helper**, not the enumerator: ~17
+bylines vs ~26 articles, because AI-issue intros, Three Mile Island, Wanna
+Merge, and the whole Pursuits section carry no byline.
+
+### Acceptance (against the June 2026 issue)
+
+~24–26 articles with printed headlines (no teasers); no pull-quote / ad /
+section-banner titles; editorial openers not dropped. The real issue's
+`content_list.json` is the test oracle (hand-crafted fixtures previously hid all
+three bugs). Thresholds (height ≥ 30, window +2/−1 pages, split-join size delta
+< 25 and gap < 60) are tuned against that fixture.

@@ -229,39 +229,54 @@ of 26. Three root causes (found via systematic debugging on the container):
    (no folio) were mis-marked `ad`, dropping real articles ("The Summer of Our
    Discontent" p16, "A Walk With" p32).
 
-### Corrected approach
+### Corrected approach — heading-driven enumeration
 
-Contents gives the reliable **count + start folios**; MinerU `text_level`
-headings give the reliable **title text**. Marry them; never lexically match
-teaser↔headline. The June 2026 issue has ~26 articles (matches the Contents
-count); the AI-issue intro is its own article; listicles (watch roundup, "How
-the Boss Uses AI") are one article each with sub-items in the body.
+Prototyping against the real issue showed neither Contents folios (18 parsed,
+under-covers) nor bylines (17, under-covers) enumerate the ~26 articles. The
+reliable enumerator is the **`text_level` headings themselves**, filtered.
+Validated on the June 2026 issue: the 19 front/feature articles come out with
+correct printed headlines; the back-of-book `Pursuits` section (~6, decorative
+fonts, no bylines) is best-effort (see Known limitations). The AI-issue intro is
+its own article; listicles (watch roundup, "How the Boss Uses AI") are one
+article each with sub-items remaining in the body.
 
-- `parse_contents` → article-start entries keyed by **folio** (dedup; drop
-  caption/teaser-only noise lines). Entry titles are no longer emitted as output.
-- Build an exact **folio → page_idx map from `page_number` blocks** (no global
-  offset — ads make a single offset drift).
-- `classify_pages` marks `ad` only on **positive evidence** (an `ADVERTISEMENT`
-  header, or an ad-token cluster: URL / phone / FINRA·SIPC / marketing
-  disclaimer / "BOOK NOW" / "Learn more at"); default **editorial**. This stops
-  folio-less editorial openers from being dropped.
-- `find_boundaries`: for each Contents folio `F` → target page via the map →
-  search window `[F, F+1, F-1, F+2]` → on the first editorial in-window page
-  with a qualifying heading, pick the article headline: the largest/topmost
-  `text_level` block with height ≥ ~30, excluding datelines (small height),
-  section banners, bylines (`●/○ By`), and pull-quotes (leading quote mark).
-  Prefer a heading that has a `●/○ By` byline just below it (booster to beat a
-  co-located pull-quote). Join a split second heading line of similar size
-  directly beneath. Emit the **heading's text** as `Boundary.title` plus its
-  `block_index`.
+- `classify_pages` marks a page `ad` only on **positive evidence**: an
+  `ADVERTISEMENT` header; OR an ad-token cluster with no folio (URL / phone /
+  FINRA·SIPC / marketing disclaimer / "BOOK NOW" / "Learn more at"); OR a
+  **brand-ad page = no folio AND no running-section header AND no byline** on the
+  page. Otherwise **editorial**. (The old "absence of folio+header ⇒ ad" rule
+  wrongly dropped folio-less editorial openers; requiring *also* no byline spares
+  openers like "The Summer of Our Discontent" p16 and "Andy Jassy" while still
+  catching brand ads like PANERAI / "Discreet elegance".)
+- `find_boundaries` enumerates article headlines directly:
+  1. Candidates = `text_level` blocks on **editorial** pages, height ≥ 30,
+     non-empty.
+  2. Exclude: leading `●`/`○`/quote/`(` (bylines, pull-quotes, parenthetical
+     decks), bare numbers, section banners (text == a running-section name),
+     known rubrics ("Contributors", "Pursuits", "In Context", "Pursuits Picks",
+     chart titles like "Pricing the Stockpile"), and **pull-quotes** detected as
+     "heading text is a substring of a body paragraph within ±2 pages".
+  3. **Per page keep the topmost** remaining candidate (drops decks / sub-item
+     headings / listicle entries so a page yields one article start).
+  4. **Split-line join** (conservative): merge a following kept heading only when
+     it is the immediate next one, within one page, similar height, with no
+     byline on the first — recovers "Meta Goes Big" + "on the Bayou".
+  5. **De-mirror** doubled-prefix VLM garble ("The Most The Most …" → "The Most …").
+  6. Emit the heading's text as `Boundary.title` and its `block_index`; sort by
+     `block_index`.
+- `parse_contents` is **retained only for the sanity-count warning** (article
+  count vs Contents entries), not for boundaries or titles.
 - `assemble_articles`: **unchanged** — body = editorial text/image blocks between
   consecutive boundaries in reading order; furniture and ad pages dropped.
-  Listicle sub-item headings are small and remain in the body, so a roundup
-  stays one article.
 
-Byline (`●/○ By`) is a disambiguation **helper**, not the enumerator: ~17
-bylines vs ~26 articles, because AI-issue intros, Three Mile Island, Wanna
-Merge, and the whole Pursuits section carry no byline.
+### Known limitations (Pursuits back-of-book, follow-up)
+
+The decorative `Pursuits` section (p94–108) is only partially handled: VLM
+double-vision garbles display titles, absent bylines weaken the ad/quote filter,
+and the conservative split-join still over-merges a few adjacent short titles. It
+also lets one chart-caption ("Close-up of a capacitor's layers") through as a
+false article. These are tracked as follow-ups; the front/feature body (19
+articles) is the acceptance target for the initial landing.
 
 ### Acceptance (against the June 2026 issue)
 

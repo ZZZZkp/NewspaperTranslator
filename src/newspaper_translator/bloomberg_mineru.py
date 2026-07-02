@@ -1,8 +1,12 @@
 """MinerU-driven Bloomberg Businessweek parser.
 
-Replaces the local pypdf contents-folio parser. MinerU type:title blocks drive
-article boundaries; the printed Contents page is an authoritative title
-whitelist; ads are filtered at page granularity via the editorial fingerprint.
+Replaces the local pypdf contents-folio parser. Article boundaries are enumerated
+from MinerU `text_level` headings on editorial pages (filtered for
+bylines/quotes/section-banners/pull-quotes, topmost-per-page, with conservative
+split-line joining and de-mirroring); ads are dropped at page granularity via a
+positive-signal, byline-aware fingerprint. The printed Contents page is advisory
+only (a sanity-count warning), not a title source. See
+docs/superpowers/specs/2026-07-01-bloomberg-mineru-parser-design.md (Revision 2).
 """
 import re
 import shutil

@@ -96,48 +96,6 @@ def test_detect_page_offset_votes():
     assert detect_page_offset(blocks) == 2
 
 
-def test_find_boundaries_matches_titles_and_drops_noise():
-    from newspaper_translator.bloomberg_mineru import (
-        Block, ContentsEntry, PageKind, find_boundaries, Boundary,
-    )
-    blocks = [
-        Block("title", 1, 2, (29, 60, 786, 183), "Salmon Farming, Now on Land", ""),   # 0 real
-        Block("title", 2, 2, (75, 52, 156, 67), "Bad Vibes", ""),                       # 1 chart (h=15)
-        Block("title", 1, 3, (26, 737, 913, 927), "Pull quote line here", ""),          # 2 pull-quote (no match)
-        Block("title", 1, 4, (73, 490, 658, 883), "A $12 Billion Stash Of Critical Minerals", ""),  # 3 real
-    ]
-    contents = [
-        ContentsEntry("Salmon Farming, Now on Land", 21),
-        ContentsEntry("A $12 Billion Stash Of Critical Minerals", 24),
-    ]
-    page_kinds = {2: PageKind("editorial", ""), 3: PageKind("editorial", ""),
-                  4: PageKind("editorial", "")}
-    bounds = find_boundaries(blocks, contents, page_kinds)
-    assert bounds == [
-        Boundary("Salmon Farming, Now on Land", 2, 0),
-        Boundary("A $12 Billion Stash Of Critical Minerals", 4, 3),
-    ]
-
-
-def test_find_boundaries_folio_fallback_for_missed_title():
-    from newspaper_translator.bloomberg_mineru import (
-        Block, ContentsEntry, PageKind, find_boundaries,
-    )
-    # offset = 2 (folio 20 on page_idx 21). Missed title -> anchor first editorial
-    # text block on estimated page (20 + 2 - 1 = 21).
-    blocks = [
-        Block("page_number", None, 11, (0, 0, 0, 0), "10", ""),
-        Block("page_number", None, 12, (0, 0, 0, 0), "11", ""),
-        Block("page_number", None, 21, (0, 0, 0, 0), "20", ""),
-        Block("text", None, 21, (29, 60, 400, 200), "Missed article body starts here", ""),
-    ]
-    contents = [ContentsEntry("Missed Article", 20)]
-    page_kinds = {21: PageKind("editorial", "")}
-    bounds = find_boundaries(blocks, contents, page_kinds)
-    assert len(bounds) == 1
-    assert bounds[0].page_idx == 21
-    assert bounds[0].title == "Missed Article"
-
 
 def test_repair_dropcap_and_trim_end_marker():
     from newspaper_translator.bloomberg_mineru import repair_dropcap, trim_end_marker
@@ -188,35 +146,6 @@ def test_assemble_articles_builds_body_and_images(tmp_path):
     assert "![](images/h.jpg)" in art.body_text
     assert (images_dir / "h.jpg").exists()
 
-
-def test_find_boundaries_folio_fallback_distinct_indices_same_page():
-    """Two unmatched Contents entries with the same folio (same target_page) must
-    get distinct block_index values — not both anchor to the same first text block."""
-    from newspaper_translator.bloomberg_mineru import (
-        Block, ContentsEntry, PageKind, find_boundaries,
-    )
-    # offset = 2: (page_idx+1) - folio = (11+1)-10 = 2, repeated 3 times for _MIN_OFFSET_VOTES
-    # target_page for folio 20 = 20 + 2 - 1 = 21
-    blocks = [
-        Block("page_number", None, 11, (0, 0, 0, 0), "10", ""),           # idx 0 — offset vote
-        Block("page_number", None, 12, (0, 0, 0, 0), "11", ""),           # idx 1 — offset vote
-        Block("page_number", None, 13, (0, 0, 0, 0), "12", ""),           # idx 2 — offset vote
-        Block("text", None, 21, (29, 60, 400, 100), "First article body.", ""),   # idx 3
-        Block("text", None, 21, (29, 110, 400, 200), "Second article body.", ""), # idx 4
-    ]
-    contents = [
-        ContentsEntry("Article One", 20),
-        ContentsEntry("Article Two", 20),
-    ]
-    page_kinds = {21: PageKind("editorial", "")}
-    bounds = find_boundaries(blocks, contents, page_kinds)
-
-    assert len(bounds) == 2, f"Expected 2 boundaries, got {len(bounds)}"
-    indices = [b.block_index for b in bounds]
-    assert len(set(indices)) == 2, f"block_index values must be distinct, got {indices}"
-    # Sorted by block_index, the ranges must be non-empty
-    bounds_sorted = sorted(bounds, key=lambda b: b.block_index)
-    assert bounds_sorted[0].block_index < bounds_sorted[1].block_index
 
 
 def test_parse_bloomberg_edition_end_to_end(tmp_path):
@@ -325,3 +254,39 @@ def test_demirror_collapses_doubled_prefix():
     assert _demirror("The Most The Most ompellin Watches") == "The Most ompellin Watches"
     assert _demirror("A Broken A Broken Market Ins A Radical") == "A Broken Market Ins A Radical"
     assert _demirror("Salmon Farming, Now on Land") == "Salmon Farming, Now on Land"
+
+
+def test_find_boundaries_enumerates_headlines_and_filters():
+    from newspaper_translator.bloomberg_mineru import (
+        Block, PageKind, find_boundaries, Boundary,
+    )
+    blocks = [
+        Block("text", 1, 20, (29,60,600,110), "A Politically Fraught World Cup", ""),   #0 real (h50)
+        Block("text", 2, 20, (29,120,300,150), "● By Reporter", ""),                     #1 byline (skip)
+        Block("text", 2, 17, (29,700,200,716), "● KUALA LUMPUR", ""),                    #2 dateline (h16<30)
+        Block("text", 1, 39, (26,737,913,927), "workers are disconnected from the org", ""), #3 pull-quote
+        Block("text", None, 39, (0,0,0,0), "many workers are disconnected from the org today "
+              "and it matters a great deal for the economy at large as we will see in time", ""),     #4 body (>120)
+        Block("text", 1, 41, (29,60,700,183), "America Is Addicted To Disposable Work", ""), #5 real (h123)
+    ]
+    page_kinds = {17: PageKind("editorial",""), 20: PageKind("editorial",""),
+                  39: PageKind("editorial",""), 41: PageKind("editorial","")}
+    bounds = find_boundaries(blocks, page_kinds)
+    assert bounds == [
+        Boundary("A Politically Fraught World Cup", 20, 0),
+        Boundary("America Is Addicted To Disposable Work", 41, 5),
+    ]
+
+
+def test_find_boundaries_joins_split_headline():
+    from newspaper_translator.bloomberg_mineru import Block, PageKind, find_boundaries
+    blocks = [
+        Block("text", 1, 55, (29,60,400,159), "Meta Goes Big", ""),       #0 h99
+        Block("text", 1, 56, (29,60,400,162), "on the Bayou", ""),        #1 h102, next page, no byline between
+        Block("text", 2, 56, (29,200,300,230), "● By Author", ""),        #2 byline after join
+    ]
+    pk = {55: PageKind("editorial",""), 56: PageKind("editorial","")}
+    bounds = find_boundaries(blocks, pk)
+    assert len(bounds) == 1
+    assert bounds[0].title == "Meta Goes Big on the Bayou"
+    assert bounds[0].block_index == 0

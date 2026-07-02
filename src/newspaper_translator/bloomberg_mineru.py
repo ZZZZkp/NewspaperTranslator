@@ -190,7 +190,6 @@ def classify_pages(blocks: list[Block]) -> dict[int, PageKind]:
     return result
 
 
-_MIN_TITLE_HEIGHT = 22
 _MIN_OFFSET_VOTES = 3
 
 
@@ -212,51 +211,70 @@ class Boundary:
     block_index: int
 
 
-def find_boundaries(
-    blocks: list[Block],
-    contents: list[ContentsEntry],
-    page_kinds: dict[int, PageKind],
-) -> list[Boundary]:
-    bounds: list[Boundary] = []
-    matched_entries: set[str] = set()
+_MIN_HEADLINE_HEIGHT = 30
+_KNOWN_RUBRICS = {
+    "contributors", "pursuits", "in context", "pursuits picks",
+    "pricing the stockpile",
+}
+_TITLE_SKIP_PREFIX = ("●", "○", '"', "“", "”", "(")
 
+
+def find_boundaries(
+    blocks: list[Block], page_kinds: dict[int, PageKind]
+) -> list[Boundary]:
+    section_names = running_section_names(blocks)
+    paragraphs = _body_paragraphs(blocks)
+
+    candidates: list[tuple[int, Block]] = []
     for index, block in enumerate(blocks):
-        if block.type != "title":
+        if not block.text_level or (block.bbox[3] - block.bbox[1]) < _MIN_HEADLINE_HEIGHT:
             continue
-        if (block.bbox[3] - block.bbox[1]) < _MIN_TITLE_HEIGHT:
+        text = block.text.strip()
+        if not text or text.isdigit():
             continue
         if page_kinds.get(block.page_idx, PageKind("ad", "")).kind != "editorial":
             continue
-        entry = next((e for e in contents if title_matches(block.text, e.title)), None)
-        if entry is None:
+        if text[:1] in _TITLE_SKIP_PREFIX:
             continue
-        key = normalize_title(entry.title)
-        if key in matched_entries:
+        key = normalize_title(text)
+        if key in section_names or key in _KNOWN_RUBRICS:
             continue
-        matched_entries.add(key)
-        bounds.append(Boundary(entry.title, block.page_idx, index))
+        if _is_pull_quote(block, paragraphs):
+            continue
+        candidates.append((index, block))
 
-    # Folio fallback for entries MinerU never surfaced as a title block.
-    offset = detect_page_offset(blocks)
-    if offset is not None:
-        used_indices = {b.block_index for b in bounds}
-        for entry in contents:
-            if normalize_title(entry.title) in matched_entries or entry.folio <= 0:
+    # keep the topmost candidate per page (drops decks / sub-item / listicle headings)
+    per_page: dict[int, tuple[int, Block]] = {}
+    for index, block in candidates:
+        current = per_page.get(block.page_idx)
+        if current is None or block.bbox[1] < current[1].bbox[1]:
+            per_page[block.page_idx] = (index, block)
+    kept = sorted(per_page.values(), key=lambda item: item[0])
+
+    # Join loop tracks heights in a parallel list (Boundary is a frozen dataclass,
+    # so it must not carry an extra attribute).
+    boundaries: list[Boundary] = []
+    heights: list[int] = []
+    for index, block in kept:
+        title = _demirror(block.text.strip())
+        height = block.bbox[3] - block.bbox[1]
+        if boundaries:
+            prev = boundaries[-1]
+            same_or_next = 0 <= block.page_idx - prev.page_idx <= 1
+            similar = abs(height - heights[-1]) < 40
+            no_byline_between = not any(
+                _is_byline(b) for b in blocks[prev.block_index + 1:index]
+            )
+            if same_or_next and similar and no_byline_between:
+                boundaries[-1] = Boundary(
+                    title=f"{prev.title} {title}",
+                    page_idx=prev.page_idx,
+                    block_index=prev.block_index,
+                )
                 continue
-            target_page = entry.folio + offset - 1
-            for index, block in enumerate(blocks):
-                if (block.page_idx == target_page
-                        and block.type in ("text", "paragraph")
-                        and index not in used_indices
-                        and page_kinds.get(block.page_idx, PageKind("ad", "")).kind
-                        == "editorial"):
-                    matched_entries.add(normalize_title(entry.title))
-                    bounds.append(Boundary(entry.title, target_page, index))
-                    used_indices.add(index)
-                    break
-
-    bounds.sort(key=lambda b: b.block_index)
-    return bounds
+        boundaries.append(Boundary(title=title, page_idx=block.page_idx, block_index=index))
+        heights.append(height)
+    return boundaries
 
 
 # Exclude A and I so standalone English words ("A dog", "I think") are not merged.
@@ -379,7 +397,7 @@ def parse_bloomberg_edition(
     if not contents:
         raise ValueError("Bloomberg Contents page not found in MinerU output")
     page_kinds = classify_pages(blocks)
-    boundaries = find_boundaries(blocks, contents, page_kinds)
+    boundaries = find_boundaries(blocks, page_kinds)
     mineru_extract_dir = Path(parsed.markdown_path).parent
     articles = assemble_articles(
         blocks, boundaries, page_kinds,
